@@ -1,0 +1,23 @@
+# Godot editor cache and imported resources.
+.godot/
+
+# Native build cache and Android/Gradle build output.
+.ccache/
+build/
+.gradle/
+local.properties
+
+# Generated packages and signing material.
+*.apk
+*.aab
+*.keystore
+*.jks
+*.sha256
+
+# Logs, temporary files and editor noise.
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

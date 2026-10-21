@@ -1,0 +1,145 @@
+name: Android debug APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GODOT_COMMIT: ed1daf0bf001b61586d9930840f2f1394092c079
+  ANDROID_NDK_VERSION: "29.0.14206865"
+  ANDROID_BUILD_TOOLS: "36.1.0"
+
+jobs:
+  build:
+    name: Build arm64 debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out Kinema Studio
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android/sdk/ndk \
+            /opt/ghc \
+            /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Install SCons and ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache python3-venv
+          python3 -m venv "$HOME/.local/scons-venv"
+          "$HOME/.local/scons-venv/bin/pip" install --disable-pip-version-check "scons==4.8.1"
+          echo "$HOME/.local/scons-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch pinned Godot source
+        run: |
+          git clone --depth 1 --branch 4.7.2-stable \
+            https://github.com/godotengine/godot.git godot
+          actual="$(git -C godot rev-parse HEAD)"
+          test "$actual" = "$GODOT_COMMIT" || {
+            echo "Unexpected Godot commit: $actual" >&2
+            exit 1
+          }
+
+      - name: Stage project and Android overlay
+        run: bash scripts/stage-android.sh "$PWD/godot"
+
+      - name: Create CI debug keystore
+        run: |
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/kinema-debug.keystore" \
+            -storepass kinema-ci \
+            -keypass kinema-ci \
+            -alias kinema \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Kinema Studio CI, OU=Android, O=Kinema Studio, C=US"
+
+      - name: Restore native build cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ env.GODOT_COMMIT }}-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.GODOT_COMMIT }}-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Build debug APK
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_MAXSIZE: 2G
+          CCACHE_COMPILERCHECK: content
+          SCONSFLAGS: c_compiler_launcher=ccache cpp_compiler_launcher=ccache
+        run: |
+          cd godot/platform/android/java
+          ./gradlew --no-daemon :app:assembleStandardDebug \
+            -PgenerateNativeLibs=true \
+            -Pexport_package_name=studio.kinema.app \
+            -Pexport_enabled_abis=arm64-v8a \
+            -Pexport_version_code=1 \
+            -Pexport_version_name=0.1.0 \
+            -Pperform_signing=true \
+            -Pperform_zipalign=true \
+            -Pdebug_keystore_file="$RUNNER_TEMP/kinema-debug.keystore" \
+            -Pdebug_keystore_password=kinema-ci \
+            -Pdebug_keystore_alias=kinema
+
+      - name: Collect APK
+        run: |
+          apk="$(find godot/platform/android/java/app/build/outputs/apk -name '*.apk' -print -quit)"
+          test -n "$apk"
+          out="$PWD/Kinema-Studio-0.1.0-arm64-debug.apk"
+          cp "$apk" "$out"
+          sha256sum "$out" | tee "$out.sha256"
+          test -s "$out"
+
+      - name: Inspect APK package and contents
+        run: |
+          "$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/aapt" dump badging \
+            Kinema-Studio-0.1.0-arm64-debug.apk > badging.txt
+          head -20 badging.txt
+          grep -F "package: name='studio.kinema.app'" badging.txt
+          unzip -l Kinema-Studio-0.1.0-arm64-debug.apk | grep -E \
+            'assets/project\.godot|assets/src/app/main\.tscn|assets/assets/fonts/Inter\.ttf|assets/assets/licenses/godot/COPYRIGHT\.txt|lib/arm64-v8a/libgodot_android\.so'
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kinema-Studio-0.1.0-arm64-debug
+          path: |
+            Kinema-Studio-0.1.0-arm64-debug.apk
+            Kinema-Studio-0.1.0-arm64-debug.apk.sha256
+          if-no-files-found: error

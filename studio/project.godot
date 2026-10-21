@@ -1,0 +1,71 @@
+; Kinema Studio
+; Engine: Godot 4.7.2-stable (Android fork, see BUILD.md)
+; This file is stored as plain text in the APK assets. The Android build does
+; not require an editor import pass: all resources are procedural or loaded at
+; runtime from raw assets.
+
+config_version=5
+
+[application]
+
+config/name="Kinema Studio"
+config/description="A focused 3D animation studio for touch."
+run/main_scene="res://src/app/main.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+boot_splash/bg_color=Color(0.043137, 0.058824, 0.078431, 1)
+boot_splash/show_image=false
+config/use_custom_user_dir=true
+config/custom_user_dir_name="KinemaStudio"
+config/quit_on_go_back=false
+
+[autoload]
+
+Kit="*res://src/ui/kit.gd"
+Store="*res://src/core/project_store.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=6
+window/energy_saving/keep_screen_on=true
+window/transparent=false
+
+[gui]
+
+theme/default_font_multichannel_signed_distance_field=true
+
+[input_devices]
+
+pointing/emulate_mouse_from_touch=true
+pointing/emulate_touch_from_mouse=false
+
+[rendering]
+
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+rendering_device/driver="vulkan"
+rendering_device/driver.mobile="vulkan"
+rendering_device/fallback_to_opengl3=true
+rendering/anti_aliasing/quality/msaa_3d=1
+environment/defaults/default_clear_color=Color(0.043137, 0.058824, 0.078431, 1)
+textures/default_filters/use_nearest_mipmap_filter=false
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=2
+
+[physics]
+
+common/physics_ticks_per_second=60
+
+[audio]
+
+driver/enable_input=false
+
+[file_customization]
+
+folder_colors={
+"res://assets/": "gray",
+"res://src/": "blue"
+}
