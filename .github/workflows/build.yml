@@ -47,14 +47,15 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
+        with:
+    accept-android-sdk-licenses: true
+    log-accepted-android-sdk-licenses: false
       - name: Install Android SDK packages
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install \
-            "platforms;android-36" \
-            "build-tools;${ANDROID_BUILD_TOOLS}" \
-            "ndk;${ANDROID_NDK_VERSION}"
+  run: |
+    sdkmanager --install \
+      "platforms;android-36" \
+      "build-tools;${ANDROID_BUILD_TOOLS}" \
+      "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install SCons and ccache
         run: |
