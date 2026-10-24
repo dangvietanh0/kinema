@@ -25,7 +25,9 @@ var _toast_center: CenterContainer
 var _toast_margin: MarginContainer
 var _toast_anchor: Control
 var _toast_layout := Rect2()
+var _toast_modal := false
 var _modal_open := false
+var _modal_serial := 0
 var _toast_serial := 0
 var _prompt_field: LineEdit
 var _prompt_submit := Callable()
@@ -170,21 +172,28 @@ func _sync_toast_layout() -> void:
 	if anchored:
 		var host := _toast_anchor.get_global_rect()
 		target = Rect2(host.position - get_global_rect().position, host.size)
-	if target == _toast_layout:
+	# A toast over an open sheet would cover its controls, so move it to the
+	# top of the screen while a modal is visible.
+	var modal := _modal_open
+	if target == _toast_layout and modal == _toast_modal:
 		return
 	_toast_layout = target
+	_toast_modal = modal
+	var bottom_anchored := anchored and not modal
 	_toast_holder.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_toast_holder.position = target.position
 	_toast_holder.size = target.size
-	_toast_holder.alignment = BoxContainer.ALIGNMENT_END if anchored else BoxContainer.ALIGNMENT_BEGIN
-	_toast_margin.add_theme_constant_override("margin_top", 0 if anchored else 62)
-	_toast_margin.add_theme_constant_override("margin_bottom", 44 if anchored else 0)
+	_toast_holder.alignment = BoxContainer.ALIGNMENT_END if bottom_anchored else BoxContainer.ALIGNMENT_BEGIN
+	_toast_margin.add_theme_constant_override("margin_top", 0 if bottom_anchored else 62)
+	_toast_margin.add_theme_constant_override("margin_bottom", 44 if bottom_anchored else 0)
 
 func has_modal() -> bool:
 	return _modal_open
 
 func show_modal(title: String, subtitle: String = "", body: Control = null, actions: Array = []) -> void:
 	close_modal()
+	_modal_serial += 1
+	var serial := _modal_serial
 	_modal_open = true
 	_title_label.text = title
 	_subtitle_label.text = subtitle
@@ -227,15 +236,25 @@ func show_modal(title: String, subtitle: String = "", body: Control = null, acti
 	var available_h := maxf(220.0, get_viewport_rect().size.y - 80.0)
 	_panel.custom_minimum_size.x = minf(460.0, available_w)
 	_body_scroll.custom_minimum_size.y = 0
-	await get_tree().process_frame
-	var natural := _body_scroll.get_combined_minimum_size().y
-	var max_body := minf(available_h * 0.62, natural)
-	_body_scroll.custom_minimum_size.y = minf(natural, max_body)
-
+	# Lay the sheet out invisibly first. Containers do not resolve their final
+	# width while hidden, and measuring then reads a tall narrow layout that
+	# pads short sheets out to the 62% cap.
 	_backdrop.visible = true
 	_sheet_holder.visible = true
 	_panel.modulate.a = 0.0
 	_backdrop.modulate.a = 0.0
+	# Two frames: the first applies the panel width, the second lets autowrap
+	# labels recompute their height at that width.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if serial != _modal_serial:
+		return
+	# A ScrollContainer reports a zero minimum size by design, so measure the
+	# content host instead. Without this every sheet collapses its body to
+	# nothing while the children still exist off-screen.
+	var natural := _body_host.get_combined_minimum_size().y
+	var max_body := minf(available_h * 0.62, natural)
+	_body_scroll.custom_minimum_size.y = maxf(0.0, minf(natural, max_body))
 	var tween := create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(_backdrop, "modulate:a", 1.0, 0.14)
@@ -246,6 +265,7 @@ func close_modal() -> void:
 	if not _modal_open:
 		return
 	_modal_open = false
+	_modal_serial += 1
 	_backdrop.visible = false
 	_sheet_holder.visible = false
 	modal_closed.emit()

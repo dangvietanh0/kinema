@@ -320,7 +320,7 @@ func _add_scrub(label_text: String, property: String, min_value: float, max_valu
 	var bar = ScrubBarScript.new()
 	bar.min_value = min_value
 	bar.max_value = max_value
-	bar.fill_color = Kit.ACCENT
+	bar.fill_color = Kit.FOCUS
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.value_changed.connect(_on_scrub_changed.bind(property))
 	bar.drag_started.connect(_on_scrub_drag_started.bind(property))
@@ -450,11 +450,11 @@ func _set_swatch(color: Color) -> void:
 		return
 	var normal := Kit.flat_style(color, 4, Kit.BORDER, 1)
 	var hover := Kit.flat_style(color.lightened(0.08), 4, Kit.TEXT_MUTED, 1)
-	var pressed := Kit.flat_style(color.darkened(0.08), 4, Kit.ACCENT, 1)
+	var pressed := Kit.flat_style(color.darkened(0.08), 4, Kit.FOCUS, 1)
 	_color_button.add_theme_stylebox_override("normal", normal)
 	_color_button.add_theme_stylebox_override("hover", hover)
 	_color_button.add_theme_stylebox_override("pressed", pressed)
-	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), 4, Kit.ACCENT, 1))
+	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), 4, Kit.FOCUS, 1))
 
 func str_to_var_hex(hex: String) -> Color:
 	return Color.from_string(hex, Color(0.667, 0.698, 0.749))

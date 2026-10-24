@@ -13,6 +13,7 @@ extends Control
 signal exit_requested
 
 const DocumentScript = preload("res://src/core/document.gd")
+const RenderExport = preload("res://src/core/render_export.gd")
 const EditorViewScript = preload("res://src/viewport/editor_view.gd")
 const OutlinerScript = preload("res://src/ui/outliner.gd")
 const InspectorScript = preload("res://src/ui/inspector.gd")
@@ -22,7 +23,8 @@ const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
 
 const AUTOSAVE_SECONDS := 30.0
-const WIDE_MIN_WIDTH := 900.0
+const WIDE_MIN_WIDTH := 720.0
+const SHORT_MAX_HEIGHT := 520.0
 
 const COLOR_PALETTE := [
 	"#AAB2BF", "#B3A28B", "#D9C7A7", "#C8B18A", "#D9A45B", "#C97C5D",
@@ -68,12 +70,17 @@ var _drawer_scrim: ColorRect
 var _overlay: Control
 var _autosave: Timer
 
+var _rail_column: VBoxContainer
+var _rail_buttons: Array[Button] = []
+var _rail_style: StyleBoxFlat
 var _tool := "select"
 var _tool_buttons: Dictionary = {}
 var _wide := true
+var _short := false
 var _drawer_open := false
 var _compact_tab := "scene"
 var _timeline_visible := true
+var _short_timeline_open := false
 var _closing := false
 var _last_save_auto := false
 
@@ -94,6 +101,19 @@ var _settings_cubic: Button
 var _settings_interp := "linear"
 
 var _pending_still: Image = null
+var _pending_zip := ""
+var _last_render_path := ""
+var _render_resolution := 1920
+var _render_msaa := Viewport.MSAA_4X
+var _sequence_resolution := 1080
+var _sequence_msaa := Viewport.MSAA_2X
+var _render_busy := false
+var _render_progress: ProgressBar
+var _render_status: Label
+var _render_sequence_button: Button
+var _render_still_button: Button
+var _render_save_button: Button
+var _preset_buttons: Array[Button] = []
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -185,6 +205,10 @@ func _build_topbar() -> void:
 	_redo_button.pressed.connect(_redo)
 	row.add_child(_redo_button)
 
+	var render := Kit.icon_button("clapperboard", "Render and export", 32, 16)
+	render.pressed.connect(_open_render_sheet)
+	row.add_child(render)
+
 	_save_button = Kit.icon_button("save", "Save project", 32, 15)
 	_save_button.pressed.connect(func() -> void: _save_project(true))
 	row.add_child(_save_button)
@@ -234,17 +258,19 @@ func _build_rail() -> void:
 	style.content_margin_right = 3
 	style.content_margin_top = 8
 	style.content_margin_bottom = 8
+	_rail_style = style
 	_rail.add_theme_stylebox_override("panel", style)
 	_body.add_child(_rail)
 
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 4)
+	_rail_column = column
 	_rail.add_child(column)
 
 	_add_tool_button(column, "select", "mouse-pointer-2", "Select  ·  tap to pick")
-	_add_tool_button(column, "move", "move-3d", "Move  ·  drag an axis")
-	_add_tool_button(column, "rotate", "rotate-3d", "Rotate  ·  drag an axis")
-	_add_tool_button(column, "scale", "scale-3d", "Scale  ·  drag an axis")
+	_add_tool_button(column, "move", "tool-move", "Move  ·  drag an axis")
+	_add_tool_button(column, "rotate", "tool-rotate", "Rotate  ·  drag an axis")
+	_add_tool_button(column, "scale", "tool-scale", "Scale  ·  drag an axis")
 
 	var mid_spacer := Control.new()
 	mid_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -256,13 +282,15 @@ func _build_rail() -> void:
 	focus.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	focus.pressed.connect(_focus_selection)
 	column.add_child(focus)
+	_rail_buttons.append(focus)
 
 	var add := Kit.icon_button("plus", "Add object", 34, 16)
 	add.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	add.add_theme_color_override("icon_normal_color", Kit.ACCENT)
-	add.add_theme_color_override("icon_hover_color", Kit.ACCENT_BRIGHT)
+	add.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
+	add.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT)
 	add.pressed.connect(_open_add_sheet)
 	column.add_child(add)
+	_rail_buttons.append(add)
 
 func _add_tool_button(parent: Control, tool_id: String, icon_name: String, tooltip: String) -> void:
 	var button := Kit.icon_button(icon_name, tooltip, 34, 16)
@@ -270,6 +298,7 @@ func _add_tool_button(parent: Control, tool_id: String, icon_name: String, toolt
 	button.pressed.connect(_select_tool.bind(tool_id))
 	parent.add_child(button)
 	_tool_buttons[tool_id] = button
+	_rail_buttons.append(button)
 
 func _build_compact_bar() -> void:
 	_compact_bar = PanelContainer.new()
@@ -288,8 +317,8 @@ func _build_compact_bar() -> void:
 	_compact_bar.add_child(row)
 
 	_add_compact = _compact_button("Add", "plus")
-	_add_compact.add_theme_color_override("font_color", Kit.ACCENT)
-	_add_compact.add_theme_color_override("icon_normal_color", Kit.ACCENT)
+	_add_compact.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
+	_add_compact.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
 	_add_compact.pressed.connect(_open_add_sheet)
 	row.add_child(_add_compact)
 
@@ -417,10 +446,13 @@ func _build_drawer_scrim() -> void:
 	_drawer_scrim.color = Color(0.015, 0.022, 0.031, 0.55)
 	_drawer_scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_drawer_scrim.offset_top = 48.0
-	_drawer_scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	# Non-interactive: GUI picking follows tree order, not z_index, so a
+	# click-catching scrim added after the dock swallows every tap inside
+	# the drawer and closes it. The drawer closes via its own close button,
+	# Escape, or the Android back gesture instead.
+	_drawer_scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_drawer_scrim.visible = false
 	_drawer_scrim.z_index = 11
-	_drawer_scrim.gui_input.connect(_on_scrim_input)
 	add_child(_drawer_scrim)
 
 # -------------------------------------------------------------------------
@@ -449,6 +481,9 @@ func open_loaded(meta: Dictionary, data: Dictionary) -> void:
 
 func _adopt_document(document: Node3D) -> void:
 	doc = document
+	if not Gfx.changed.is_connected(_on_graphics_changed):
+		Gfx.changed.connect(_on_graphics_changed)
+	doc.apply_graphics()
 	if _view != null:
 		_view.set_document(doc)
 		_view.set_tool(_tool)
@@ -467,6 +502,10 @@ func _adopt_document(document: Node3D) -> void:
 
 func _on_document_scene_changed() -> void:
 	_update_header()
+
+func _on_graphics_changed() -> void:
+	if doc != null:
+		doc.apply_graphics()
 
 func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
@@ -503,9 +542,9 @@ func _update_header() -> void:
 		_subtitle_label.text = "%s · %d object%s · %d fps · %.1f s" % [
 			tag, objects, "" if objects == 1 else "s", doc.fps, doc.duration
 		]
-	_dirty_dot.color = Kit.ACCENT if dirty else Color(0, 0, 0, 0)
-	_save_button.add_theme_color_override("icon_normal_color", Kit.ACCENT if dirty else Kit.TEXT_MUTED)
-	_save_button.add_theme_color_override("icon_hover_color", Kit.ACCENT_BRIGHT if dirty else Kit.TEXT)
+	_dirty_dot.color = Kit.FOCUS_BRIGHT if dirty else Color(0, 0, 0, 0)
+	_save_button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT if dirty else Kit.TEXT_MUTED)
+	_save_button.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT if dirty else Kit.TEXT)
 	_save_button.tooltip_text = "Save project" if not dirty else "Save unsaved changes"
 
 func _update_history_buttons() -> void:
@@ -595,6 +634,10 @@ func _save_and_leave() -> void:
 func _leave(save_first: bool = false) -> void:
 	if _closing:
 		return
+	if _render_busy:
+		if _overlay != null:
+			_overlay.toast("Wait for the render to finish", "film", Kit.WARNING)
+		return
 	if save_first and doc != null and doc.is_dirty():
 		if not _save_project(false):
 			return
@@ -627,7 +670,9 @@ func _apply_responsive() -> void:
 	if _dock == null or not is_inside_tree():
 		return
 	var wide := size.x >= WIDE_MIN_WIDTH
+	var short := size.y < SHORT_MAX_HEIGHT
 	_wide = wide
+	_short = short
 	if wide:
 		_drawer_open = false
 		_drawer_scrim.visible = false
@@ -637,21 +682,55 @@ func _apply_responsive() -> void:
 		_dock.visible = _drawer_open
 		_drawer_scrim.visible = _drawer_open
 
+	_topbar.custom_minimum_size.y = 42.0 if short else 48.0
+	if _drawer_scrim != null:
+		_drawer_scrim.offset_top = 42.0 if short else 48.0
+	# The tool rail is the one column that cannot scroll. Shrink its buttons and
+	# margins in a short landscape window so it never forces the editor body
+	# past the bottom edge (which used to hide the compact bar entirely).
+	var rail_size := 30.0 if short else 34.0
+	var rail_icon := 15 if short else 16
+	_rail.custom_minimum_size.x = 40.0 if short else 44.0
+	_rail_column.add_theme_constant_override("separation", 2 if short else 4)
+	_rail_style.content_margin_top = 4 if short else 8
+	_rail_style.content_margin_bottom = 4 if short else 8
+	for button in _rail_buttons:
+		button.custom_minimum_size = Vector2(rail_size, rail_size)
+		button.add_theme_constant_override("icon_max_width", rail_icon)
 	_dock_slot.visible = wide
 	_compact_bar.visible = not wide
 	_dock_close_row.visible = not wide
 	_outliner_panel.visible = wide or _compact_tab == "scene"
 	_inspector_panel.visible = wide or _compact_tab == "inspector"
 	_outliner_panel.size_flags_vertical = Control.SIZE_FILL if wide else Control.SIZE_EXPAND_FILL
-	_timeline_panel.custom_minimum_size.y = 190.0 if wide else 154.0
-	_subtitle_label.visible = size.x >= 540.0
+	# In short landscape the dock has only ~400 dp of height. A 112 dp
+	# outliner left room for the header and search but barely one scene row,
+	# so give the scene list a useful share and let the inspector scroll.
+	_outliner_panel.custom_minimum_size.y = 210.0 if short else 172.0
+	_timeline_panel.custom_minimum_size.y = 126.0 if short else (190.0 if wide else 154.0)
+	_subtitle_label.visible = size.x >= 540.0 and not short
 
 	var dock_width := clampf(size.x * 0.25, 288.0, 340.0) if wide else clampf(size.x * 0.9, 280.0, 360.0)
+	if wide and short:
+		dock_width = clampf(size.x * 0.34, 272.0, 320.0)
 	_dock_slot.custom_minimum_size.x = dock_width
 	_dock.offset_left = -dock_width
 	_dock.offset_right = 0.0
+	_dock.offset_top = 42.0 if short else 48.0
+	_sync_timeline_visibility()
 	_update_compact_bar()
 	_update_drawer_tabs()
+
+func _timeline_should_show() -> bool:
+	if not _timeline_visible:
+		return false
+	# On a phone held sideways the timeline would eat most of the viewport.
+	# It starts folded away there and the bottom bar button brings it back.
+	return not _short or _short_timeline_open
+
+func _sync_timeline_visibility() -> void:
+	if _timeline_panel != null:
+		_timeline_panel.visible = _timeline_should_show()
 
 func _toggle_drawer(tab: String) -> void:
 	if _wide:
@@ -706,17 +785,17 @@ func _update_compact_bar() -> void:
 		return
 	_style_compact_active(_scene_compact, _drawer_open and _compact_tab == "scene")
 	_style_compact_active(_props_compact, _drawer_open and _compact_tab == "inspector")
-	Kit.set_icon_active(_timeline_compact, _timeline_visible)
-	_timeline_compact.tooltip_text = "Hide timeline" if _timeline_visible else "Show timeline"
-	_timeline_panel.visible = _timeline_visible
+	Kit.set_icon_active(_timeline_compact, _timeline_should_show())
+	_timeline_compact.tooltip_text = "Hide timeline" if _timeline_should_show() else "Show timeline"
+	_sync_timeline_visibility()
 
 func _style_compact_active(button: Button, active: bool) -> void:
 	if active:
-		button.add_theme_color_override("font_color", Kit.ACCENT)
-		button.add_theme_color_override("icon_normal_color", Kit.ACCENT)
-		button.add_theme_stylebox_override("normal", _compact_style(Kit.ACCENT_DARK, Kit.ACCENT * Color(1, 1, 1, 0.4)))
-		button.add_theme_stylebox_override("hover", _compact_style(Kit.ACCENT_DARK.lightened(0.04), Kit.ACCENT * Color(1, 1, 1, 0.55)))
-		button.add_theme_stylebox_override("pressed", _compact_style(Kit.ACCENT_DARK.darkened(0.06), Kit.ACCENT))
+		button.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_stylebox_override("normal", _compact_style(Kit.FOCUS_DARK, Kit.FOCUS * Color(1, 1, 1, 0.4)))
+		button.add_theme_stylebox_override("hover", _compact_style(Kit.FOCUS_DARK.lightened(0.04), Kit.FOCUS * Color(1, 1, 1, 0.55)))
+		button.add_theme_stylebox_override("pressed", _compact_style(Kit.FOCUS_DARK.darkened(0.06), Kit.FOCUS))
 	else:
 		button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
@@ -726,16 +805,10 @@ func _style_compact_active(button: Button, active: bool) -> void:
 
 func _toggle_timeline() -> void:
 	_timeline_visible = not _timeline_visible
-	_timeline_panel.visible = _timeline_visible
+	if _short:
+		_short_timeline_open = _timeline_visible
+	_sync_timeline_visibility()
 	_update_compact_bar()
-
-func _on_scrim_input(event: InputEvent) -> void:
-	if Kit.is_emulated_mouse(event):
-		return
-	if event is InputEventScreenTouch and event.pressed:
-		_close_drawer()
-	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		_close_drawer()
 
 # -------------------------------------------------------------------------
 # Tools, editing and shortcuts
@@ -854,7 +927,7 @@ func _open_add_sheet() -> void:
 
 	body.add_child(Kit.vsep())
 	body.add_child(Kit.section_label("Assets"))
-	body.add_child(_sheet_button("Import glTF model", "upload", _pick_model))
+	body.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
 
 	var hint := Kit.label("Primitives are placed on the ground at the center of the current view.", 9, Kit.TEXT_DIM)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -925,10 +998,10 @@ func _pick_model() -> void:
 		_save_project(false)
 	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
 		var filters := PackedStringArray([
-			"*.glb, *.gltf;glTF models;model/gltf-binary,model/gltf+json",
+			"*.glb, *.gltf, *.obj;3D models;model/gltf-binary,model/gltf+json,application/octet-stream",
 		])
 		var err := DisplayServer.file_dialog_show(
-			"Import glTF model", "", "", false,
+			"Import 3D model", "", "", false,
 			DisplayServer.FILE_DIALOG_MODE_OPEN_FILE, filters, _on_model_selected
 		)
 		if err != OK:
@@ -948,17 +1021,137 @@ func _on_model_selected(status: bool, paths: PackedStringArray, _filter_index: i
 	at.y = 0.0
 	doc.add_imported(str(result.get("rel_path", "")), str(result.get("name", "Model")), at)
 	_save_project(false)
-	_overlay.toast("Imported " + str(result.get("name", "model")), "package-open", Kit.SUCCESS)
+	var warning := str(result.get("warning", ""))
+	if warning != "":
+		_overlay.toast(warning, "triangle-alert", Kit.WARNING)
+	else:
+		_overlay.toast("Imported " + str(result.get("name", "model")), "package-open", Kit.SUCCESS)
 	_focus_selection()
 
-func _render_still() -> void:
+func _open_render_sheet() -> void:
 	if doc == null or _view == null:
 		return
+	_overlay.clear_toast()
 	doc.pause()
-	var image: Image = await _view.capture_still()
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 12)
+
+	var format_row := HBoxContainer.new()
+	format_row.add_theme_constant_override("separation", 8)
+	format_row.add_child(Kit.label("Output", 12, Kit.TEXT))
+	var format_spacer := Control.new()
+	format_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	format_row.add_child(format_spacer)
+	format_row.add_child(Kit.mono_label("PNG · still + sequence", 9, Kit.TEXT_MUTED))
+	body.add_child(format_row)
+
+	body.add_child(Kit.section_label("Still image"))
+	_graphics_choice(body, "Long edge", "px", [
+		{"label": "1280", "value": 1280},
+		{"label": "1920", "value": 1920},
+		{"label": "2560", "value": 2560},
+		{"label": "3840", "value": 3840},
+	], _render_resolution, func(value: Variant) -> void: _render_resolution = int(value))
+	_graphics_choice(body, "Anti-aliasing", "MSAA", [
+		{"label": "Off", "value": Viewport.MSAA_DISABLED},
+		{"label": "2×", "value": Viewport.MSAA_2X},
+		{"label": "4×", "value": Viewport.MSAA_4X},
+		{"label": "8×", "value": Viewport.MSAA_8X},
+	], _render_msaa, func(value: Variant) -> void: _render_msaa = int(value))
+
+	var still_actions := HBoxContainer.new()
+	still_actions.add_theme_constant_override("separation", 8)
+	body.add_child(still_actions)
+	_render_still_button = Kit.text_button("Quick still", "camera", true, true)
+	_render_still_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_render_still_button.tooltip_text = "Capture now and save in app storage"
+	_render_still_button.pressed.connect(_quick_still)
+	still_actions.add_child(_render_still_button)
+	_render_save_button = Kit.text_button("Save still…", "download", false, true)
+	_render_save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_render_save_button.pressed.connect(_render_still)
+	still_actions.add_child(_render_save_button)
+
+	body.add_child(Kit.vsep())
+	body.add_child(Kit.section_label("Frame sequence"))
+	var frame_count := _sequence_frame_count()
+	var info := Kit.label(
+		"%d frames · %.2f s · %d fps" % [frame_count, doc.duration, maxi(1, doc.fps)],
+		10, Kit.TEXT_MUTED
+	)
+	body.add_child(info)
+	_graphics_choice(body, "Frame size", "px", [
+		{"label": "720", "value": 720},
+		{"label": "1080", "value": 1080},
+		{"label": "1440", "value": 1440},
+	], _sequence_resolution, func(value: Variant) -> void: _sequence_resolution = int(value))
+	_graphics_choice(body, "Anti-aliasing", "MSAA", [
+		{"label": "Off", "value": Viewport.MSAA_DISABLED},
+		{"label": "2×", "value": Viewport.MSAA_2X},
+		{"label": "4×", "value": Viewport.MSAA_4X},
+	], _sequence_msaa, func(value: Variant) -> void: _sequence_msaa = int(value))
+
+	_render_sequence_button = Kit.text_button("Render PNG sequence", "film", true, true)
+	_render_sequence_button.pressed.connect(_render_sequence)
+	body.add_child(_render_sequence_button)
+
+	var progress_box := VBoxContainer.new()
+	progress_box.add_theme_constant_override("separation", 5)
+	progress_box.visible = false
+	body.add_child(progress_box)
+	_render_progress = ProgressBar.new()
+	_render_progress.min_value = 0.0
+	_render_progress.max_value = 1.0
+	_render_progress.step = 0.001
+	_render_progress.show_percentage = false
+	_render_progress.custom_minimum_size.y = 5
+	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, 3, Kit.BORDER_SOFT, 0))
+	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, 3, Kit.FOCUS, 0))
+	progress_box.add_child(_render_progress)
+	_render_status = Kit.mono_label("", 9, Kit.TEXT_MUTED)
+	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	progress_box.add_child(_render_status)
+
+	var note := Kit.label(
+		"Captures use the live 3D renderer, including lights, shadows and materials. " +
+		"Sequences are saved as a ZIP of numbered PNG frames; MP4 encoding is not available in this build.",
+		9, Kit.TEXT_DIM
+	)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(note)
+
+	_overlay.show_modal("Render", "Real engine captures, saved as image files.", body, [
+		{"text": "Done", "primary": true},
+	])
+
+func _quick_still() -> void:
+	if doc == null or _view == null or _render_busy:
+		return
+	doc.pause()
+	_set_render_busy(true)
+	_set_render_progress(0.0, "Capturing still…")
+	var image: Image = await _view.capture_still(_render_resolution, _render_msaa)
+	_set_render_busy(false)
 	if image == null:
+		_set_render_progress(0.0, "The still could not be captured.")
 		_overlay.toast("The still could not be captured", "triangle-alert", Kit.DANGER)
 		return
+	_save_still_internal(image)
+	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
+
+func _render_still() -> void:
+	if doc == null or _view == null or _render_busy:
+		return
+	doc.pause()
+	_set_render_busy(true)
+	_set_render_progress(0.0, "Capturing still…")
+	var image: Image = await _view.capture_still(_render_resolution, _render_msaa)
+	_set_render_busy(false)
+	if image == null:
+		_set_render_progress(0.0, "The still could not be captured.")
+		_overlay.toast("The still could not be captured", "triangle-alert", Kit.DANGER)
+		return
+	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
 	_pending_still = image
 	var filename := _still_filename()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
@@ -984,25 +1177,31 @@ func _on_still_destination(status: bool, paths: PackedStringArray, _filter_index
 	if image == null:
 		return
 	if image.save_png(path) == OK:
+		_set_render_progress(1.0, "Still exported.")
 		_overlay.toast("Still exported", "image", Kit.SUCCESS)
 	else:
 		_save_still_internal(image)
 
-func _save_still_internal(image: Image = null) -> void:
+func _save_still_internal(image: Image = null) -> String:
 	if image == null:
 		image = _pending_still
 	_pending_still = null
 	if image == null:
-		return
+		return ""
 	var dir := "user://renders"
 	DirAccess.make_dir_recursive_absolute(dir)
-	var path := dir.path_join(_still_filename())
+	var path := RenderExport.still_path(dir, _still_base_name())
 	if image.save_png(path) == OK:
-		_overlay.toast("Still saved in app storage", "image", Kit.ACCENT)
-	else:
-		_overlay.toast("The still could not be written", "triangle-alert", Kit.DANGER)
+		_last_render_path = path
+		_overlay.toast("Still saved in app storage", "image", Kit.SUCCESS)
+		return path
+	_overlay.toast("The still could not be written", "triangle-alert", Kit.DANGER)
+	return ""
 
 func _still_filename() -> String:
+	return _still_base_name() + ".png"
+
+func _still_base_name() -> String:
 	var base := ""
 	for i in range(doc.title.length()):
 		var ch := doc.title.substr(i, 1).to_lower()
@@ -1014,7 +1213,140 @@ func _still_filename() -> String:
 		base = "kinema"
 	if base.length() > 36:
 		base = base.substr(0, 36)
-	return "%s-%d-%d.png" % [base, int(Time.get_unix_time_from_system()), Time.get_ticks_msec() % 1000]
+	return "%s-%d-%d" % [base, int(Time.get_unix_time_from_system()), Time.get_ticks_msec() % 1000]
+
+func _sequence_frame_count() -> int:
+	if doc == null:
+		return 0
+	return maxi(1, roundi(doc.duration * float(maxi(1, doc.fps))))
+
+func _set_render_busy(busy: bool) -> void:
+	_render_busy = busy
+	for button in [_render_still_button, _render_save_button, _render_sequence_button]:
+		if is_instance_valid(button):
+			button.disabled = busy
+	if is_instance_valid(_render_progress):
+		var parent := _render_progress.get_parent()
+		if is_instance_valid(parent):
+			parent.visible = busy or (_render_progress.value > 0.0)
+
+func _set_render_progress(value: float, text: String) -> void:
+	# The sheet may be closed while an awaited capture is still running, which
+	# frees these controls. The render itself should finish quietly, so guard
+	# every UI write instead of touching a freed node.
+	if not is_instance_valid(_render_progress):
+		return
+	_render_progress.value = clampf(value, 0.0, 1.0)
+	var parent := _render_progress.get_parent()
+	if is_instance_valid(parent):
+		parent.visible = true
+	if is_instance_valid(_render_status):
+		_render_status.text = text
+
+func _render_sequence(with_dialog: bool = true) -> void:
+	if doc == null or _view == null or _render_busy:
+		return
+	doc.pause()
+	_set_render_busy(true)
+	var saved_time: float = doc.current_time
+	var fps := maxi(1, doc.fps)
+	var count := _sequence_frame_count()
+	var dir := RenderExport.sequence_dir()
+	DirAccess.make_dir_recursive_absolute(dir)
+	var started := Time.get_ticks_msec()
+	var failed := false
+	for i in range(count):
+		doc.seek(float(i) / float(fps))
+		await get_tree().process_frame
+		var image: Image = await _view.capture_still(_sequence_resolution, _sequence_msaa)
+		if image == null:
+			failed = true
+			break
+		var frame_path := dir.path_join(RenderExport.frame_name(i + 1))
+		if image.save_png(frame_path) != OK:
+			failed = true
+			break
+		_set_render_progress(
+			float(i + 1) / float(count),
+			"Frame %d of %d · %d px long edge" % [i + 1, count, _sequence_resolution]
+		)
+	doc.seek(saved_time)
+	if failed:
+		_remove_sequence_frames(dir)
+		_set_render_busy(false)
+		_set_render_progress(0.0, "The sequence stopped before every frame was written.")
+		_overlay.toast("The sequence could not be completed", "triangle-alert", Kit.DANGER)
+		return
+	_set_render_progress(1.0, "Packaging %d frames…" % count)
+	await get_tree().process_frame
+	var zip_path := RenderExport.archive_path("user://renders", _still_base_name())
+	var packaged := RenderExport.zip_directory(dir, zip_path)
+	if packaged:
+		_last_render_path = zip_path
+	if packaged:
+		# The PNG frames are only an intermediate. Removing them keeps app
+		# storage predictable while the ZIP remains a lossless archive.
+		_remove_sequence_frames(dir)
+	_set_render_busy(false)
+	if not packaged:
+		_set_render_progress(0.0, "The ZIP archive could not be written. Frames remain in app storage.")
+		_overlay.toast("The sequence archive could not be written", "triangle-alert", Kit.DANGER)
+		return
+	var seconds := float(Time.get_ticks_msec() - started) / 1000.0
+	_set_render_progress(1.0, "%d frames packaged in %.1f s." % [count, seconds])
+	_pending_zip = zip_path
+	if with_dialog and DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
+		var filters := PackedStringArray(["*.zip;ZIP archive;application/zip"])
+		var err := DisplayServer.file_dialog_show(
+			"Export PNG sequence", "", _still_base_name() + ".zip", false,
+			DisplayServer.FILE_DIALOG_MODE_SAVE_FILE, filters, _on_zip_destination
+		)
+		if err == OK:
+			return
+	_keep_zip_internal()
+
+func _on_zip_destination(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
+	if not status or paths.is_empty():
+		_keep_zip_internal()
+		return
+	var path := paths[0]
+	if not path.to_lower().ends_with(".zip"):
+		path += ".zip"
+	var source := _pending_zip
+	if source == "":
+		return
+	var bytes := FileAccess.get_file_as_bytes(source)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	var wrote := false
+	if file != null:
+		if not bytes.is_empty():
+			wrote = file.store_buffer(bytes)
+		file.close()
+	if wrote:
+		_pending_zip = ""
+		DirAccess.remove_absolute(source)
+		_set_render_progress(1.0, "Sequence exported.")
+		_overlay.toast("Sequence exported", "film", Kit.SUCCESS)
+	else:
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+		_keep_zip_internal()
+
+func _remove_sequence_frames(dir: String) -> void:
+	var dir_access := DirAccess.open(dir)
+	if dir_access == null:
+		return
+	for name in dir_access.get_files():
+		DirAccess.remove_absolute(dir.path_join(name))
+	DirAccess.remove_absolute(dir)
+
+func _keep_zip_internal() -> void:
+	if _pending_zip == "":
+		return
+	var path := _pending_zip
+	_pending_zip = ""
+	_set_render_progress(1.0, "Sequence kept in app storage: " + path)
+	_overlay.toast("Sequence saved in app storage", "film", Kit.SUCCESS)
 
 # -------------------------------------------------------------------------
 # Project menu and settings
@@ -1039,8 +1371,9 @@ func _open_project_menu() -> void:
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 3)
 	body.add_child(_menu_button("Project settings", "sliders-horizontal", _open_settings))
-	body.add_child(_menu_button("Import glTF model", "upload", _pick_model))
-	body.add_child(_menu_button("Render still (PNG)", "image", _render_still))
+	body.add_child(_menu_button("Graphics and performance", "gauge", _open_graphics_settings))
+	body.add_child(_menu_button("Import 3D model", "upload", _pick_model))
+	body.add_child(_menu_button("Render and export", "clapperboard", _open_render_sheet))
 	body.add_child(Kit.vsep())
 	body.add_child(_menu_button("Frame selection", "focus", _focus_selection))
 	body.add_child(_menu_button("Show or hide timeline", "panel-bottom", _toggle_timeline))
@@ -1121,6 +1454,182 @@ func _open_settings() -> void:
 		{"text": "Apply", "primary": true, "callback": apply},
 	])
 
+func _graphics_choice(parent: Control, title: String, hint: String, options: Array, current_value: Variant, on_change: Callable) -> void:
+	var block := VBoxContainer.new()
+	block.add_theme_constant_override("separation", 5)
+	parent.add_child(block)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	head.add_child(Kit.label(title, 12, Kit.TEXT))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(spacer)
+	if hint != "":
+		head.add_child(Kit.label(hint, 9, Kit.TEXT_DIM))
+	block.add_child(head)
+
+	var strip := HBoxContainer.new()
+	strip.add_theme_constant_override("separation", 3)
+	block.add_child(strip)
+	var group := ButtonGroup.new()
+	group.allow_unpress = false
+	for option in options:
+		var data: Dictionary = option
+		var value: Variant = data.get("value")
+		var button := Kit.text_toggle(str(data.get("label", "")), "", true)
+		button.button_group = group
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.button_pressed = value == current_value
+		button.toggled.connect(func(on: bool) -> void:
+			if on:
+				on_change.call(value)
+				# A single option edit moves the preset to Custom; keep the
+				# preset chips honest instead of leaving the old one lit.
+				_sync_preset_buttons()
+		)
+		strip.add_child(button)
+
+func _open_graphics_settings() -> void:
+	if doc == null:
+		return
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 12)
+
+	var renderer_row := HBoxContainer.new()
+	renderer_row.add_theme_constant_override("separation", 8)
+	renderer_row.add_child(Kit.label("Renderer", 12, Kit.TEXT))
+	var renderer_spacer := Control.new()
+	renderer_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	renderer_row.add_child(renderer_spacer)
+	var renderer_text := Gfx.display_name()
+	renderer_row.add_child(Kit.mono_label(renderer_text, 9, Kit.TEXT_MUTED))
+	body.add_child(renderer_row)
+
+	var unavailable := ""
+	if not Gfx.is_forward():
+		unavailable = "Requires Forward+"
+
+	body.add_child(Kit.section_label("Quality preset"))
+	graphics_preset_row(body)
+	body.add_child(Kit.vsep())
+
+	body.add_child(Kit.section_label("Anti-aliasing"))
+	_graphics_choice(body, "Samples", "MSAA", [
+		{"label": "Off", "value": 0},
+		{"label": "2×", "value": 1},
+		{"label": "4×", "value": 2},
+		{"label": "8×", "value": 3},
+	], Gfx.msaa, func(value: Variant) -> void: Gfx.set_option("msaa", value))
+	_graphics_choice(body, "Temporal", unavailable, [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.taa, func(value: Variant) -> void: Gfx.set_option("taa", value))
+	body.add_child(Kit.vsep())
+
+	body.add_child(Kit.section_label("Lighting and surfaces"))
+	_graphics_choice(body, "Ambient occlusion", unavailable, [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.ssao, func(value: Variant) -> void: Gfx.set_option("ssao", value))
+	_graphics_choice(body, "AO quality", "", [
+		{"label": "Low", "value": 0},
+		{"label": "Medium", "value": 1},
+		{"label": "High", "value": 2},
+		{"label": "Ultra", "value": 3},
+	], Gfx.ssao_quality, func(value: Variant) -> void: Gfx.set_option("ssao_quality", value))
+	_graphics_choice(body, "Indirect lighting", unavailable, [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.ssil, func(value: Variant) -> void: Gfx.set_option("ssil", value))
+	_graphics_choice(body, "Screen-space reflections", unavailable, [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.ssr, func(value: Variant) -> void: Gfx.set_option("ssr", value))
+	_graphics_choice(body, "Glow", "", [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.glow, func(value: Variant) -> void: Gfx.set_option("glow", value))
+	_graphics_choice(body, "Volumetric fog", unavailable, [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.volumetric_fog, func(value: Variant) -> void: Gfx.set_option("volumetric_fog", value))
+	body.add_child(Kit.vsep())
+
+	body.add_child(Kit.section_label("Shadows"))
+	_graphics_choice(body, "Filter quality", "", [
+		{"label": "Low", "value": 0},
+		{"label": "Medium", "value": 1},
+		{"label": "High", "value": 2},
+		{"label": "Ultra", "value": 3},
+	], Gfx.shadow_quality, func(value: Variant) -> void: Gfx.set_option("shadow_quality", value))
+	_graphics_choice(body, "Cascades", "sun", [
+		{"label": "1", "value": 1},
+		{"label": "2", "value": 2},
+		{"label": "4", "value": 4},
+	], Gfx.shadow_splits, func(value: Variant) -> void: Gfx.set_option("shadow_splits", value))
+	_graphics_choice(body, "Range", "meters", [
+		{"label": "25", "value": 25.0},
+		{"label": "40", "value": 40.0},
+		{"label": "60", "value": 60.0},
+		{"label": "100", "value": 100.0},
+	], Gfx.shadow_distance, func(value: Variant) -> void: Gfx.set_option("shadow_distance", value))
+	body.add_child(Kit.vsep())
+
+	body.add_child(Kit.section_label("Performance"))
+	_graphics_choice(body, "3D resolution", "%", [
+		{"label": "60", "value": 0.6},
+		{"label": "80", "value": 0.8},
+		{"label": "100", "value": 1.0},
+	], Gfx.scale_3d, func(value: Variant) -> void: Gfx.set_option("scale_3d", value))
+	_graphics_choice(body, "Frame cap", "fps", [
+		{"label": "30", "value": 30},
+		{"label": "60", "value": 60},
+		{"label": "90", "value": 90},
+		{"label": "120", "value": 120},
+	], Gfx.max_fps, func(value: Variant) -> void: Gfx.set_option("max_fps", value))
+
+	var note := Kit.label("Changes apply immediately and are stored on this device. Render output resolution and anti-aliasing are set in the Render sheet.", 9, Kit.TEXT_DIM)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(note)
+
+	_overlay.show_modal("Graphics and performance", "Real engine settings, not decoration.", body, [
+		{"text": "Done", "primary": true},
+	])
+
+func graphics_preset_row(parent: Control) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 3)
+	parent.add_child(row)
+	var group := ButtonGroup.new()
+	group.allow_unpress = false
+	_preset_buttons.clear()
+	for entry in [
+		{"label": "Performance", "value": "performance"},
+		{"label": "Balanced", "value": "balanced"},
+		{"label": "Quality", "value": "quality"},
+	]:
+		var data: Dictionary = entry
+		var preset_name := str(data.get("value"))
+		var button := Kit.text_toggle(str(data.get("label")), "", true)
+		button.button_group = group
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.set_meta("preset", preset_name)
+		button.button_pressed = Gfx.preset == preset_name
+		button.toggled.connect(func(on: bool) -> void:
+			if on:
+				Gfx.apply_preset(preset_name)
+				call_deferred("_open_graphics_settings")
+		)
+		row.add_child(button)
+		_preset_buttons.append(button)
+
+func _sync_preset_buttons() -> void:
+	for button in _preset_buttons:
+		if not is_instance_valid(button):
+			continue
+		button.set_pressed_no_signal(str(button.get_meta("preset", "")) == Gfx.preset)
+
 func _number_row(parent: Control, label_text: String, badge: String, min_value: float, max_value: float, step: float, value: float, badge_width: int) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
@@ -1200,7 +1709,7 @@ func _open_color_sheet(property: String) -> void:
 		swatch.tooltip_text = str(hex)
 		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, 4, Kit.BORDER, 1))
 		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), 4, Kit.TEXT_MUTED, 1))
-		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), 4, Kit.ACCENT, 1))
+		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), 4, Kit.FOCUS, 1))
 		swatch.pressed.connect(_set_color_value.bind(color))
 		grid.add_child(swatch)
 
@@ -1326,6 +1835,14 @@ func _show_help() -> void:
 	body.add_child(_help_row("Diamond button", "Key all transforms at the playhead"))
 	body.add_child(_help_row("AUTO", "Write a key whenever a transform changes"))
 	body.add_child(_help_row("Drag a key", "Retime it, snapped to frames when enabled"))
+	body.add_child(_help_row("Speed graph", "Plot engine-sampled speed for the selected channel"))
+	body.add_child(_help_row("Ease handles", "Drag a handle or use EASE to change the source key"))
+	body.add_child(Kit.section_label("Render and import"))
+	body.add_child(_help_row("Render and export", "Still images and PNG frame sequences"))
+	body.add_child(_help_row("Quick still", "Capture now at the selected size and MSAA"))
+	body.add_child(_help_row("Import model", "glTF/GLB and OBJ; FBX must be converted first"))
+	body.add_child(_help_row("Android SAF", "An OBJ may not read sibling MTL/texture files"))
+	body.add_child(_help_row("MP4", "Not available; sequences are ZIP files of PNG frames"))
 	body.add_child(Kit.section_label("Hardware keyboard"))
 	body.add_child(_help_row("Space", "Play or pause"))
 	body.add_child(_help_row("F", "Frame selection"))
@@ -1339,7 +1856,7 @@ func _show_help() -> void:
 func _help_row(key: String, description: String) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
-	var key_label := Kit.mono_label(key, 9, Kit.ACCENT)
+	var key_label := Kit.mono_label(key, 9, Kit.FOCUS_BRIGHT)
 	key_label.custom_minimum_size.x = 116
 	key_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(key_label)
@@ -1358,13 +1875,16 @@ func _show_about() -> void:
 	body.add_child(intro)
 	body.add_child(Kit.vsep())
 	body.add_child(_info_row("Version", "0.1"))
-	body.add_child(_info_row("Engine", str(Engine.get_version_info().get("string", "4.x"))))
-	body.add_child(_info_row("Renderer", "Mobile / Vulkan, OpenGL fallback"))
+	body.add_child(_info_row("Engine", _engine_version()))
+	body.add_child(_info_row("Renderer", Gfx.display_name()))
 	body.add_child(_info_row("Project", doc.title if doc != null else "Untitled"))
 	body.add_child(Kit.vsep())
-	var note := Kit.label("Projects and imported models stay in on-device app storage. Stills are exported as real PNG captures of the viewport through the system file picker.", 9, Kit.TEXT_DIM)
+	var note := Kit.label("Projects and imported models stay in on-device app storage. Stills are real PNG captures at the selected size and MSAA. Sequences are real PNG frames packaged as a ZIP; MP4 encoding is not included.", 9, Kit.TEXT_DIM)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
+	var limits := Kit.label("Import: glTF/GLB and OBJ. Binary FBX must be converted to GLB or OBJ first because Godot's FBX importer is editor-only. On Android, SAF may prevent an OBJ from reading sibling MTL/texture files.", 9, Kit.TEXT_DIM)
+	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(limits)
 	var licenses := Kit.label("Engine: Godot (MIT). Fonts: Inter and JetBrains Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
 	licenses.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(licenses)
@@ -1376,11 +1896,21 @@ func _info_row(key: String, value: String) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	var label := Kit.label(key, 10, Kit.TEXT_DIM)
-	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	row.add_child(label)
 	var value_label := Kit.mono_label(value, 9, Kit.TEXT_MUTED)
-	value_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	value_label.clip_text = true
+	value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	value_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	value_label.custom_minimum_size.x = 80
 	row.add_child(value_label)
 	return row
+
+func _engine_version() -> String:
+	var info := Engine.get_version_info()
+	return "%d.%d.%d-%s" % [
+		int(info.get("major", 4)),
+		int(info.get("minor", 0)),
+		int(info.get("patch", 0)),
+		str(info.get("status", "stable")),
+	]

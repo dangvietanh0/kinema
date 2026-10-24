@@ -20,10 +20,11 @@ const CHANNEL_LABELS := {
 	"scale": "Scale",
 }
 const CHANNEL_ICONS := {
-	"position": "move-3d",
-	"rotation": "rotate-3d",
-	"scale": "scale-3d",
+	"position": "tool-move",
+	"rotation": "tool-rotate",
+	"scale": "tool-scale",
 }
+const ObjImporter = preload("res://src/core/obj_importer.gd")
 const TRACK_TYPES := {
 	"position": Animation.TYPE_POSITION_3D,
 	"rotation": Animation.TYPE_ROTATION_3D,
@@ -163,6 +164,7 @@ func to_data() -> Dictionary:
 				track["keys"].append({
 					"t": float(animation.track_get_key_time(ti, ki)),
 					"v": _value_to_json(animation.track_get_key_value(ti, ki)),
+					"e": float(animation.track_get_key_transition(ti, ki)),
 				})
 			tracks.append(track)
 	var json_objects: Array = []
@@ -275,21 +277,34 @@ func _build_blank() -> void:
 
 func _build_study() -> void:
 	_add_camera_data("Main Camera", Vector3(5.2, 3.5, 6.4), Vector3(0.0, 0.8, 0.0), false)
-	_add_light_data("Key Light", "directional", Vector3(0.0, 5.0, 0.0), Vector3(-42, -34, 0), false)
-	_add_light_data("Rim Light", "omni", Vector3(-2.4, 2.7, -2.2), Vector3.ZERO, false)
+	# Three-point studio lighting: a warm key with real soft shadows, a cool
+	# fill to keep the shadow side readable, and a warm rim for separation.
+	var key := _add_light_data("Key Light", "directional", Vector3(0.0, 5.0, 0.0), Vector3(-42, -34, 0), false)
+	key["light_energy"] = 1.75
+	key["light_color"] = "#FFF0D8"
+	_spawn_refresh(str(key["id"]))
+	var fill := _add_light_data("Fill Light", "omni", Vector3(3.1, 2.1, 2.7), Vector3.ZERO, false)
+	fill["light_energy"] = 0.55
+	fill["light_color"] = "#C9DCFF"
+	fill["light_range"] = 9.0
+	_spawn_refresh(str(fill["id"]))
+	var rim := _add_light_data("Rim Light", "omni", Vector3(-2.4, 2.7, -2.2), Vector3.ZERO, false)
+	rim["light_energy"] = 1.35
+	rim["light_color"] = "#FFD8AA"
+	_spawn_refresh(str(rim["id"]))
 	var sphere := _add_primitive_data("Form", "sphere", Vector3(0.0, 1.0, 0.0), false)
-	sphere["color"] = "#B6A184"
-	sphere["roughness"] = 0.36
+	sphere["color"] = "#C0A27E"
+	sphere["roughness"] = 0.34
 	_spawn_refresh(str(sphere["id"]))
 	var ring := _add_primitive_data("Orbit", "torus", Vector3(0.0, 1.15, 0.0), false)
-	ring["color"] = "#7C8A9C"
+	ring["color"] = "#8C9AAE"
 	ring["rotation"] = Quaternion(Vector3.RIGHT, deg_to_rad(62.0))
 	ring["scale"] = Vector3(1.5, 1.5, 1.5)
 	_spawn_refresh(str(ring["id"]))
 	var base := _add_primitive_data("Base", "cylinder", Vector3(0.0, 0.14, 0.0), false)
-	base["color"] = "#343C48"
+	base["color"] = "#3D4654"
 	base["scale"] = Vector3(2.05, 0.28, 2.05)
-	base["roughness"] = 0.7
+	base["roughness"] = 0.62
 	_spawn_refresh(str(base["id"]))
 	selected_id = str(ring["id"])
 	_animate_study(str(ring["id"]), str(sphere["id"]))
@@ -309,6 +324,10 @@ func _animate_study(ring_id: String, sphere_id: String) -> void:
 	animation.position_track_insert_key(pt, 3.0, Vector3(0, 1.0, 0))
 	animation.position_track_insert_key(pt, 4.5, Vector3(0, 1.22, 0))
 	animation.position_track_insert_key(pt, 6.0, Vector3(0, 1.0, 0))
+	# Cubic interpolation gives the bob a natural pause at each extreme. The
+	# speed graph plots this track straight from the animation resource, so
+	# the starter scene and the graph agree by construction.
+	animation.track_set_interpolation_type(pt, Animation.INTERPOLATION_CUBIC)
 	animation.loop_mode = Animation.LOOP_LINEAR
 	_refresh_animation()
 
@@ -403,7 +422,8 @@ func _build_mesh_visual(node: Node3D, obj: Dictionary) -> void:
 	material.albedo_color = _hex_color(str(obj.get("color", "#AAB2BF")))
 	material.roughness = clampf(float(obj.get("roughness", 0.48)), 0.0, 1.0)
 	material.metallic = clampf(float(obj.get("metallic", 0.0)), 0.0, 1.0)
-	material.metallic_specular = 0.35
+	material.metallic_specular = 0.5
+	material.rim_enabled = false
 	mesh_instance.material_override = material
 	node.add_child(mesh_instance)
 
@@ -422,30 +442,69 @@ func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	if light_type == "omni":
 		var omni := OmniLight3D.new()
 		omni.omni_range = float(obj.get("light_range", 8.0))
-		omni.shadow_enabled = true
+		omni.omni_attenuation = 1.1
+		omni.omni_shadow_mode = OmniLight3D.SHADOW_CUBE
 		light = omni
 	else:
 		var directional := DirectionalLight3D.new()
-		directional.shadow_enabled = true
-		directional.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-		directional.directional_shadow_max_distance = 30.0
 		light = directional
 	light.name = "Light"
 	light.light_energy = float(obj.get("light_energy", 1.2))
 	light.light_color = _hex_color(str(obj.get("light_color", "#FFF0DB")))
+	light.light_specular = 0.55
+	_configure_shadows(light)
 	node.add_child(light)
 	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.92, 0.78, 0.48))
+
+func _configure_shadows(light: Light3D) -> void:
+	## Shadow quality is driven by the graphics preferences. Directional lights
+	## get cascaded splits, a filtered soft edge and a physical angular size so
+	## the PCSS path produces real penumbrae instead of a hard cutout.
+	if light == null:
+		return
+	light.shadow_enabled = true
+	light.shadow_bias = 0.022
+	light.shadow_normal_bias = 0.9
+	light.shadow_blur = 1.05
+	if light is DirectionalLight3D:
+		var sun := light as DirectionalLight3D
+		sun.light_angular_distance = 0.55
+		sun.directional_shadow_max_distance = Gfx.shadow_distance
+		sun.directional_shadow_blend_splits = true
+		sun.directional_shadow_fade_start = 0.82
+		sun.directional_shadow_pancake_size = 18.0
+		match int(Gfx.shadow_splits):
+			1:
+				sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+			3, 4:
+				sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+			_:
+				sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	elif light is OmniLight3D:
+		pass
+
+func apply_graphics() -> void:
+	for id in nodes.keys():
+		var node: Node3D = nodes[id]
+		if node == null:
+			continue
+		var light := node.get_node_or_null("Light") as Light3D
+		if light != null:
+			_configure_shadows(light)
 
 func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 	var rel := str(obj.get("model", ""))
 	var path := project_dir.path_join(rel) if rel != "" else ""
 	var generated: Node = null
 	if path != "" and FileAccess.file_exists(path):
-		var gltf := GLTFDocument.new()
-		var state := GLTFState.new()
-		var err := gltf.append_from_file(path, state)
-		if err == OK:
-			generated = gltf.generate_scene(state)
+		if path.get_extension().to_lower() == "obj":
+			generated = ObjImporter.new().build(path)
+		else:
+			var gltf := GLTFDocument.new()
+			var state := GLTFState.new()
+			var err := gltf.append_from_file(path, state)
+			if err == OK:
+				generated = gltf.generate_scene(state)
 	if generated == null:
 		var board := MeshInstance3D.new()
 		board.name = "MissingModel"
@@ -559,6 +618,7 @@ func _apply_visual_properties(node: Node3D, obj: Dictionary) -> void:
 			mat.albedo_color = _hex_color(str(obj.get("color", "#AAB2BF")))
 			mat.roughness = clampf(float(obj.get("roughness", 0.48)), 0.0, 1.0)
 			mat.metallic = clampf(float(obj.get("metallic", 0.0)), 0.0, 1.0)
+			mat.metallic_specular = 0.5
 	elif kind == "light":
 		var light := node.get_node_or_null("Light") as Light3D
 		if light != null:
@@ -989,6 +1049,42 @@ func get_channel_keys(id: String, channel: String) -> Array:
 		})
 	return keys
 
+func get_key_transition(id: String, channel: String, key_index: int) -> float:
+	## Easing for the segment that starts at this key. 1.0 is a linear time
+	## warp, below 1.0 eases out, above 1.0 eases in and 0.0 holds the value.
+	var track := get_track(id, channel)
+	if track < 0 or key_index < 0 or key_index >= animation.track_get_key_count(track):
+		return 1.0
+	return animation.track_get_key_transition(track, key_index)
+
+func set_key_transition(id: String, channel: String, key_index: int, value: float) -> void:
+	var track := get_track(id, channel)
+	if track < 0 or key_index < 0 or key_index >= animation.track_get_key_count(track):
+		return
+	animation.track_set_key_transition(track, key_index, clampf(value, 0.0, 4.0))
+	_dirty = true
+	dirty_changed.emit(true)
+	object_changed.emit(id)
+	if anim_player != null:
+		anim_player.seek(current_time, true)
+
+func sample_channel(id: String, channel: String, time: float) -> Variant:
+	## Interpolated value at an arbitrary time, straight from the animation
+	## resource. The graph editor plots this so the curve matches playback
+	## exactly instead of approximating it in UI code.
+	var track := get_track(id, channel)
+	if track < 0:
+		return null
+	var t := clampf(time, 0.0, duration)
+	match channel:
+		"position":
+			return animation.position_track_interpolate(track, t)
+		"rotation":
+			return animation.rotation_track_interpolate(track, t)
+		"scale":
+			return animation.scale_track_interpolate(track, t)
+	return null
+
 func get_key_index_at(id: String, channel: String, time: float, tolerance: float = 0.04) -> int:
 	var track := get_track(id, channel)
 	if track < 0:
@@ -1027,8 +1123,11 @@ func set_key_time(id: String, channel: String, key_index: int, new_time: float) 
 		return -1
 	new_time = clampf(snappedf(new_time, 1.0 / float(fps)) if snap else new_time, 0.0, duration)
 	var value = animation.track_get_key_value(track, key_index)
+	var transition := animation.track_get_key_transition(track, key_index)
 	animation.track_remove_key(track, key_index)
 	var new_index := _insert_track_value(track, channel, new_time, value)
+	if new_index >= 0:
+		animation.track_set_key_transition(track, new_index, transition)
 	animation.length = duration
 	_dirty = true
 	dirty_changed.emit(true)
@@ -1326,11 +1425,17 @@ func _load_animation_tracks(anim_data: Dictionary) -> void:
 				continue
 			var time := float(key.get("t", 0.0))
 			var value: Variant = key.get("v", null)
-			if type == Animation.TYPE_POSITION_3D or type == Animation.TYPE_SCALE_3D:
-				value = _json_to_vec3(value)
+			var key_index := -1
+			if type == Animation.TYPE_POSITION_3D:
+				key_index = animation.position_track_insert_key(track, time, _json_to_vec3(value))
 			elif type == Animation.TYPE_ROTATION_3D:
-				value = _json_to_quat(value)
-			animation.track_insert_key(track, time, value)
+				key_index = animation.rotation_track_insert_key(track, time, _json_to_quat(value))
+			elif type == Animation.TYPE_SCALE_3D:
+				key_index = animation.scale_track_insert_key(track, time, _json_to_vec3(value))
+			else:
+				key_index = animation.track_insert_key(track, time, value)
+			if key_index >= 0:
+				animation.track_set_key_transition(track, key_index, clampf(float(key.get("e", 1.0)), 0.0, 4.0))
 
 func _refresh_animation() -> void:
 	if animation == null or anim_player == null:

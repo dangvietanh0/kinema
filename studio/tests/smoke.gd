@@ -1,6 +1,8 @@
 extends Node
 ## Temporary headless smoke test. Not part of the app.
 
+const RenderExport = preload("res://src/core/render_export.gd")
+
 var _failures: Array[String] = []
 
 func _check(condition: bool, message: String) -> void:
@@ -67,6 +69,111 @@ func _ready() -> void:
 	if key_index >= 0:
 		var new_index: int = doc.set_key_time(doc.selected_id, "position", key_index, 1.25)
 		_check(new_index >= 0, "key retimed")
+
+	print("SMOKE STEP: easing")
+	# A fresh object with a clean two-key segment so the sampled curve is
+	# unambiguous: x goes from 0 at t=0 to 2 at t=2.
+	editor._add_primitive("box")
+	await get_tree().process_frame
+	var ease_id: String = doc.selected_id
+	doc.seek(0.0)
+	doc.set_object_transform(ease_id, Vector3.ZERO, Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_transform_keys()
+	doc.seek(2.0)
+	doc.set_object_transform(ease_id, Vector3(2.0, 0.0, 0.0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_transform_keys()
+	var ease_keys: Array = doc.get_channel_keys(ease_id, "position")
+	_check(ease_keys.size() == 2, "easing segment has two position keys")
+	if ease_keys.size() == 2:
+		_check(is_equal_approx(doc.get_key_transition(ease_id, "position", 0), 1.0), "key transition defaults to linear")
+		var midpoint: Vector3 = doc.sample_channel(ease_id, "position", 1.0)
+		_check(absf(midpoint.x - 1.0) < 0.01, "linear easing samples the midpoint")
+		doc.set_key_transition(ease_id, "position", 0, 0.5)
+		_check(is_equal_approx(doc.get_key_transition(ease_id, "position", 0), 0.5), "key transition can be set")
+		var eased_out: Vector3 = doc.sample_channel(ease_id, "position", 0.5)
+		_check(eased_out.x > 0.6, "low transition eases out")
+		doc.set_key_transition(ease_id, "position", 0, 2.0)
+		var eased_in: Vector3 = doc.sample_channel(ease_id, "position", 0.5)
+		_check(eased_in.x < 0.4, "high transition eases in")
+		doc.set_key_transition(ease_id, "position", 0, 0.0)
+		var held: Vector3 = doc.sample_channel(ease_id, "position", 1.0)
+		_check(absf(held.x) < 0.01, "zero transition holds the previous key")
+		doc.set_key_transition(ease_id, "position", 0, 0.75)
+		var moved_index: int = doc.set_key_time(ease_id, "position", 0, 0.5)
+		_check(moved_index >= 0, "eased key retimed")
+		_check(is_equal_approx(doc.get_key_transition(ease_id, "position", moved_index), 0.75), "retiming preserves easing")
+		doc.seek(0.0)
+
+	print("SMOKE STEP: graph editor")
+	var timeline = editor._timeline
+	_check(timeline != null, "timeline exists")
+	if timeline != null:
+		timeline.set_mode("graph")
+		_check(timeline._mode == "graph", "graph mode activates")
+		var graph_speed: float = timeline._channel_speed(ease_id, "position", 1.0)
+		_check(graph_speed > 0.01, "graph samples real channel speed")
+		timeline.set_mode("dope")
+		_check(timeline._mode == "dope", "dope mode restores")
+
+	print("SMOKE STEP: render export")
+	var frame_dir := "user://render_export_fixture"
+	DirAccess.make_dir_recursive_absolute(frame_dir)
+	for i in range(3):
+		var frame := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+		frame.fill(Color(0.1 * float(i), 0.2, 0.3))
+		frame.save_png(frame_dir.path_join("frame_%04d.png" % i))
+	var sequence_zip := "user://render_export_fixture.zip"
+	_check(RenderExport.zip_directory(frame_dir, sequence_zip), "sequence zip written")
+	var zip_reader := ZIPReader.new()
+	_check(zip_reader.open(sequence_zip) == OK, "sequence zip readable")
+	if zip_reader.open(sequence_zip) == OK:
+		_check(zip_reader.get_files().size() == 3, "sequence zip contains every frame")
+		zip_reader.close()
+	var first_seq_dir := RenderExport.sequence_dir("user://sequence_fixture")
+	DirAccess.make_dir_recursive_absolute(first_seq_dir)
+	var second_seq_dir := RenderExport.sequence_dir("user://sequence_fixture")
+	_check(first_seq_dir != second_seq_dir, "sequence directories do not collide")
+	DirAccess.remove_absolute(first_seq_dir)
+	DirAccess.remove_absolute("user://sequence_fixture")
+	for i in range(3):
+		DirAccess.remove_absolute(frame_dir.path_join("frame_%04d.png" % i))
+	DirAccess.remove_absolute(frame_dir)
+	DirAccess.remove_absolute(sequence_zip)
+
+	print("SMOKE STEP: render sheet")
+	editor._open_render_sheet()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "render sheet opens")
+	_check(editor._render_sequence_button != null, "render sheet has sequence action")
+	_check(editor._render_progress != null, "render sheet has progress readout")
+	_check(editor._sequence_frame_count() == 144, "sequence frame count follows duration and fps")
+	_check(not editor._render_busy, "render sheet is idle on open")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	print("SMOKE STEP: graphics preset state")
+	editor._open_graphics_settings()
+	await get_tree().process_frame
+	_check(editor._preset_buttons.size() == 3, "graphics preset chips exist")
+	var original_preset: String = Gfx.preset
+	Gfx.preset = "custom"
+	editor._sync_preset_buttons()
+	var any_preset_lit := false
+	for button in editor._preset_buttons:
+		if button.button_pressed:
+			any_preset_lit = true
+	_check(not any_preset_lit, "custom settings clear the preset selection")
+	Gfx.preset = "balanced"
+	editor._sync_preset_buttons()
+	var balanced_lit := false
+	for chip in editor._preset_buttons:
+		if str(chip.get_meta("preset", "")) == "balanced" and chip.button_pressed:
+			balanced_lit = true
+	_check(balanced_lit, "balanced preset reselects its chip")
+	Gfx.preset = original_preset
+	editor._overlay.close_modal()
+	await get_tree().process_frame
 
 	# Color sheet and material write.
 	var mesh_id: String = doc.selected_id
@@ -170,8 +277,56 @@ func _ready() -> void:
 		for channel in other.CHANNELS:
 			loaded_keys += other.get_channel_keys(mesh_id, channel).size()
 		_check(source_keys == loaded_keys, "animation key count round trip")
+		_check(is_equal_approx(other.get_key_transition(mesh_id, "position", 0), 0.75), "key easing round trip")
 		other.queue_free()
 		await get_tree().process_frame
+
+	print("SMOKE STEP: OBJ import")
+	# A real OBJ+MTL+texture fixture exercises copying, reference rewriting and
+	# the runtime mesh parser end to end.
+	var fixture := "user://obj_import_fixture"
+	DirAccess.make_dir_recursive_absolute(fixture)
+	var texture := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	texture.fill(Color(0.9, 0.4, 0.1))
+	texture.save_png(fixture.path_join("tex.png"))
+	_write_test_text(fixture.path_join("sample.mtl"), "newmtl Painted\nKd 0.8 0.2 0.1\nNs 250\nmap_Kd tex.png\n")
+	_write_test_text(
+		fixture.path_join("sample.obj"),
+		"mtllib sample.mtl\no Quad\nv\t-1 0 -1\nv 1 0 -1\nv 1 0 1\nv -1 0 1\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nusemtl Painted\nf\t1/1 2/2 3/3 4/4\n"
+	)
+	var import_result: Dictionary = Store.import_model(fixture.path_join("sample.obj"), doc.project_dir, "Sample")
+	_check(bool(import_result.get("ok", false)), "obj import succeeds")
+	if bool(import_result.get("ok", false)):
+		var imported_rel := str(import_result.get("rel_path", ""))
+		var imported_folder: String = doc.project_dir.path_join(imported_rel).get_base_dir()
+		_check(FileAccess.file_exists(imported_folder.path_join("materials/sample.mtl")), "obj material copied")
+		_check(FileAccess.file_exists(imported_folder.path_join("textures/tex.png")), "obj texture copied")
+		var imported_mtl := FileAccess.get_file_as_string(imported_folder.path_join("materials/sample.mtl"))
+		_check(imported_mtl.contains("../textures/tex.png"), "obj texture reference rewritten")
+		var imported_obj := FileAccess.get_file_as_string(doc.project_dir.path_join(imported_rel))
+		_check(imported_obj.contains("mtllib materials/sample.mtl"), "obj material reference rewritten")
+		var obj_id: String = doc.add_imported(imported_rel, "Sample", Vector3.ZERO)
+		await get_tree().process_frame
+		var imported_node: Node3D = doc.nodes.get(obj_id)
+		_check(imported_node != null, "obj object spawned")
+		var mesh_instance: MeshInstance3D = null
+		if imported_node != null:
+			for child in imported_node.find_children("*", "MeshInstance3D", true, false):
+				mesh_instance = child
+				break
+		_check(mesh_instance != null and mesh_instance.mesh != null, "obj mesh built")
+		if mesh_instance != null and mesh_instance.mesh != null:
+			_check(mesh_instance.mesh.get_surface_count() == 1, "obj material group became one surface")
+			var surface_material := mesh_instance.mesh.surface_get_material(0) as StandardMaterial3D
+			_check(surface_material != null and surface_material.albedo_texture != null, "obj material texture loaded")
+			var arrays := mesh_instance.mesh.surface_get_arrays(0)
+			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+			_check(normals.size() >= 3 and normals[0].length() > 0.9, "obj normals generated")
+			_check((arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size() == 6, "obj quad triangulated")
+		DirAccess.remove_absolute(fixture.path_join("sample.obj"))
+		DirAccess.remove_absolute(fixture.path_join("sample.mtl"))
+		DirAccess.remove_absolute(fixture.path_join("tex.png"))
+		DirAccess.remove_absolute(fixture)
 
 	# Leave and clean up the temporary project.
 	var project_id: String = doc.project_id
@@ -181,6 +336,12 @@ func _ready() -> void:
 	_check(main._editor == null, "editor closed")
 	_check(Store.delete_project(project_id), "temporary project deleted")
 	_finish()
+
+func _write_test_text(path: String, text: String) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file != null:
+		file.store_string(text)
+		file.close()
 
 func _finish() -> void:
 	if _failures.is_empty():

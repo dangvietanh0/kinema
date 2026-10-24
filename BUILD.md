@@ -280,8 +280,8 @@ The app is `fullSensor`, resizeable, and uses a custom-drawn responsive layout.
 The manifest declares no `INTERNET` permission. It targets API 36 and supports
 API 24 and newer.
 
-The renderer is Mobile/Vulkan with OpenGL 3 fallback. The app's boot splash is
-disabled in `project.godot` because Android's native splash handles startup.
+The renderer is Forward+/Vulkan with an OpenGL 3 fallback. The app's boot splash
+is disabled in `project.godot` because Android's native splash handles startup.
 
 ---
 

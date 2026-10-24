@@ -482,7 +482,7 @@ func _template_card(id: String, title: String, description: String, icon_name: S
 	var icon_center := CenterContainer.new()
 	icon_center.custom_minimum_size = Vector2(30, 30)
 	row.add_child(icon_center)
-	icon_center.add_child(Kit.icon(icon_name, Kit.ACCENT if id == _template_choice else Kit.TEXT_MUTED, 17))
+	icon_center.add_child(Kit.icon(icon_name, Kit.FOCUS_BRIGHT if id == _template_choice else Kit.TEXT_MUTED, 17))
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 2)
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -496,7 +496,7 @@ func _template_card(id: String, title: String, description: String, icon_name: S
 	return panel
 
 func _template_style(active: bool) -> StyleBoxFlat:
-	var style := Kit.flat_style(Kit.SURFACE_3 if active else Kit.SURFACE_2, 6, Kit.ACCENT if active else Kit.BORDER_SOFT, 1)
+	var style := Kit.flat_style(Kit.SURFACE_3 if active else Kit.SURFACE_2, 6, Kit.FOCUS if active else Kit.BORDER_SOFT, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 8
@@ -519,7 +519,7 @@ func _refresh_template_cards() -> void:
 			if row != null:
 				var center := row.get_child(0) as CenterContainer
 				var icon := center.get_child(0) as TextureRect
-				icon.modulate = Kit.ACCENT if str(id) == _template_choice else Kit.TEXT_MUTED
+				icon.modulate = Kit.FOCUS_BRIGHT if str(id) == _template_choice else Kit.TEXT_MUTED
 
 func _open_project_menu(entry: Dictionary) -> void:
 	var id := str(entry.get("id", ""))
@@ -569,10 +569,13 @@ func _show_about() -> void:
 	body.add_child(intro)
 	body.add_child(Kit.vsep())
 	body.add_child(_info_row("Version", "0.1"))
-	body.add_child(_info_row("Engine", str(Engine.get_version_info().get("string", "4.x"))))
-	body.add_child(_info_row("Renderer", "Mobile / Vulkan with OpenGL fallback"))
+	body.add_child(_info_row("Engine", _engine_version()))
+	body.add_child(_info_row("Renderer", Gfx.display_name()))
 	body.add_child(_info_row("Storage", "On-device app storage only"))
 	body.add_child(Kit.vsep())
+	var limits := Kit.label("Import: glTF and OBJ. Binary FBX needs conversion to GLB or OBJ because Godot's FBX importer is editor-only. On Android, an OBJ may not resolve sibling MTL/texture files through SAF. Export: PNG stills and ZIP frame sequences; MP4 encoding is not included.", 9, Kit.TEXT_DIM)
+	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(limits)
 	var note := Kit.label("Fonts: Inter and JetBrains Mono (SIL OFL). Icons: Lucide (ISC). Both are bundled with their licenses.", 9, Kit.TEXT_DIM)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
@@ -582,10 +585,23 @@ func _info_row(key: String, value: String) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	var label := Kit.label(key, 10, Kit.TEXT_DIM)
-	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	row.add_child(label)
-	row.add_child(Kit.mono_label(value, 9, Kit.TEXT_MUTED))
+	var value_label := Kit.mono_label(value, 9, Kit.TEXT_MUTED)
+	value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	value_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(value_label)
 	return row
+
+func _engine_version() -> String:
+	var info := Engine.get_version_info()
+	return "%d.%d.%d-%s" % [
+		int(info.get("major", 4)),
+		int(info.get("minor", 0)),
+		int(info.get("patch", 0)),
+		str(info.get("status", "stable")),
+	]
 
 func _relative_time(timestamp: float) -> String:
 	if timestamp <= 0.0:

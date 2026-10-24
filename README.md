@@ -2,13 +2,13 @@
 
 Kinema Studio is a touch-first 3D animation workspace for Android. It is a
 small, local tool: open a project, place geometry, move it through time, and
-capture a still. The interface follows a restrained Blender/Godot-like layout
-rather than a game-style dashboard.
+render a still or a PNG sequence. The interface follows a restrained
+Blender/Godot-like layout rather than a game-style dashboard.
 
-The app is built on **Godot Engine 4.7.2-stable**, using its 3D renderer, scene
-graph, `Animation` resources, and glTF importer. The product layer is a custom
-GDScript interface; the Android package is assembled from Godot's official
-Android Gradle app.
+The app is built on **Godot Engine 4.7.2-stable**, using its Forward+ renderer,
+scene graph, `Animation` resources, and glTF importer. OBJ is parsed at runtime
+by a small GDScript importer. The product layer is a custom GDScript interface;
+the Android package is assembled from Godot's official Android Gradle app.
 
 > **Status: 0.1.0 prototype.** The source is complete and the headless test
 > suite passes. A debug APK is built by GitHub Actions. The app has not yet been
@@ -21,7 +21,7 @@ Android Gradle app.
 - **Project browser** — create a blank stage or a small animated study, reopen
   recent projects, rename or delete them. Project files stay on the device.
 - **Scene authoring** — cube, sphere, cylinder, cone, torus, plane, empty,
-  camera, directional light, omni light, and imported glTF models.
+  camera, directional light, omni light, and imported glTF or OBJ models.
 - **Direct manipulation** — select, move, rotate, and scale with a touch-sized
   axis gizmo; the same transforms are editable numerically in the inspector.
   The preview renders at device resolution, so edges and gizmos stay crisp on
@@ -29,13 +29,20 @@ Android Gradle app.
 - **Animation** — per-object position, rotation, and scale tracks in a compact
   dope sheet. Insert keys at the playhead, drag keys to retime, snap to frames,
   enable autokey, choose linear or cubic interpolation, and loop playback.
+- **Speed graph** — switch the timeline to a real speed plot sampled from
+  Godot's `Animation` evaluation. Drag the ease handles or use the `EASE`
+  presets to edit each source key's transition, then watch the speed curve
+  change. This edits engine keys, not a decorative overlay.
 - **Responsive workspace** — a permanent scene/properties dock on wide screens;
-  the dock becomes a drawer when the window is narrow. The timeline can be
-  collapsed when the viewport needs room.
-- **Still capture** — hide the grid and helper markers, re-render the current
-  framing off-screen at a 1920 px long edge, and save a real PNG through
-  Android's document picker (or directly to app storage if the picker is
-  unavailable).
+  the dock becomes a drawer when the window is narrow. Landscape short screens
+  keep a compact timeline bar, and the full timeline opens on demand.
+- **Rendering** — quick or save-dialog stills at 1280/1920/2560/3840 px long
+  edge with selectable MSAA, plus a PNG frame sequence packaged as a real ZIP.
+  Captures use the live 3D world, including lights, shadows, materials and the
+  studio sky.
+- **Graphics controls** — Forward+ / Vulkan with an OpenGL fallback, quality
+  presets, MSAA/TAA, SSAO, SSIL, glow, shadow quality/distance/splits, and 3D
+  resolution scaling. Settings persist in `user://graphics.json`.
 - **Local persistence** — human-readable JSON projects, a `models/` folder for
   imported assets, atomic writes, 30-second autosave, and undo/redo.
 - **No network permission** — projects, imports, and exports are local.
@@ -44,17 +51,23 @@ Android Gradle app.
 
 Kinema Studio 0.1 is intentionally narrow. It does **not** provide:
 
-- video, MP4, GIF, image-sequence, or camera-animation export;
+- video, MP4, or GIF export, or camera-animation export;
+- binary FBX import — Godot's FBX importer is editor-only, so convert FBX to
+  GLB or OBJ before importing;
 - skeletal rigging, skinning, constraints, IK, or pose libraries;
 - physics simulation, particles, cloth, or destruction tools;
 - text, curves, booleans, modifiers, sculpting, UV editing, or texture painting;
 - a shader graph, scripting console, add-on system, or asset store;
 - cloud sync, accounts, collaboration, or telemetry;
 - glTF animation playback (models are imported as static scene references);
-- `.gltf` files that depend on external `.bin` or texture files.
+- `.gltf` files that depend on external `.bin` or texture files;
+- OBJ imports whose `.mtl` or texture files sit beside the picked file on
+  Android. The document picker exposes one content URI, so sibling files may
+  not be readable. Desktop path imports can resolve them.
 
-Only the current viewport frame is rendered to PNG. Nothing in the app claims
-to produce video.
+Rendering produces real PNG stills and a ZIP of numbered PNG frames. MP4
+encoding is deliberately absent because no native encoder is bundled; nothing
+in the app claims to produce video.
 
 ---
 
@@ -82,7 +95,7 @@ Deleting a project also deletes its imported models.
 | Compact bar | Add, Scene, Properties, timeline toggle (narrow screens) |
 | Timeline | Playback, timecode, ruler, per-channel keys and tools |
 | Right dock | Scene outliner and object inspector |
-| Project menu | Settings, import, still render, help, about, close |
+| Project menu | Settings, import, render and export, help, about, close |
 
 The inspector adapts to the selected object: transforms for every object,
 material properties for meshes, field of view for cameras, and color, energy,
@@ -149,7 +162,13 @@ user://
     └── <timestamp>-<slug>/
         ├── project.json
         └── models/
-            └── <imported>.glb
+            ├── <imported>.glb
+            └── <obj-name>/
+                ├── <imported>.obj
+                ├── materials/
+                │   └── <name>.mtl
+                └── textures/
+                    └── <texture>
 ```
 
 `project.json` is a versioned, human-readable document containing:
@@ -165,32 +184,60 @@ not leave a half-written project. Recent entries are validated against the
 filesystem when the app starts. Removing a project removes its folder and
 models.
 
-Projects are not exported to shared storage. PNG stills are the only files
-written outside the app sandbox, and only when you choose a destination.
+Projects are not exported to shared storage. PNG stills and ZIP frame
+archives are the only files written outside the app sandbox, and only when you
+choose a destination.
 
-### Importing glTF
+### Importing models
 
-Use **Project → Import glTF model** or **Add object → Assets**. Kinema accepts:
+Use **Project → Import 3D model** or **Add object → Assets**. Kinema accepts:
 
 - binary glTF (`.glb`);
-- embedded glTF (`.gltf`) whose buffers and images are data URIs.
+- embedded glTF (`.gltf`) whose buffers and images are data URIs;
+- Wavefront OBJ (`.obj`) with optional MTL materials.
 
-The file is copied into the project's `models/` folder, parsed with Godot's
+glTF files are copied into the project's `models/` folder, parsed with Godot's
 `GLTFDocument`, and only added to the scene if parsing succeeds. External
-buffers/textures are rejected with an explanatory message. Imported models are
-static: animation or skinning data inside the file is not played.
+buffers/textures are rejected with an explanatory message. Imported glTF models
+are static: animation or skinning data inside the file is not played.
 
-Android's document picker may list files beyond glTF depending on the provider;
-the import is validated after selection.
+OBJ files are parsed at runtime by `src/core/obj_importer.gd` because Godot's
+OBJ importer is editor-only. Positions, UVs, normals, negative indices, MTL
+`Kd`/`Ks`/`Ns`/`d` values, and a diffuse texture are supported. OBJ is copied
+into the project with its MTL files and textures, and the copied material
+references are rewritten to the new locations.
 
-### Still export
+Binary FBX is not imported. Godot only ships its FBX importer in the editor,
+and Kinema does not bundle a native FBX parser. The import sheet explains this
+and suggests converting to GLB or OBJ.
 
-**Project → Render still (PNG)** pauses playback, hides the grid and scene
-helpers, then renders the same camera framing into an off-screen viewport whose
-long edge is 1920 px, with 4× MSAA. The PNG is written through
-`ACTION_CREATE_DOCUMENT`. If the native picker cannot be opened, the image is
-saved in app storage and the location is shown in a toast. This is a real
-render, not a placeholder.
+Android's document picker may list files beyond these formats depending on the
+provider; the import is validated after selection. On Android, a picked OBJ may
+not be able to read a sibling `.mtl` or texture because SAF grants access to
+one content URI. Those materials fall back to defaults.
+
+### Render and export
+
+**Render and export** pauses playback and opens a sheet with real output
+options:
+
+- **Quick still** captures immediately at the selected long edge and MSAA level
+  and saves into app storage.
+- **Save still…** captures at the same settings and opens Android's
+  `ACTION_CREATE_DOCUMENT` picker; if the picker is unavailable, the PNG is
+  saved in app storage and the location is shown in a toast.
+- **Render PNG sequence** samples every frame at the project's frame rate,
+  captures numbered `frame_0001.png` files at the selected frame size, and
+  packages them into a ZIP. The intermediate frames are removed after
+  packaging.
+
+Stills and sequences are captured by a second `SubViewport` that shares the
+editor's world, camera transform and environment. Lights, shadows, SSAO and
+materials therefore match the preview. The grid and helper markers are hidden
+for the capture.
+
+MP4 is not offered: encoding video requires a native encoder that this build
+does not include. A ZIP of lossless PNG frames is the honest output.
 
 ---
 
@@ -208,7 +255,7 @@ Quick reference:
 - ABI: `arm64-v8a`
 - Minimum Android: API 24
 - Target/compile SDK: API 36
-- Renderer: Mobile / Vulkan, OpenGL 3 fallback
+- Renderer: Forward+ / Vulkan, OpenGL 3 fallback
 - Build type: debug, signed with a CI-generated debug key
 - Output: `android_debug.apk`
 
@@ -226,9 +273,9 @@ studio/
 ├── assets/icons/              Lucide SVGs (ISC)
 ├── assets/licenses/           engine, font and icon notices
 ├── src/app/                   shell, home, editor
-├── src/core/                  document model and project storage
+├── src/core/                  document, graphics settings, import and render helpers
 ├── src/ui/                    theme, inspector, outliner, timeline, overlays
-├── src/viewport/              SubViewport, camera, gizmo, gestures, capture
+├── src/viewport/              SubViewport, camera, gizmo, gestures, capture, sky
 ├── android/app/               manifest and Android resources overlay
 ├── tests/smoke.gd             headless regression test
 └── tools/                     icon rasterizer

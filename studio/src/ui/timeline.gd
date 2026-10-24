@@ -40,14 +40,24 @@ var _snap_button: Button
 var _delete_button: Button
 var _start_button: Button
 var _end_button: Button
+var _mode_button: Button
+var _ease_button: Button
 
 var _selected_channel := "position"
 var _selected_index := -1
 var _selected_data_id := ""
 var _key_hits: Array = []
+var _ease_hits: Array = []
 var _scrubbing := false
 var _dragging_key := false
+var _dragging_ease := false
+var _ease_start_y := 0.0
+var _ease_start_value := 1.0
 var _sync_flags := false
+var _mode := "dope"
+var _graph_max_speed := 0.0001
+var _graph_baseline := 0.0
+var _graph_top := 0.0
 
 var _label_width := 104.0
 var _ruler_h := 22.0
@@ -103,6 +113,11 @@ func _build_transport() -> void:
 	time_box.add_child(_time_label)
 	_frame_label = Kit.mono_label("F 0 · 24fps", 8, Kit.TEXT_DIM)
 	time_box.add_child(_frame_label)
+
+	_mode_button = Kit.icon_button("speed-graph", "Speed graph editor", 28, 14)
+	_mode_button.toggle_mode = true
+	_mode_button.toggled.connect(_on_mode_toggled)
+	row.add_child(_mode_button)
 
 	var spacer_l := Control.new()
 	spacer_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -161,6 +176,13 @@ func _build_transport() -> void:
 	_delete_button.pressed.connect(_on_delete_key)
 	row.add_child(_delete_button)
 
+	_ease_button = Kit.text_button("EASE", "", false, true)
+	_ease_button.custom_minimum_size = Vector2(44, 26)
+	_ease_button.tooltip_text = "Easing presets for the selected key"
+	_ease_button.visible = false
+	_ease_button.pressed.connect(_open_ease_menu)
+	row.add_child(_ease_button)
+
 func _build_sheet() -> void:
 	var rule := Kit.vsep(Kit.BORDER_SOFT)
 	add_child(rule)
@@ -178,8 +200,26 @@ func _refresh_compact() -> void:
 	_end_button.visible = not compact
 	_snap_button.visible = not compact
 	_frame_label.visible = size.x >= 420.0
+	if _ease_button != null:
+		_ease_button.visible = _mode == "graph"
 	if _sheet != null:
 		_sheet.queue_redraw()
+
+func set_mode(mode: String) -> void:
+	_mode = "graph" if mode == "graph" else "dope"
+	if _mode_button != null:
+		_sync_flags = true
+		_mode_button.set_pressed_no_signal(_mode == "graph")
+		_sync_flags = false
+		_style_flag_button(_mode_button, _mode == "graph")
+	_refresh_compact()
+
+func _on_mode_toggled(enabled: bool) -> void:
+	if _sync_flags:
+		return
+	set_mode("graph" if enabled else "dope")
+	if _mode == "graph" and doc != null and doc.selected_id == "":
+		notice.emit("Select an object to edit its speed graph.")
 
 func _sync_flag_states() -> void:
 	if doc == null:
@@ -194,9 +234,9 @@ func _sync_flag_states() -> void:
 
 func _style_flag_button(button: Button, active: bool) -> void:
 	if active:
-		button.add_theme_color_override("icon_normal_color", Kit.ACCENT)
-		button.add_theme_color_override("icon_pressed_color", Kit.ACCENT)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.ACCENT_DARK, 5, Kit.ACCENT * Color(1, 1, 1, 0.35), 1))
+		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.FOCUS_DARK, 5, Kit.FOCUS * Color(1, 1, 1, 0.35), 1))
 	else:
 		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
 		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 5, Color(0, 0, 0, 0), 0))
@@ -353,6 +393,10 @@ func _draw_sheet(canvas: Control) -> void:
 			var label := "%.1fs" % time if major < 1.0 else "%ds" % int(round(time))
 			canvas.draw_string(Kit.font_mono, Vector2(x + 3, 15), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Kit.TEXT_DIM)
 
+	if _mode == "graph":
+		_draw_graph(canvas, w, h)
+		return
+
 	var row_top := _ruler_h
 	var channels: Array = doc.CHANNELS
 	for ci in range(channels.size()):
@@ -405,6 +449,194 @@ func _draw_sheet(canvas: Control) -> void:
 		if h > rows_bottom + 12.0:
 			canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 8, rows_bottom + 14), "Drag diamonds to retime · tap the ruler to scrub", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 16, 9, Kit.TEXT_DIM)
 
+# -------------------------------------------------------------------------
+# Speed graph
+# -------------------------------------------------------------------------
+
+func _draw_graph(canvas: Control, w: float, h: float) -> void:
+	_ease_hits.clear()
+	var channels: Array = doc.CHANNELS
+	var row_top := _ruler_h
+	for ci in range(channels.size()):
+		var channel := str(channels[ci])
+		var top := row_top + float(ci) * _row_h
+		var center_y := top + _row_h * 0.5
+		if channel == _selected_channel:
+			canvas.draw_rect(Rect2(0, top, _label_width, _row_h), Kit.SURFACE_2)
+			canvas.draw_rect(Rect2(0, top, 2, _row_h), Kit.ACCENT)
+		canvas.draw_line(Vector2(0, top + _row_h), Vector2(_label_width, top + _row_h), Kit.BORDER_SOFT, 1.0)
+		var label := str(doc.CHANNEL_LABELS.get(channel, channel))
+		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
+		var dot_color: Color = [Kit.AXIS_X, Kit.AXIS_Y, Kit.AXIS_Z][ci]
+		canvas.draw_circle(Vector2(12, center_y), 2.4, dot_color)
+	_graph_top = _ruler_h + 6.0
+	_graph_baseline = h - 26.0
+	if _graph_baseline < _graph_top + 24.0:
+		_graph_baseline = _graph_top + 24.0
+	var graph_h := maxf(8.0, _graph_baseline - _graph_top)
+	canvas.draw_line(Vector2(_grid_left, _graph_baseline), Vector2(w - 8.0, _graph_baseline), Kit.BORDER, 1.0)
+	for frac in [0.25, 0.5, 0.75]:
+		var gy := _graph_baseline - graph_h * float(frac)
+		canvas.draw_line(Vector2(_grid_left, gy), Vector2(w - 8.0, gy), Kit.BORDER_SOFT * Color(1, 1, 1, 0.5), 1.0)
+	canvas.draw_rect(Rect2(_grid_left, _graph_baseline + 1.0, maxf(0.0, w - _grid_left - 8.0), maxf(0.0, h - _graph_baseline - 1.0)), Kit.SURFACE_2)
+
+	if doc.selected_id == "":
+		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "Select an object to shape its speed.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, 10, Kit.TEXT_DIM)
+		_draw_graph_playhead(canvas, h)
+		return
+
+	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
+	if keys.is_empty():
+		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "No keys on this channel. Insert a key at the playhead.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, 10, Kit.TEXT_DIM)
+		_draw_graph_playhead(canvas, h)
+		return
+
+	var count := clampi(int(_grid_width / 2.5), 32, 180)
+	var speeds := PackedFloat32Array()
+	speeds.resize(count)
+	var max_speed := 0.0001
+	for i in range(count):
+		var t := doc.duration * float(i) / float(maxi(1, count - 1))
+		var speed := _channel_speed(doc.selected_id, _selected_channel, t)
+		speeds[i] = speed
+		max_speed = maxf(max_speed, speed)
+	_graph_max_speed = max_speed
+	var scale_speed := max_speed * 1.12
+
+	var points := PackedVector2Array()
+	for i in range(count):
+		var x := _grid_left + float(i) / float(maxi(1, count - 1)) * _grid_width
+		var y := _graph_baseline - (speeds[i] / scale_speed) * graph_h
+		points.append(Vector2(x, y))
+	var fill := PackedVector2Array(points)
+	fill.append(Vector2(points[points.size() - 1].x, _graph_baseline))
+	fill.append(Vector2(points[0].x, _graph_baseline))
+	canvas.draw_colored_polygon(fill, Kit.ACCENT * Color(1, 1, 1, 0.10))
+	canvas.draw_polyline(points, Kit.ACCENT_BRIGHT * Color(1, 1, 1, 0.9), 1.4, true)
+
+	for key in keys:
+		if float(key["time"]) > doc.duration + 0.001:
+			continue
+		var x := _time_to_x(float(key["time"]), canvas)
+		var y := _graph_baseline + 12.0
+		var selected := _selected_data_id == doc.selected_id and _selected_index == int(key["index"])
+		var r := 5.5 if selected else 4.0
+		var color := Kit.ACCENT_BRIGHT if selected else Kit.ACCENT
+		var diamond := PackedVector2Array([
+			Vector2(x, y - r), Vector2(x + r, y),
+			Vector2(x, y + r), Vector2(x - r, y),
+		])
+		canvas.draw_colored_polygon(diamond, color)
+		if selected:
+			canvas.draw_polyline(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3], diamond[0]]), Color(1, 1, 1, 0.9), 1.0, true)
+		_key_hits.append({"channel": _selected_channel, "index": int(key["index"]), "pos": Vector2(x, y)})
+
+	for i in range(keys.size() - 1):
+		var key_index := int(keys[i]["index"])
+		var t0 := float(keys[i]["time"])
+		var t1 := float(keys[i + 1]["time"])
+		var mid := (t0 + t1) * 0.5
+		var x := _time_to_x(mid, canvas)
+		if x - _grid_left < 12.0 or (_grid_left + _grid_width) - x < 12.0:
+			continue
+		var speed := _channel_speed(doc.selected_id, _selected_channel, mid)
+		var y := _graph_baseline - (speed / scale_speed) * graph_h
+		var transition := doc.get_key_transition(doc.selected_id, _selected_channel, key_index)
+		var selected_seg := _selected_index == key_index and _selected_data_id == doc.selected_id
+		canvas.draw_line(Vector2(x, _graph_baseline), Vector2(x, y), Kit.BORDER * Color(1, 1, 1, 0.8), 1.0)
+		canvas.draw_circle(Vector2(x, y), 6.0, Kit.SURFACE)
+		canvas.draw_arc(Vector2(x, y), 5.0, 0.0, TAU, 18, Kit.ACCENT_BRIGHT if selected_seg else Kit.ACCENT, 1.4, true)
+		_ease_hits.append({"index": key_index, "pos": Vector2(x, y), "transition": transition})
+		if selected_seg:
+			var readout := "EASE %.2f× · %s" % [transition, _ease_name(transition)]
+			var text_size := Kit.font_mono.get_string_size(readout, HORIZONTAL_ALIGNMENT_LEFT, -1, 8)
+			var text_pos := Vector2(minf(w - text_size.x - 12.0, x + 8.0), maxf(_graph_top + 8.0, y - 8.0))
+			canvas.draw_rect(Rect2(text_pos - Vector2(4, 8), text_size + Vector2(8, 4)), Kit.SURFACE * Color(1, 1, 1, 0.92))
+			canvas.draw_string(Kit.font_mono, text_pos, readout, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT)
+	_draw_graph_playhead(canvas, h)
+
+func _draw_graph_playhead(canvas: Control, h: float) -> void:
+	var play_x := _time_to_x(doc.current_time, canvas)
+	canvas.draw_line(Vector2(play_x, 0), Vector2(play_x, h), Kit.ACCENT * Color(1, 1, 1, 0.75), 1.2)
+	canvas.draw_colored_polygon(PackedVector2Array([Vector2(play_x - 4, 0), Vector2(play_x + 4, 0), Vector2(play_x, 5)]), Kit.ACCENT)
+
+func _ease_name(transition: float) -> String:
+	if transition <= 0.01:
+		return "HOLD"
+	if transition < 0.95:
+		return "EASE OUT"
+	if transition > 1.05:
+		return "EASE IN"
+	return "LINEAR"
+
+func _channel_speed(id: String, channel: String, time: float) -> float:
+	## Magnitude of the channel's velocity at a time, sampled from the real
+	## animation resource. This is what the graph draws, so easing edits are
+	## visible exactly as the AnimationPlayer will evaluate them.
+	if doc == null or id == "":
+		return 0.0
+	var dt := 1.0 / 240.0
+	var a_time := maxf(0.0, time - dt)
+	var b_time := minf(doc.duration, time + dt)
+	var span := b_time - a_time
+	if span <= 0.0001:
+		return 0.0
+	var a: Variant = doc.sample_channel(id, channel, a_time)
+	var b: Variant = doc.sample_channel(id, channel, b_time)
+	if a == null or b == null:
+		return 0.0
+	if channel == "rotation":
+		var qa := a as Quaternion
+		var qb := b as Quaternion
+		return qa.angle_to(qb) / span
+	var va := a as Vector3
+	var vb := b as Vector3
+	return (vb - va).length() / span
+
+func _ease_at(pos: Vector2) -> int:
+	var best := -1
+	var best_dist := 15.0
+	for i in range(_ease_hits.size()):
+		var hit: Dictionary = _ease_hits[i]
+		var d: float = (hit["pos"] as Vector2).distance_to(pos)
+		if d < best_dist:
+			best_dist = d
+			best = i
+	return best
+
+func _open_ease_menu() -> void:
+	if doc == null or _selected_index < 0 or _selected_data_id != doc.selected_id:
+		notice.emit("Select a key in the speed graph first.")
+		return
+	var menu := PopupMenu.new()
+	menu.add_item("Linear", 0)
+	menu.add_item("Ease out (fast start)", 1)
+	menu.add_item("Ease in (slow start)", 2)
+	menu.add_item("Hold until next key", 3)
+	menu.add_item("Reset to linear", 4)
+	menu.id_pressed.connect(func(id: int) -> void:
+		_apply_ease_preset(id)
+		menu.queue_free()
+	)
+	menu.popup_hide.connect(menu.queue_free)
+	_ease_button.add_child(menu)
+	menu.popup_on_parent(Rect2(0.0, _ease_button.size.y, 1.0, 1.0))
+
+func _apply_ease_preset(id: int) -> void:
+	if doc == null or _selected_index < 0 or _selected_data_id != doc.selected_id:
+		return
+	var value := 1.0
+	match id:
+		1: value = 0.5
+		2: value = 2.0
+		3: value = 0.0
+	doc.begin_edit("Ease key")
+	doc.set_key_transition(doc.selected_id, _selected_channel, _selected_index, value)
+	doc.end_edit()
+	notice.emit("Ease set to " + _ease_name(value).to_lower() + ".")
+	if _sheet != null:
+		_sheet.queue_redraw()
+
 func _major_step() -> float:
 	var px_per_second := _grid_width / maxf(0.001, doc.duration)
 	var candidates := [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0]
@@ -431,7 +663,7 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 		else:
 			_release_sheet(button.position)
 		canvas.accept_event()
-	elif event is InputEventMouseMotion and (_scrubbing or _dragging_key):
+	elif event is InputEventMouseMotion and (_scrubbing or _dragging_key or _dragging_ease):
 		_drag_sheet((event as InputEventMouseMotion).position, canvas)
 		canvas.accept_event()
 	elif event is InputEventScreenTouch:
@@ -446,7 +678,7 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 		canvas.accept_event()
 
 func button_mask_down() -> bool:
-	return _scrubbing or _dragging_key
+	return _scrubbing or _dragging_key or _dragging_ease
 
 func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_geometry(canvas)
@@ -468,6 +700,19 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		doc.seek(_x_to_time(pos.x, canvas))
 		canvas.queue_redraw()
 		return
+	if _mode == "graph":
+		var ease_hit := _ease_at(pos)
+		if ease_hit >= 0:
+			var ease_data: Dictionary = _ease_hits[ease_hit]
+			_selected_index = int(ease_data["index"])
+			_selected_data_id = doc.selected_id
+			_dragging_ease = true
+			_ease_start_y = pos.y
+			_ease_start_value = float(ease_data["transition"])
+			doc.begin_edit("Ease key")
+			_refresh_transport(doc.current_time, doc.is_playing)
+			canvas.queue_redraw()
+			return
 	var hit := _key_at(pos)
 	if hit >= 0:
 		var data: Dictionary = _key_hits[hit]
@@ -477,6 +722,15 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		_dragging_key = true
 		doc.begin_edit("Retime key")
 		_refresh_transport(doc.current_time, doc.is_playing)
+		canvas.queue_redraw()
+		return
+	if _mode == "graph":
+		_selected_index = -1
+		_refresh_transport(doc.current_time, doc.is_playing)
+		_scrubbing = true
+		if doc.is_playing:
+			doc.pause()
+		doc.seek(_x_to_time(pos.x, canvas))
 		canvas.queue_redraw()
 		return
 	var ci := int(floor((pos.y - _ruler_h) / maxf(1.0, _row_h)))
@@ -493,7 +747,15 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 func _drag_sheet(pos: Vector2, canvas: Control) -> void:
 	if doc.selected_id == "":
 		return
-	if _dragging_key and _selected_index >= 0:
+	if _dragging_ease and _selected_index >= 0:
+		var base := _ease_start_value if _ease_start_value > 0.01 else 0.25
+		var value := base * pow(2.0, (_ease_start_y - pos.y) / 42.0)
+		if value < 0.08:
+			value = 0.0
+		doc.set_key_transition(doc.selected_id, _selected_channel, _selected_index, clampf(value, 0.0, 4.0))
+		_refresh_transport(doc.current_time, doc.is_playing)
+		canvas.queue_redraw()
+	elif _dragging_key and _selected_index >= 0:
 		var t := _x_to_time(pos.x, canvas)
 		var index := doc.set_key_time(doc.selected_id, _selected_channel, _selected_index, t)
 		if index >= 0:
@@ -505,7 +767,13 @@ func _drag_sheet(pos: Vector2, canvas: Control) -> void:
 		canvas.queue_redraw()
 
 func _release_sheet(_pos: Vector2) -> void:
-	if _dragging_key:
+	if _dragging_ease:
+		_dragging_ease = false
+		doc.end_edit()
+		if _selected_index >= 0 and doc.selected_id != "":
+			var value := doc.get_key_transition(doc.selected_id, _selected_channel, _selected_index)
+			notice.emit("Ease %.2f× · %s" % [value, _ease_name(value).to_lower()])
+	elif _dragging_key:
 		_dragging_key = false
 		doc.end_edit()
 		if _selected_index >= 0 and doc.selected_id != "":

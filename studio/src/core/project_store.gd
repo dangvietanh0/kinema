@@ -153,16 +153,19 @@ func import_model(uri: String, project_dir: String, fallback_name: String = "Mod
 	if bytes.is_empty():
 		return {"ok": false, "error": "The selected file is empty."}
 
-	var is_glb := bytes.size() >= 4 and bytes[0] == 0x67 and bytes[1] == 0x6C and bytes[2] == 0x54 and bytes[3] == 0x46
-	var is_gltf := false
-	if not is_glb and bytes.size() > 2:
-		var head := bytes.slice(0, mini(bytes.size(), 64)).get_string_from_utf8().strip_edges()
-		is_gltf = head.begins_with("{")
-	if not is_glb and not is_gltf:
-		return {"ok": false, "error": "Kinema imports binary glTF (.glb) or embedded glTF (.gltf) files."}
+	var kind := _detect_model_kind(uri, bytes)
+	if kind == "fbx":
+		return {
+			"ok": false,
+			"error": "FBX needs an editor-side importer that Godot only ships in the editor. Export the model as GLB or OBJ instead.",
+		}
+	if kind == "obj":
+		return _import_obj(uri, bytes, project_dir, fallback_name)
+	if kind != "glb" and kind != "gltf":
+		return {"ok": false, "error": "Kinema imports glTF (.glb/.gltf) and Wavefront OBJ (.obj) models."}
 
 	var base_name := _display_name_for(uri, fallback_name)
-	var extension := "glb" if is_glb else "gltf"
+	var extension := kind
 	var temp_path := "user://import_%d.%s" % [Time.get_ticks_msec(), extension]
 	var temp := FileAccess.open(temp_path, FileAccess.WRITE)
 	if temp == null:
@@ -212,6 +215,275 @@ func import_model(uri: String, project_dir: String, fallback_name: String = "Mod
 		"name": base_name,
 		"extension": extension,
 	}
+
+# Wavefront OBJ is not importable through ResourceLoader in an exported build,
+# because Godot's OBJ importer exists only in the editor. The runtime parser in
+# obj_importer.gd reads the mesh; this function copies the OBJ, its MTL files
+# and diffuse textures into the project and rewrites the relative references so
+# the model keeps working after the source folder is gone.
+func _import_obj(uri: String, bytes: PackedByteArray, project_dir: String, fallback_name: String) -> Dictionary:
+	var text := bytes.get_string_from_utf8()
+	if not _looks_like_obj(text):
+		return {"ok": false, "error": "This does not look like a Wavefront OBJ file."}
+
+	var models_dir := project_dir.path_join("models")
+	DirAccess.make_dir_recursive_absolute(models_dir)
+	var safe_base := _safe_slug(fallback_name, "model")
+	var folder_name := _unique_dir_name(models_dir, safe_base)
+	var folder := models_dir.path_join(folder_name)
+	if DirAccess.make_dir_recursive_absolute(folder) != OK:
+		return {"ok": false, "error": "Kinema could not create a folder for this model."}
+
+	var warnings := 0
+	var libraries := _obj_mtl_libraries(text)
+	if not libraries.is_empty():
+		DirAccess.make_dir_recursive_absolute(folder.path_join("materials"))
+		DirAccess.make_dir_recursive_absolute(folder.path_join("textures"))
+		var mappings := {}
+		for raw_library in libraries:
+			var chosen := ""
+			var source_uri := ""
+			for candidate in _reference_candidates(raw_library):
+				source_uri = _resolve_sibling_uri(uri, candidate)
+				if source_uri != "":
+					chosen = candidate
+					break
+			if source_uri == "":
+				warnings += 1
+				continue
+			var library_bytes := _read_uri_bytes(source_uri)
+			if library_bytes.is_empty():
+				warnings += 1
+				continue
+			var library_name := _safe_file_name(chosen.get_file(), "material.mtl")
+			if library_name.get_extension().to_lower() != "mtl":
+				library_name += ".mtl"
+			library_name = _unique_name_in(folder.path_join("materials"), library_name)
+			var texture_memo := {}
+			var material_text := _rewrite_mtl_textures(
+				library_bytes.get_string_from_utf8(), source_uri, folder.path_join("textures"), texture_memo
+			)
+			var material_path := folder.path_join("materials").path_join(library_name)
+			if not _write_text(material_path, material_text):
+				warnings += 1
+				continue
+			warnings += int(texture_memo.get("__missing", 0))
+			mappings[chosen] = "materials/" + library_name
+		if not mappings.is_empty():
+			text = _rewrite_obj_libraries(text, mappings)
+
+	var obj_name := _safe_file_name(_uri_file_name(uri), safe_base + ".obj")
+	if obj_name.get_extension().to_lower() != "obj":
+		obj_name = safe_base + ".obj"
+	if not _write_text(folder.path_join(obj_name), text):
+		_remove_dir_recursive(folder)
+		return {"ok": false, "error": "Kinema could not write the OBJ into this project."}
+
+	var result := {
+		"ok": true,
+		"rel_path": "models".path_join(folder_name).path_join(obj_name),
+		"name": _display_name_for(uri, fallback_name),
+		"extension": "obj",
+	}
+	if warnings > 0:
+		result["warning"] = "Imported, but some MTL or texture files could not be read. Default materials were used."
+	return result
+
+func _detect_model_kind(uri: String, bytes: PackedByteArray) -> String:
+	if bytes.size() >= 4 and bytes[0] == 0x67 and bytes[1] == 0x6C and bytes[2] == 0x54 and bytes[3] == 0x46:
+		return "glb"
+	var extension := _uri_file_name(uri).get_extension().to_lower()
+	if extension == "fbx" or bytes.size() >= 18 and bytes.slice(0, 18).get_string_from_ascii() == "Kaydara FBX Binary":
+		return "fbx"
+	var head := bytes.slice(0, mini(bytes.size(), 512)).get_string_from_utf8().strip_edges()
+	if extension == "obj":
+		return "obj"
+	if extension == "gltf" or head.begins_with("{"):
+		return "gltf"
+	if head.begins_with("v ") or head.begins_with("mtllib ") or head.begins_with("#"):
+		return "obj"
+	var text_head := bytes.slice(0, mini(bytes.size(), 4096)).get_string_from_utf8()
+	if text_head.contains("\nv ") or text_head.contains("\nf "):
+		return "obj"
+	return ""
+
+func _looks_like_obj(text: String) -> bool:
+	# Require both geometry and at least one face. A file that only starts with
+	# '#' or contains vertices but no faces cannot produce a renderable mesh, so
+	# reject it now instead of importing a placeholder object.
+	var has_vertex := false
+	var has_face := false
+	for raw_line in text.split("\n"):
+		var line := raw_line.replace("\t", " ").strip_edges()
+		if line.begins_with("v "):
+			has_vertex = true
+		elif line.begins_with("f "):
+			has_face = true
+		if has_vertex and has_face:
+			return true
+	return false
+
+func _uri_file_name(uri: String) -> String:
+	var raw := uri.get_file()
+	if raw.contains("?"):
+		raw = raw.get_slice("?", 0)
+	if raw.contains("#"):
+		raw = raw.get_slice("#", 0)
+	return raw.uri_decode()
+
+func _safe_file_name(value: String, fallback: String) -> String:
+	var name := value.get_file().strip_edges()
+	if name == "" or name.begins_with("."):
+		name = fallback
+	for ch in ["\\", "/", ":", "\"", "*", "?", "<", ">", "|"]:
+		name = name.replace(ch, "_")
+	return name
+
+func _unique_dir_name(parent: String, base: String) -> String:
+	var name := base
+	var counter := 2
+	while DirAccess.dir_exists_absolute(parent.path_join(name)):
+		name = "%s-%d" % [base, counter]
+		counter += 1
+	return name
+
+func _unique_name_in(dir: String, file_name: String) -> String:
+	var stem := file_name.get_basename()
+	var extension := file_name.get_extension()
+	var name := file_name
+	var counter := 2
+	while FileAccess.file_exists(dir.path_join(name)):
+		name = "%s-%d.%s" % [stem, counter, extension] if extension != "" else "%s-%d" % [stem, counter]
+		counter += 1
+	return name
+
+func _obj_mtl_libraries(text: String) -> Array:
+	var libraries := []
+	var seen := {}
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if not line.begins_with("mtllib"):
+			continue
+		var rest := line.substr(6).strip_edges()
+		if rest == "" or seen.has(rest):
+			continue
+		seen[rest] = true
+		libraries.append(rest)
+	return libraries
+
+func _reference_candidates(reference: String) -> Array:
+	var cleaned := reference.strip_edges().trim_prefix("\"").trim_suffix("\"")
+	var candidates := [cleaned]
+	for token in cleaned.split(" ", false):
+		if not candidates.has(token):
+			candidates.append(token)
+	# Allow "folder with spaces/file.mtl" by retrying every suffix.
+	var tokens := cleaned.split(" ", false)
+	for i in range(1, tokens.size()):
+		var suffix := " ".join(tokens.slice(i))
+		if not candidates.has(suffix):
+			candidates.append(suffix)
+	return candidates
+
+func _resolve_sibling_uri(base_uri: String, reference: String) -> String:
+	var cleaned := reference.strip_edges().trim_prefix("\"").trim_suffix("\"").replace("\\", "/")
+	if cleaned == "":
+		return ""
+	var candidates := []
+	if cleaned.is_absolute_path():
+		candidates.append(cleaned)
+	candidates.append(base_uri.get_base_dir().path_join(cleaned))
+	candidates.append(base_uri.get_base_dir().path_join(cleaned.get_file()))
+	for candidate in candidates:
+		if _file_readable(candidate):
+			return candidate
+	for candidate in candidates:
+		if _file_readable(candidate.uri_decode()):
+			return candidate.uri_decode()
+	return ""
+
+func _file_readable(path: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	file.close()
+	return true
+
+func _read_uri_bytes(uri: String) -> PackedByteArray:
+	var file := FileAccess.open(uri, FileAccess.READ)
+	if file == null:
+		return PackedByteArray()
+	var bytes := file.get_buffer(file.get_length())
+	file.close()
+	return bytes
+
+func _write_text(path: String, text: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_string(text)
+	var error := file.get_error()
+	file.close()
+	return error == OK
+
+func _rewrite_obj_libraries(text: String, mappings: Dictionary) -> String:
+	var output := PackedStringArray()
+	for raw_line in text.split("\n"):
+		var stripped := raw_line.strip_edges()
+		if not stripped.begins_with("mtllib"):
+			output.append(raw_line)
+			continue
+		var rest := stripped.substr(6).strip_edges()
+		if mappings.has(rest):
+			output.append("mtllib " + str(mappings[rest]))
+			continue
+		var replaced := PackedStringArray()
+		for token in rest.split(" ", false):
+			replaced.append(str(mappings.get(token, token)))
+		output.append("mtllib " + " ".join(replaced))
+	return "\n".join(output)
+
+func _rewrite_mtl_textures(mtl_text: String, mtl_uri: String, texture_dir: String, memo: Dictionary) -> String:
+	var missing := 0
+	var output := PackedStringArray()
+	for raw_line in mtl_text.split("\n"):
+		var stripped := raw_line.strip_edges()
+		if not stripped.begins_with("map_Kd"):
+			output.append(raw_line)
+			continue
+		var reference := stripped.substr(6).strip_edges()
+		var resolved := ""
+		for candidate in _reference_candidates(reference):
+			resolved = _resolve_sibling_uri(mtl_uri, candidate)
+			if resolved != "":
+				break
+		if resolved == "":
+			missing += 1
+			output.append(raw_line)
+			continue
+		var destination := str(memo.get(resolved, ""))
+		if destination == "":
+			var texture_name := _safe_file_name(_uri_file_name(resolved), "texture.png")
+			texture_name = _unique_name_in(texture_dir, texture_name)
+			var texture_bytes := _read_uri_bytes(resolved)
+			if texture_bytes.is_empty() or not _write_bytes(texture_dir.path_join(texture_name), texture_bytes):
+				missing += 1
+				output.append(raw_line)
+				continue
+			destination = "../textures/" + texture_name
+			memo[resolved] = destination
+		output.append("map_Kd " + destination)
+	memo["__missing"] = missing
+	return "\n".join(output)
+
+func _write_bytes(path: String, bytes: PackedByteArray) -> bool:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_buffer(bytes)
+	var error := file.get_error()
+	file.close()
+	return error == OK
 
 # -------------------------------------------------------------------------
 # Recent list and filesystem helpers

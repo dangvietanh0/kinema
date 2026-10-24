@@ -20,6 +20,7 @@ var distance := 7.4
 var _viewport: SubViewport
 var _surface: TextureRect
 var _camera: Camera3D
+var _env_node: WorldEnvironment
 var _grid_root: Node3D
 var _grid_mesh: MeshInstance3D
 var _status_label: Label
@@ -64,6 +65,7 @@ func _build_viewport() -> void:
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_viewport.msaa_3d = Viewport.MSAA_2X
 	_viewport.size = Vector2i(1280, 800)
+	_viewport.add_to_group("kinema_viewport")
 	add_child(_viewport)
 
 	_surface = TextureRect.new()
@@ -78,15 +80,13 @@ func _build_viewport() -> void:
 	add_child(_surface)
 
 	var env_node := WorldEnvironment.new()
+	env_node.name = "StudioEnvironment"
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.051, 0.066, 0.086)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.61, 0.68, 0.78)
-	env.ambient_light_energy = 0.42
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	Gfx.default_environment(env)
 	env_node.environment = env
+	env_node.add_to_group("kinema_environment")
 	_viewport.add_child(env_node)
+	_env_node = env_node
 
 	_camera = Camera3D.new()
 	_camera.name = "EditorCamera"
@@ -97,64 +97,92 @@ func _build_viewport() -> void:
 	_viewport.add_child(_camera)
 
 	_build_stage()
+	Gfx.apply_viewport(_viewport)
+	if not Gfx.changed.is_connected(_on_graphics_changed):
+		Gfx.changed.connect(_on_graphics_changed)
+
+func _on_graphics_changed() -> void:
+	if _viewport != null:
+		Gfx.apply_viewport(_viewport)
+	if _env_node != null and _env_node.environment != null:
+		Gfx.apply_environment(_env_node.environment)
+	queue_redraw()
 
 func _build_stage() -> void:
 	_grid_root = Node3D.new()
 	_grid_root.name = "StudioStage"
 	_viewport.add_child(_grid_root)
 
+	# A single large floor with a procedural, distance-faded grid. Drawing the
+	# grid as a line mesh produced heavy moire and temporal smearing in
+	# Forward+, and it z-fought the floor at grazing angles.
 	var ground := MeshInstance3D.new()
 	ground.name = "Ground"
 	var plane := PlaneMesh.new()
-	plane.size = Vector2(80.0, 80.0)
+	plane.size = Vector2(400.0, 400.0)
 	ground.mesh = plane
 	ground.position.y = -0.012
-	var ground_mat := StandardMaterial3D.new()
-	ground_mat.albedo_color = Color(0.043, 0.055, 0.071)
-	ground_mat.roughness = 1.0
-	ground_mat.metallic = 0.0
+	var ground_mat := ShaderMaterial.new()
+	var shader := Shader.new()
+	shader.code = """
+shader_type spatial;
+render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
+
+uniform vec4 base_color : source_color = vec4(0.050, 0.055, 0.062, 1.0);
+uniform vec4 minor_color : source_color = vec4(0.155, 0.165, 0.180, 1.0);
+uniform vec4 major_color : source_color = vec4(0.250, 0.265, 0.285, 1.0);
+uniform vec4 axis_x_color : source_color = vec4(0.520, 0.220, 0.210, 1.0);
+uniform vec4 axis_z_color : source_color = vec4(0.190, 0.320, 0.520, 1.0);
+uniform float cell_size = 0.5;
+uniform float major_every = 4.0;
+uniform float grid_strength : hint_range(0.0, 1.0) = 1.0;
+uniform float fade_start = 7.0;
+uniform float fade_end = 26.0;
+
+varying vec3 world_pos;
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+float grid_mask(vec2 coord) {
+	vec2 grid = abs(fract(coord - 0.5) - 0.5) / max(fwidth(coord), vec2(0.00001));
+	return 1.0 - min(min(grid.x, grid.y), 1.0);
+}
+
+void fragment() {
+	float dist = length(world_pos.xz - CAMERA_POSITION_WORLD.xz);
+	float fade = (1.0 - smoothstep(fade_start, fade_end, dist)) * grid_strength;
+	float minor = grid_mask(world_pos.xz / cell_size);
+	float major = grid_mask(world_pos.xz / (cell_size * major_every));
+	float axis_x = 1.0 - smoothstep(0.0, fwidth(world_pos.z) * 1.6, abs(world_pos.z));
+	float axis_z = 1.0 - smoothstep(0.0, fwidth(world_pos.x) * 1.6, abs(world_pos.x));
+
+	vec3 color = base_color.rgb;
+	color = mix(color, minor_color.rgb, minor * 0.40 * fade);
+	color = mix(color, major_color.rgb, major * 0.78 * fade);
+	color = mix(color, axis_x_color.rgb, axis_x * 0.72 * fade);
+	color = mix(color, axis_z_color.rgb, axis_z * 0.72 * fade);
+	color *= mix(0.52, 1.0, 1.0 - smoothstep(5.0, 24.0, dist));
+
+	ALBEDO = color;
+	ROUGHNESS = 0.94;
+	SPECULAR = 0.22;
+	METALLIC = 0.0;
+}
+"""
+	ground_mat.shader = shader
 	ground.material_override = ground_mat
 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_grid_root.add_child(ground)
+	_grid_mesh = ground
 
-	var mesh := ArrayMesh.new()
-	var verts := PackedVector3Array()
-	var colors := PackedColorArray()
-	var half := 12
-	var step := 0.5
-	var major := 2.0
-	var minor_color := Color(0.105, 0.129, 0.163)
-	var major_color := Color(0.145, 0.176, 0.218)
-	for i in range(-half * 2, half * 2 + 1):
-		var v := float(i) * step
-		var is_major := absf(fmod(v, major)) < 0.001
-		var c := major_color if is_major else minor_color
-		_add_grid_line(verts, colors, Vector3(v, 0.0, -half), Vector3(v, 0.0, half), c)
-		_add_grid_line(verts, colors, Vector3(-half, 0.0, v), Vector3(half, 0.0, v), c)
-	_add_grid_line(verts, colors, Vector3(-half, 0.003, 0.0), Vector3(half, 0.003, 0.0), Color(0.32, 0.14, 0.14))
-	_add_grid_line(verts, colors, Vector3(0.0, 0.003, -half), Vector3(0.0, 0.003, half), Color(0.13, 0.19, 0.33))
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_COLOR] = colors
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.vertex_color_use_as_albedo = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var grid := MeshInstance3D.new()
-	grid.name = "Grid"
-	grid.mesh = mesh
-	grid.material_override = mat
-	grid.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_grid_root.add_child(grid)
-	_grid_mesh = grid
-
-func _add_grid_line(verts: PackedVector3Array, colors: PackedColorArray, a: Vector3, b: Vector3, c: Color) -> void:
-	verts.append(a)
-	verts.append(b)
-	colors.append(c)
-	colors.append(c)
+func _set_grid_strength(value: float) -> void:
+	if _grid_mesh == null:
+		return
+	var material := _grid_mesh.material_override as ShaderMaterial
+	if material != null:
+		material.set_shader_parameter("grid_strength", clampf(value, 0.0, 1.0))
 
 func _build_hud() -> void:
 	var top_left := HBoxContainer.new()
@@ -214,10 +242,12 @@ func _build_hud() -> void:
 func _override_hud_button(button: Button) -> void:
 	button.add_theme_stylebox_override("normal", Kit.flat_style(HUD_BG, 5, Kit.BORDER_SOFT, 1))
 	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 5, Kit.BORDER, 1))
-	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 5, Kit.ACCENT, 1))
-	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3, 5, Kit.ACCENT_BRIGHT, 1))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 5, Kit.FOCUS, 1))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3, 5, Kit.FOCUS_BRIGHT, 1))
 	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
-	button.add_theme_color_override("font_pressed_color", Kit.ACCENT)
+	button.add_theme_color_override("font_pressed_color", Kit.FOCUS_BRIGHT)
+	button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
+	button.add_theme_color_override("icon_hover_pressed_color", Kit.FOCUS_BRIGHT)
 
 func set_document(document: Node3D) -> void:
 	if doc == document:
@@ -337,8 +367,7 @@ func _apply_preset(label: String, new_yaw: float, new_pitch: float) -> void:
 	queue_redraw()
 
 func _on_grid_toggled(enabled: bool) -> void:
-	if _grid_mesh != null:
-		_grid_mesh.visible = enabled
+	_set_grid_strength(1.0 if enabled else 0.0)
 	queue_redraw()
 
 func focus_selection() -> void:
@@ -856,25 +885,25 @@ func _draw_hud() -> void:
 # Still capture
 # -------------------------------------------------------------------------
 
-func capture_still() -> Image:
+func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image:
 	if _viewport == null or _camera == null:
 		return null
 	var base := _viewport.size
 	if base.x < 2 or base.y < 2:
 		return null
-	var grid_visible := _grid_mesh.visible if _grid_mesh != null else true
-	if _grid_mesh != null:
-		_grid_mesh.visible = false
+	var grid_visible := _grid_button.button_pressed if _grid_button != null else true
+	_set_grid_strength(0.0)
 	if doc != null:
 		doc.markers_hidden = true
 		doc.update_marker_scales(_camera)
-	# Render the frame at a print-worthy resolution while keeping the exact
-	# preview framing. The probe shares the editor world, so lights, materials
-	# and the environment are identical to what the viewport shows.
-	var factor := clampf(1920.0 / maxf(float(base.x), float(base.y)), 1.0, 4.0)
+	# Render the frame at an explicit long edge while keeping the exact preview
+	# framing. The probe shares the editor world, so lights, materials and the
+	# environment are identical to what the viewport shows. Downscaling is
+	# allowed so a resolution preset is honoured on large desktop viewports.
+	var factor := clampf(float(long_edge) / maxf(float(base.x), float(base.y)), 0.1, 8.0)
 	var probe := SubViewport.new()
-	probe.size = Vector2i(roundi(base.x * factor), roundi(base.y * factor))
-	probe.msaa_3d = Viewport.MSAA_4X
+	probe.size = Vector2i(maxi(2, roundi(base.x * factor)), maxi(2, roundi(base.y * factor)))
+	probe.msaa_3d = msaa
 	probe.world_3d = _viewport.world_3d
 	probe.render_target_update_mode = SubViewport.UPDATE_ONCE
 	var shot_camera := Camera3D.new()
@@ -893,6 +922,6 @@ func capture_still() -> Image:
 		doc.markers_hidden = false
 		doc.update_marker_scales(_camera)
 	if _grid_mesh != null:
-		_grid_mesh.visible = grid_visible
+		_set_grid_strength(1.0 if grid_visible else 0.0)
 	queue_redraw()
 	return image
