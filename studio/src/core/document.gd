@@ -888,19 +888,53 @@ func set_object_transform(id: String, position: Vector3, rotation: Quaternion, p
 	var node: Node3D = nodes.get(id)
 	if node == null:
 		return
+	var next_rotation := rotation.normalized()
+	var changed := PackedStringArray()
+	if not _vec3_close(node.position, position, 0.00001):
+		changed.append("position")
+	if node.quaternion.angle_to(next_rotation) > deg_to_rad(0.01):
+		changed.append("rotation")
+	if not _vec3_close(node.scale, p_scale, 0.00001):
+		changed.append("scale")
 	node.position = position
-	node.quaternion = rotation.normalized()
+	node.quaternion = next_rotation
 	node.scale = p_scale
 	var obj := get_object(id)
 	if not obj.is_empty():
 		obj["position"] = node.position
 		obj["rotation"] = node.quaternion
 		obj["scale"] = node.scale
-	if key and autokey and not _loading:
-		_key_selected_transform(false)
+	if key and not _loading:
+		for channel in changed:
+			var existing := _key_index_at(id, channel, current_time)
+			if existing >= 0:
+				# Editing on a key updates that key even when autokey is off.
+				_write_key(id, channel, _channel_value(id, channel), "update_only")
+			elif autokey:
+				_write_key(id, channel, _channel_value(id, channel), "insert_only")
 	_dirty = true
 	dirty_changed.emit(true)
 	object_changed.emit(id)
+
+func _vec3_close(a: Vector3, b: Vector3, epsilon: float) -> bool:
+	return absf(a.x - b.x) <= epsilon and absf(a.y - b.y) <= epsilon and absf(a.z - b.z) <= epsilon
+
+func _key_index_at(id: String, channel: String, time: float) -> int:
+	return get_key_index_at(id, channel, time, 0.5 / float(maxi(1, fps)))
+
+func _write_key(id: String, channel: String, value: Variant, mode: String) -> int:
+	var existing := _key_index_at(id, channel, current_time)
+	if existing >= 0:
+		if mode != "insert_only":
+			set_key_value(id, channel, existing, value)
+		return existing
+	if mode == "update_only":
+		return -1
+	var track := _ensure_track(id, channel)
+	if track < 0:
+		return -1
+	animation.track_set_interpolation_type(track, _interpolation_value())
+	return _insert_track_value(track, channel, current_time, value)
 
 func set_transform_uniform(id: String, position: Vector3, rotation: Quaternion, p_scale: Vector3) -> void:
 	set_object_transform(id, position, rotation, p_scale, true)
@@ -1007,14 +1041,10 @@ func _key_selected_transform(record_history: bool = true) -> void:
 	if record_history:
 		begin_edit("Insert keys")
 	for channel in CHANNELS:
-		var node: Node3D = nodes.get(selected_id)
-		if node == null:
+		var value: Variant = _channel_value(selected_id, channel)
+		if value == null:
 			continue
-		var track := _ensure_track(selected_id, channel)
-		if track < 0:
-			continue
-		animation.track_set_interpolation_type(track, _interpolation_value())
-		_insert_track_value(track, channel, current_time, _channel_value(selected_id, channel))
+		_write_key(selected_id, channel, value, "update_or_insert")
 	if record_history:
 		end_edit()
 	_dirty = true
@@ -1028,9 +1058,9 @@ func insert_channel_key(channel: String) -> void:
 	if selected_id == "":
 		return
 	begin_edit("Insert " + channel + " key")
-	var track := _ensure_track(selected_id, channel)
-	if track >= 0:
-		_insert_track_value(track, channel, current_time, _channel_value(selected_id, channel))
+	var value: Variant = _channel_value(selected_id, channel)
+	if value != null:
+		_write_key(selected_id, channel, value, "update_or_insert")
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
