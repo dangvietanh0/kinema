@@ -1,8 +1,10 @@
 # Kinema Studio — Thiết kế bản dựng lại chuyên nghiệp
 
 - **Ngày:** 2026-10-23
-- **Trạng thái:** Chờ duyệt — chưa có code sản phẩm nào được viết cho bản dựng lại này
+- **Cập nhật:** 2026-10-24 — áp dụng 3 quyết định cuối: Desktop thu nhỏ đều, Mobile mặc định, Android 15–17
+- **Trạng thái:** Chờ duyệt lần cuối — chưa có code sản phẩm nào được viết cho bản dựng lại này
 - **Nền tảng:** Android, Godot 4.7.2-stable (bản Android fork), GDScript
+- **Thiết bị đích:** Android 15–17; 60 fps là mục tiêu, không phải cổng bắt buộc trên máy test
 - **Hướng đã chọn:** **C — Hybrid workbench**, phong cách tối giản, chuyên nghiệp, vuông vức
 - **Phạm vi:** toàn bộ lớp UI, responsive/scale/orientation, hiệu năng preview, hành vi keyframe, bề mặt renderer/graphics/performance/settings, render/export và import
 - **Ngoài phạm vi:** multi-select, MP4, FBX nhị phân, light theme, localization, cloud sync, plugin system
@@ -11,7 +13,7 @@
 
 ## 0. Tóm tắt một trang
 
-Kinema Studio hiện có một pipeline thật: document JSON, undo/redo, autosave, import glTF/OBJ+MTL, render still và PNG sequence, speed graph, Forward+ và một bộ graphics settings. Vấn đề không nằm ở engine. Vấn đề nằm ở **lớp trình bày được thiết kế như một trang web thu nhỏ**: Home dùng hero/card, editor giả định khung 1280×800, panel/drawer từng có lỗi đóng khi chạm vào bên trong (overlay hiện đã chặn, nhưng phải giữ bằng test hồi quy), nhiều hàng ngang không co giãn nên tràn ở portrait, và viewport render lại mọi frame dù cảnh đứng yên.
+Kinema Studio hiện có một pipeline thật: document JSON, undo/redo, autosave, import glTF/OBJ+MTL, render still và PNG sequence, speed graph, Forward+/Mobile và một bộ graphics settings. Vấn đề không nằm ở engine. Vấn đề nằm ở **lớp trình bày được thiết kế như một trang web thu nhỏ**: Home dùng hero/card, editor giả định khung 1280×800, panel/drawer từng có lỗi đóng khi chạm vào bên trong (overlay hiện đã chặn, nhưng phải giữ bằng test hồi quy), nhiều hàng ngang không co giãn nên tràn ở portrait, và viewport render lại mọi frame dù cảnh đứng yên.
 
 Bản dựng lại giữ nguyên engine, Android host, document model và các pipeline đang chạy đúng. Nó thay **toàn bộ lớp UI** bằng một shell duy nhất có ba chế độ:
 
@@ -19,7 +21,7 @@ Bản dựng lại giữ nguyên engine, Android host, document model và các p
 |---|---|---|
 | **Compact** | điện thoại dọc (< 600 dp) | một cột; viewport; transport; timeline gập; panel dạng bottom sheet |
 | **Studio** | điện thoại ngang, tablet dọc (600–959 dp) | rail trái + viewport + dock phải; timeline dock dưới |
-| **Desktop** | tablet ngang, DeX, màn hình lớn (≥ 960 dp) | menu bar + rail + viewport + dock + timeline + status bar |
+| **Desktop** | tablet ngang, DeX, màn hình lớn; **trên điện thoại vẫn chọn được** | menu bar + rail + viewport + dock + timeline + status bar; nếu không vừa, thu nhỏ đều toàn bộ UI cho đến khi vừa |
 
 Cùng một ngôn ngữ hình ảnh cho cả ba: nền tối, hairline 1 px, góc 0 px, Inter + JetBrains Mono, **xanh FOCUS cho thao tác UI**, **hổ phách chỉ dành cho thời gian** (key, playhead, transport, selection 3D). Mật độ đến từ chữ 11–13 sp, khoảng cách 4/8/12 px và đường kẻ 1 px — không đến từ việc thu nhỏ vùng chạm.
 
@@ -27,11 +29,11 @@ Ba lỗi gốc được sửa trước khi làm giao diện:
 
 1. **Key tại playhead:** sửa transform tại thời điểm đang có key sẽ cập nhật chính key đó, kể cả khi autokey tắt. Autokey chỉ quyết định việc **tạo key mới**.
 2. **Lag trong scene:** preview chỉ render khi có thay đổi; khi orbit/kéo gizmo/playback mới render liên tục; UI gộp refresh mỗi frame; chất lượng tự hạ khi frame time vượt ngưỡng.
-3. **Tràn portrait:** layout được thiết kế lại theo dp với breakpoint 600/960, mọi sheet có scroll, mọi hàng ngang co giãn hoặc đưa vào menu tràn, và có test ma trận kích thước.
+3. **Tràn portrait:** layout được thiết kế lại theo dp với breakpoint 600/960, mọi sheet có scroll, mọi hàng ngang co giãn hoặc đưa vào menu tràn, và có test ma trận kích thước. Desktop trên màn hình hẹp không fallback: toàn bộ UI được thu nhỏ đều cho đến khi vừa, kèm chỉ báo tỉ lệ thu nhỏ.
 
 Bề mặt mới có thật, không phải label giả:
 
-- **Renderer:** Auto / Forward+ / Mobile / Compatibility, chuyển bằng restart có kiểm chứng; hiển thị backend thực tế; tính năng không được hỗ trợ bị disable kèm lý do.
+- **Renderer:** **Mobile mặc định trên Android**; Auto / Forward+ / Compatibility vẫn chọn được, chuyển bằng restart có kiểm chứng; hiển thị backend thực tế; tính năng không được hỗ trợ bị disable kèm lý do.
 - **Graphics / Performance / Editor / Display:** các control map trực tiếp vào API Godot, lưu bền, có reset từng nhóm.
 - **FPS / frame time / draw calls / preview resolution:** hiển thị thật, lấy từ `Performance` và `RenderingServer`.
 - **Render:** PNG still và PNG sequence đóng ZIP thật; **MP4 không được hỗ trợ** và UI nói rõ.
@@ -119,7 +121,7 @@ Home hiện dùng hero lớn, card template, illustration trang trí. Editor dù
 | Mã | Mục tiêu | Cách đo |
 |---|---|---|
 | G1 | Dựng lại toàn bộ UI, không chỉ polish | Không còn hero/card ở Home; editor dùng shell mới; mọi màn hình đi qua token/component mới |
-| G2 | Ba chế độ Compact/Studio/Desktop dùng chung một shell | Chuyển mode trong app; mode được lưu; layout đúng ở 360×640 → 1600×900 |
+| G2 | Ba chế độ Compact/Studio/Desktop dùng chung một shell | Chuyển mode trong app; mode được lưu; layout đúng ở 360×640 → 1600×900; Desktop trên điện thoại thu nhỏ đều, không fallback |
 | G3 | Không tràn/cắt UI ở portrait, landscape, tablet, desktop | Test ma trận assert mọi control visible nằm trong màn hình; screenshot xác nhận |
 | G4 | Hết lag trong scene | Preview idle dùng `UPDATE_ONCE`; UI gộp refresh; có FPS/frame graph; đo lại trước/sau |
 | G5 | Sửa key tại playhead | Regression test đỏ → xanh; playback tại B giữ giá trị mới |
@@ -166,6 +168,7 @@ Home hiện dùng hero lớn, card template, illustration trang trí. Editor dù
 
 - Godot **4.7.2-stable**, bản Android fork; GDScript; project chạy từ raw assets, không cần editor import pass.
 - Android host hiện tại; package `studio.kinema.app`; build **chỉ** qua GitHub Actions `assembleStandardDebug`, ABI `arm64-v8a`, debug keystore của CI.
+- Thiết bị đích để xác minh: **Android 15–17**. 60 fps là mục tiêu hiệu năng, **không phải cổng chấp nhận** trên máy test; kết quả FPS thật phải được báo cáo, không suy đoán.
 - Không có thiết bị Android trong môi trường này. Mọi kết luận về cảm giác chạm, orientation, renderer restart và FPS thật đều cần device verification.
 - Android SAF trả content URI; file `.mtl`/texture cùng thư mục có thể không truy cập được. Không được giả vờ đã đọc.
 - `RenderingServer` không có API đổi renderer tại runtime. Cách khả dụng: command-line `--rendering-method`/`--rendering-driver` + restart.
@@ -188,7 +191,7 @@ Home hiện dùng hero lớn, card template, illustration trang trí. Editor dù
 
 ### 3.3 Hiệu năng
 
-- Mục tiêu: 60 fps trên thiết bị tầm trung ở preset Balanced; sàn 30 fps; UI frame < 8 ms.
+- Mục tiêu: 60 fps trên thiết bị tầm trung ở preset Balanced; sàn mềm 30 fps để phát hiện regression; UI frame < 8 ms. 60 fps **không phải cổng bắt buộc** trên thiết bị test; nếu không đạt, ghi nhận số đo thật và hành vi adaptive quality, không tuyên bố đạt.
 - Preview idle không được render 3D liên tục.
 - Không cấp phát/str allocation trong `_process` mỗi frame.
 - Không rebuild outliner/inspector/timeline khi chỉ kéo transform.
@@ -243,6 +246,9 @@ Dùng Godot `Control` cho cấu trúc, input, scroll, focus, sheet; dùng `_draw
 - Không fake renderer/MP4/FBX.
 - Key tại playhead phải cập nhật key.
 - Build qua GitHub Actions, package `studio.kinema.app`, arm64-v8a.
+- Desktop trên điện thoại: thu nhỏ đều toàn bộ UI cho đến khi vừa; không fallback Studio.
+- Renderer mặc định trên Android: Mobile; Forward+/Compatibility/Auto vẫn chọn được.
+- Thiết bị xác minh: Android 15–17; 60 fps là mục tiêu, không bắt buộc.
 
 ---
 
@@ -322,7 +328,7 @@ Tất cả nằm trong `Kit` (hoặc file token mới `src/ui/tokens.gd` đượ
 
 - Base unit: **4 dp**. Dãy: 2, 4, 6, 8, 12, 16, 24, 32.
 - Panel padding: 12 dp; sheet padding: 16 dp; section gap: 16 dp; row gap: 4 dp.
-- Hàng tương tác: **44 dp** tối thiểu; transport/primary: **48 dp**.
+- Hàng tương tác: **44 dp logic** tối thiểu; transport/primary: **48 dp logic**. Trong Desktop shrink-to-fit hoặc user scale < 1.0, kích thước vật lý nhỏ hơn 44 dp theo tỉ lệ; đây là ngoại lệ có chủ đích và phải được chỉ báo (xem 6.6).
 - Icon: 16/20/24 px trong khung 24; stroke 1.5 px; join miter; corner radius tối đa 2 px.
 - Button: cao 36 dp cho dense toolbar nhưng **hit target 44 dp** bằng wrapper/padding; primary 44–48 dp.
 - Góc: 0 px. Focus ring: 2 px `FOCUS`, inset 1 px, không bo.
@@ -379,7 +385,7 @@ Tất cả nằm trong `Kit` (hoặc file token mới `src/ui/tokens.gd` đượ
 | Section gap | 16 dp | 16 dp | 12 dp |
 | Timeline mặc định | 150 dp (gập) | 180 dp | 220 dp |
 
-Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, nhiều cột hơn và metadata dày hơn — **không** từ hit target nhỏ hơn 44 dp.
+Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, nhiều cột hơn và metadata dày hơn — **không** từ hit target nhỏ hơn 44 dp. Khi Desktop shrink-to-fit, toàn bộ bảng này thu nhỏ cùng một tỉ lệ; hit target vật lý giảm nhưng vẫn là 44 dp logic.
 
 ---
 
@@ -393,18 +399,22 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
   - < 600 dp → Compact
   - 600–959 dp → Studio
   - ≥ 960 dp → Desktop
+- **Mọi mode luôn chọn được.** Không có mode nào bị disable hay tự fallback vì kích thước màn hình.
+- Mode này là **workspace của editor**. Home tự chọn layout list/table theo width của nó; không bị ép theo mode editor đã lưu.
 - `short` khi **layout height** (sau scale) < 520 dp: giảm top bar, gập timeline mặc định, dock chuyển sang tab Scene/Properties.
 - Mode được lưu vào `user://settings.json` và áp dụng ngay.
-- Nếu mode thủ công không đủ **device dp** tối thiểu:
-  - Desktop cần ≥ 960 dp; Studio cần ≥ 600 dp.
-  - App dùng mode gần nhất hỗ trợ, hiện banner 1 dòng: “Desktop cần ≥ 960 dp — đang dùng Studio.” kèm nút `Đổi`.
-  - Lựa chọn vẫn được lưu để tự áp dụng khi xoay/đổi cửa sổ.
+- **Desktop trên màn hình hẹp (kể cả điện thoại):**
+  - Desktop luôn dùng bố cục Desktop đầy đủ (menu bar + rail + dock + timeline + status bar).
+  - Nếu `layout_width` sau scale thường (trước fit) < 960 dp hoặc `layout_height` < 600 dp, app **giảm `content_scale_factor` đều** cho đến khi canvas logic đạt tối thiểu **960×600 dp**. Toàn bộ UI — chữ, icon, panel, hit target — thu nhỏ cùng một tỉ lệ.
+  - Không chuyển sang Studio, không ẩn panel, không đổi mode. Đây là “thu nhỏ cho đến khi vừa” đã chốt.
+  - Status bar và sheet Workspace hiển thị `Desktop fit 43%` (hoặc tỉ lệ thực). Khi fit < 60%, hiện chip cảnh báo `UI nhỏ` + nút `Chuyển sang Studio`; chỉ là gợi ý, không tự đổi.
+  - Hệ quả đã được chấp nhận: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. 44 dp là kích thước **logic**; test chỉ assert 44 dp logic trong mode này.
 - **Phân biệt hai đại lượng:**
-  - `device_dp` quyết định mode khả dụng (không đổi khi user scale).
-  - `layout_width` = `size.x` sau scale quyết định panel policy bên trong mode.
-  - Ở user scale 1.3, tablet 600 dp vẫn là Studio, nhưng nếu `layout_width < 720` thì dock phải chuyển thành drawer/tab; không tự đổi mode và không tràn.
-  - Desktop ở `layout_width < 960` dùng dock hẹp/tab; nếu `layout_width < 800`, fallback Studio + banner.
-- Không có mode nào bị ẩn hoàn toàn; mode không khả dụng vẫn hiện trong sheet kèm lý do. Đây là cách “actively selectable” trung thực: chọn được, áp dụng khi phần cứng cho phép, không giả vờ.
+  - `device_dp` = physical / density; quyết định mode của `Auto`, không đổi khi user scale.
+  - `layout_width` = `size.x` sau `content_scale_factor`; quyết định panel policy bên trong Studio/Compact.
+  - Ở user scale 1.3, tablet 600 dp vẫn là Studio, nhưng nếu `layout_width < 720` thì dock chuyển thành drawer/tab; không tự đổi mode và không tràn.
+  - Desktop không dùng panel policy theo `layout_width`; nó dùng shrink-to-fit để luôn có canvas ≥ 960×600.
+  - Fit không đổi `device_dp`, nên `Auto` không bị đổi mode khi fit bật; chuyển mode chỉ do người dùng hoặc do device dp thay đổi.
 
 ### 6.2 Compact — điện thoại dọc
 
@@ -486,7 +496,7 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 │ ◀  ▶  ▶|  00:02:12 / 00:06:00  AUTO  KEY  [dope|graph]       │ 44
 │ timeline 220                                                 │
 ├──────────────────────────────────────────────────────────────┤
-│ 60 fps · 16.6 ms · Forward+ · 3 objects · 12 keys · saved    │ 24
+│ 60 fps · 16.6 ms · Mobile · 3 objects · 12 keys · saved      │ 24
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -497,32 +507,38 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 - **Timeline 220 dp**, luôn docked; transport 44 dp.
 - **Status bar 24 dp:** FPS, frame time, renderer, object count, key count, autosave state. Đây là nơi đặt thông tin kỹ thuật, không phải viewport.
 - **Hover/pointer:** hover state, cursor shape, right-click context menu, scroll wheel zoom, middle-drag orbit, `F` frame, `G/R/S` tools, `Space` play, arrow frame step, `Ctrl+Z/Y`, `Ctrl+S`, `Ctrl+R`.
-- **Desktop mode cần ≥ 960 dp.** Trên tablet 1280×800 hoặc DeX, mode này khả dụng. Trên điện thoại, chọn Desktop sẽ hiện banner và fallback Studio; lựa chọn được lưu.
+- **Desktop trên điện thoại:** vẫn là Desktop đầy đủ; toàn bộ canvas được thu nhỏ đều cho đến khi vừa (xem 6.1, 6.6). Không fallback Studio. Status bar hiển thị tỉ lệ fit; chip `UI nhỏ` + nút chuyển Studio khi fit < 60%. Trên tablet 1280×800 hoặc DeX, fit = 100% và không có thay đổi.
 
 ### 6.5 Orientation
 
 - Setting **Display → Orientation**: `Auto`, `Portrait`, `Landscape`.
 - Android: gọi `DisplayServer.screen_set_orientation()` với `SCREEN_SENSOR`, `SCREEN_PORTRAIT`, `SCREEN_LANDSCAPE`.
 - Manifest giữ `fullSensor` để app tự quyết định; nếu API không khả dụng, setting bị disable kèm lý do “Thiết bị không hỗ trợ đổi orientation trong app.”
-- Desktop/headless: setting ẩn hoặc disabled; không giả vờ.
+- Desktop OS/headless: setting ẩn hoặc disabled; không giả vờ. (Đây là desktop OS, không phải mode Desktop trên Android.)
 - Đổi orientation làm layout reflow; phải chờ 2 frame trước khi đo lại (theo kinh nghiệm overlay hiện tại), test wait 5 frame.
 - **Chưa xác minh trên thiết bị.** Device checklist bắt buộc.
 
 ### 6.6 Scale
 
-- `density = clamp(screen_get_dpi()/160, 1.0, 4.0)` trên Android; desktop = 1.0.
-- `stretch = min(physical_w/1280, physical_h/800)` (giữ cách hiện tại).
-- `base_factor = clamp(density/stretch, 0.75, 4.0)`.
+- `density = clamp(screen_get_dpi()/160, 1.0, 4.0)` trên Android; nếu dpi <= 0 thì dùng 160. Desktop OS/headless = 1.0.
+- `device_dp = physical_size / density` — chỉ dùng cho `Auto` chọn mode.
+- `base_factor = density` (bỏ công thức `density / stretch` cũ; nó kéo layout về 1280×800 và là một nguyên nhân tràn portrait).
 - `user_scale` 0.85–1.30, step 0.05, default 1.0.
-- `content_scale_factor = base_factor × user_scale`.
-- Sau khi áp dụng, nếu logical width < 320 dp hoặc height < 480 dp, giảm factor để giữ tối thiểu; hiển thị “UI scale bị giới hạn bởi màn hình.”
+- `effective_factor = base_factor × user_scale`.
+- `logical_width = physical_width / effective_factor`, `logical_height = physical_height / effective_factor` (trước fit).
+- **Fit theo mode:**
+  - Compact/Studio: nếu `logical_width < 320 dp` hoặc `logical_height < 480 dp`, giảm `effective_factor` để giữ tối thiểu 320×480; hiển thị “UI scale bị giới hạn bởi màn hình.”
+  - Desktop: nếu `logical_width < 960 dp` hoặc `logical_height < 600 dp`, đặt `fit = min(1, logical_width / 960, logical_height / 600)` và `effective_factor *= fit`. Kết quả là canvas logic đạt tối thiểu 960×600. **Không có sàn fit**; đây là cách Desktop trên điện thoại thu nhỏ cho đến khi vừa. Hiển thị `Desktop fit <fit>%`.
+  - Fit của Desktop là automatic, không phải setting. Khi `fit < 1`, `user_scale` bị **disable** trong mode này kèm hint: “Desktop fit đang giữ UI vừa màn hình. Chuyển sang Studio/Compact để chỉnh UI scale.” Lý do: fit sẽ bù lại mọi thay đổi user scale, nên để slider hoạt động sẽ tạo cảm giác control bị hỏng. Khi `fit = 1`, user scale hoạt động bình thường.
+- `content_scale_factor = effective_factor`; áp dụng ngay, không restart; lưu `user_scale` và mode vào `Prefs`.
+- Fit chỉ áp dụng khi **editor đang ở mode Desktop**. Home, Compact và Studio dùng `effective_factor` không fit; rời Desktop phải khôi phục factor ngay trong cùng frame để Home/editor kế tiếp không bị thu nhỏ ké.
 - Passive scale: density. **Không** dùng OS font scale vì chưa xác nhận; ghi rõ trong code comment và settings.
-- UI scale thay đổi ngay, không restart; lưu vào `Prefs`.
-- Test tại 0.85, 1.0, 1.15, 1.30 trên 360×640 và 411×914; assert không tràn.
+- Hệ quả vật lý: ở Desktop fit, 44 dp logic × fit có thể nhỏ hơn 44 dp vật lý. Đây là tradeoff đã chốt; UI phải hiển thị tỉ lệ và gợi ý chuyển mode, không được âm thầm fallback.
+- Test tại 0.85, 1.0, 1.15, 1.30 trên 360×640 và 411×914; thêm Desktop ở 360×640, 411×914, 914×411; assert không tràn, fit đúng, và chuyển về Compact/Studio khôi phục factor.
 
 ### 6.7 Safe area và overflow
 
-- `DisplayServer.get_display_safe_area()` → insets trái/top/phải/bottom; áp vào `MarginContainer` gốc.
+- `DisplayServer.get_display_safe_area()` → insets trái/top/phải/bottom (physical px); chia cho `content_scale_factor` trước khi áp vào `MarginContainer` gốc, nếu không inset sẽ sai khi Desktop fit hoặc user scale.
 - Top bar và bottom action bar nằm trong safe area; sheet footer cộng bottom inset.
 - Mọi sheet body dùng `ScrollContainer` + `VBoxContainer`; footer tách khỏi scroll.
 - Mọi hàng ngang:
@@ -548,7 +564,7 @@ Mỗi component có một file riêng trong `src/ui/components/` (mới) hoặc 
 **Desktop (36 dp):** logo “Kinema” 12 sp semibold, menu buttons `Project`, `Edit`, `View`, `Render`, `Help`; bên phải là undo/redo, renderer chip, settings. Menu dùng `PopupMenu` với shortcut hiển thị bên phải.
 - Title ellipsis; dirty dot 5×5 `TIME` khi có thay đổi, rỗng khi sạch.
 - Save state: “Saved” 11 sp `TEXT_MUTED` cạnh title; khi đang lưu, “Saving…” + spinner 12 px (không animation nếu reduce motion).
-- Renderer chip ở Desktop: `Forward+`, `Mobile`, `Compatibility` + dấu `!` nếu fallback; click mở Graphics.
+- Renderer chip ở Desktop: giá trị đang chọn (`Mobile` mặc định trên Android, `Auto`, `Forward+`, `Compatibility`) + backend thực; dấu `!` nếu fallback backend; click mở Graphics.
 - Không hiển thị FPS ở top bar; FPS ở HUD/status bar.
 
 ### 7.2 Tool rail
@@ -713,7 +729,7 @@ Home được dựng lại hoàn toàn, không hero/card.
 
 ### 7.12 Status bar, toast, help, about
 
-- **Status bar (Desktop):** 24 dp, `SURFACE`, border-top 1 px; trái: FPS + frame time + renderer; phải: object count + key count + save state. Text 10 sp mono; click FPS mở Performance.
+- **Status bar (Desktop):** 24 dp, `SURFACE`, border-top 1 px; trái: FPS + frame time + renderer; phải: object count + key count + save state. Text 10 sp mono; click FPS mở Performance. Khi Desktop fit < 100%, thêm `fit 43%` cạnh renderer; fit < 60% dùng `WARNING`.
 - **Toast:** bottom-center trên transport, 1 dòng 12 sp, icon 16, nền `SURFACE_3`, border 1 px; tự ẩn 2.5 s; không chặn tap; lỗi 4 s.
 - **Help:** shortcuts + gestures + limitations; dạng bảng 2 cột; scroll; không text marketing.
 - **About:** version, engine 4.7.2, package, renderer thực, build type, licenses; nút copy build info.
@@ -908,7 +924,7 @@ Thiết kế sửa cả bốn, theo thứ tự đo được.
 - Preview resolution cap theo mode:
   - Compact: long edge 1280;
   - Studio: 1600;
-  - Desktop: 1920;
+  - Desktop: 1920, nhưng khi Desktop fit trên điện thoại thì cap = `min(1920, physical long edge)` để không render vượt màn hình;
   - user setting có thể hạ xuống 720/1080.
 - `scaling_3d_scale` mặc định theo preset; adaptive quality:
   - đo frame time trung bình 30 frame;
@@ -945,14 +961,14 @@ Thiết kế sửa cả bốn, theo thứ tự đo được.
 | Hạng mục | Mục tiêu | Cách đo |
 |---|---|---|
 | UI frame | < 8 ms | `TIME_PROCESS` trong scene tĩnh |
-| 3D preview | < 16.6 ms ở 60 fps | frame time overlay |
+| 3D preview | mục tiêu < 16.6 ms (60 fps) | frame time overlay; **không phải gate** trên máy test |
 | Orbit | không frame > 50 ms | frame graph |
 | Key edit | < 16 ms | test headless + device |
 | Scene mở | < 1 s với project nhỏ | log |
 | Idle | 0 render 3D/frame | `UPDATE_ONCE` |
 | Bộ nhớ | không tăng theo thời gian | profile 5 phút |
 
-**Chưa có thiết bị Android trong môi trường này.** Các con số trên là mục tiêu thiết kế; phải xác minh trên thiết bị thật. Headless chỉ đo tương đối.
+**Chưa có thiết bị Android trong môi trường này.** Các con số trên là mục tiêu thiết kế; phải xác minh trên thiết bị thật (Android 15–17). Headless chỉ đo tương đối. 60 fps không phải điều kiện chấp nhận; phải báo cáo FPS thật và trạng thái adaptive quality.
 
 ---
 
@@ -1048,17 +1064,18 @@ func set_object_transform(id, position, rotation, p_scale, key := true) -> void:
 
 | Giá trị | Ý nghĩa | Args |
 |---|---|---|
-| `auto` | Không override; dùng method mặc định của project/engine | — |
+| `auto` | Không override; resolve theo nền tảng: Android → Mobile, desktop/headless → Forward+ | — |
+| `mobile` | Mobile / Vulkan — **mặc định trên Android** | `--rendering-method mobile --rendering-driver vulkan` |
 | `forward_plus` | Forward+ / Vulkan | `--rendering-method forward_plus --rendering-driver vulkan` |
-| `mobile` | Mobile / Vulkan | `--rendering-method mobile --rendering-driver vulkan` |
 | `gl_compatibility` | Compatibility / OpenGL | `--rendering-method gl_compatibility --rendering-driver opengl3` |
 
-- `auto` không phải “tự chọn renderer tốt nhất” bằng phép thuật. Nó là “không override”.
-- Đề xuất đổi `project.godot`:
+- **Mặc định trên Android là `mobile`**, không phải `auto`. Trên desktop/headless mặc định là `forward_plus`. `auto` vẫn là lựa chọn và resolve theo nền tảng; UI hiển thị cả giá trị chọn và backend thực.
+- Đổi `project.godot`:
   - `renderer/rendering_method="forward_plus"` (desktop/headless);
   - `renderer/rendering_method.mobile="mobile"` (Android mặc định Mobile, nhẹ hơn Forward+).
-  - Đây là thay đổi có chủ đích; cần device verification và có thể revert nếu hình ảnh khác quá nhiều.
-- Nếu Vulkan không khả dụng, `fallback_to_opengl3=true` hiện tại sẽ fallback; UI hiển thị backend thực (Compatibility/OpenGL) và cảnh báo.
+  - Hiện file đang đặt `.mobile="forward_plus"`; đây là thay đổi bắt buộc của bản dựng lại.
+- `Gfx` default khi chưa có preference: Android → `mobile`, desktop/headless → `forward_plus`. Nếu preference đã có, giữ nguyên.
+- Nếu Vulkan không khả dụng, `fallback_to_opengl3=true` hiện tại sẽ fallback; UI hiển thị backend thực (Compatibility/OpenGL) và cảnh báo. Fallback này là của backend, không phải fallback mode layout.
 - Không có chuyển renderer tức thời. Không giả vờ.
 
 ### 11.2 Restart flow
@@ -1076,12 +1093,12 @@ func set_object_transform(id, position, rotation, p_scale, key := true) -> void:
    - clear pending; toast “Renderer: Mobile”; hiển thị trong Settings/Status.
 6. Nếu actual != requested:
    - thử restart một lần nữa (tối đa 1 retry) nếu pending còn;
-   - nếu vẫn sai: fallback `auto`, clear pending, hiện lỗi “Không thể khởi động renderer X trên thiết bị này. Đã dùng Auto.”
+   - nếu vẫn sai: fallback về **platform default** (Android → Mobile, desktop → Forward+), clear pending, hiện lỗi “Không thể khởi động renderer X trên thiết bị này. Đã dùng <default>.”
    - không loop vô hạn.
-7. Nếu app bị kill giữa restart: lần mở sau đọc pending; thử một lần; nếu fail, fallback.
+7. Nếu app bị kill giữa restart: lần mở sau đọc pending; thử một lần; nếu fail, fallback platform default.
 
 - Startup apply: `Gfx.ensure_renderer()` chạy sớm (autoload `_ready`), so sánh preference với `RenderingServer.get_current_rendering_method()`. Nếu khác và preference không phải auto, schedule restart một lần. Điều này đảm bảo preference được áp dụng cả khi user mở app từ launcher, không chỉ từ restart.
-- Guard: lưu timestamp/attempt count trong `user://graphics.json`; nếu 2 attempt trong 60 s, fallback auto.
+- Guard: lưu timestamp/attempt count trong `user://graphics.json`; nếu 2 attempt trong 60 s, fallback **platform default** (Android → Mobile, desktop → Forward+).
 - Test headless: không thể restart; test hàm `build_restart_args()`, persistence, pending guard, fallback logic. Device checklist bắt buộc.
 
 ### 11.3 Capability matrix
@@ -1100,12 +1117,12 @@ func set_object_transform(id, position, rotation, p_scale, key := true) -> void:
 ### 11.4 UI
 
 - Settings → Graphics → **Renderer**:
-  - segmented 2×2: Auto / Forward+ / Mobile / Compatibility;
-  - dòng “Hiện tại: Forward+ / Vulkan” (backend thực);
+  - segmented 2×2: Auto / Forward+ / Mobile / Compatibility; **Mobile được chọn sẵn trên Android**;
+  - dòng “Hiện tại: Mobile / Vulkan” (backend thực);
   - dòng “Thiết bị: <adapter>” nếu API;
   - nút `Apply & restart` 48 dp khi khác;
-  - nút `Reset to Auto`;
-  - warning nếu fallback;
+  - nút `Reset to platform default` (Mobile trên Android, Forward+ trên desktop);
+  - warning nếu fallback backend;
   - danh sách tính năng khả dụng (SSAO, SSIL, SSR, TAA, Glow) với check/cross thật.
 - Không đặt renderer trong một dropdown nhỏ không rõ; đây là thay đổi lớn, cần bề mặt rõ.
 - Status bar/Desktop hiển thị renderer thực; HUD không cần.
@@ -1120,7 +1137,7 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 
 | Setting | Giá trị | Mặc định | API |
 |---|---|---|---|
-| Renderer | auto/forward_plus/mobile/gl_compatibility | auto | restart args |
+| Renderer | auto/forward_plus/mobile/gl_compatibility | mobile (Android) / forward_plus (desktop) | restart args |
 | Preset | performance/balanced/quality/custom | balanced | `Gfx.apply_preset` |
 | 3D scale | 0.5–1.0 | preset | `Viewport.scaling_3d_scale` |
 | MSAA | off/2x/4x/8x | 2x | `Viewport.msaa_3d` |
@@ -1196,12 +1213,14 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 | UI scale | 0.85–1.30 | 1.0 |
 | Safe area preview | on/off | off |
 | Keep screen on | on/off | on |
-| Fullscreen | on/off | off (desktop only) |
+| Fullscreen | on/off | off (desktop OS only) |
 | Reset display | action | — |
 
+- Workspace layout: mọi mode luôn chọn được; Desktop trên màn hình hẹp dùng shrink-to-fit, không fallback.
+- UI scale là scale người dùng; khi Desktop fit < 100%, control bị disable và hiển thị `Fit 43%` thay cho giá trị user scale, kèm hint vì fit sẽ bù lại mọi thay đổi. Khi fit = 100%, control hoạt động bình thường và hiển thị user scale.
 - Orientation chỉ hiện trên Android; nếu `FEATURE_ORIENTATION` false, disable + hint.
-- Fullscreen chỉ desktop; Android immersive nếu API xác nhận, nếu không ẩn.
-- Safe area preview vẽ inset viền đỏ/yellow? Dùng `WARNING` 1 px + label; chỉ debug.
+- Fullscreen chỉ desktop OS; Android immersive nếu API xác nhận, nếu không ẩn.
+- Safe area preview vẽ inset `WARNING` 1 px + label; chỉ debug.
 
 ### 12.5 Render
 
@@ -1344,12 +1363,17 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 
 ### 14.2 Visual QA
 
+- Các kích thước dưới đây là **logical dp** với density 1.0; mode được chọn trực tiếp, không phụ thuộc `Auto`.
 - Chụp screenshot tại:
   - 360×640 (phone nhỏ, Compact);
   - 411×914 (phone, Compact);
+  - 360×640 (phone, **Desktop shrink-to-fit**);
+  - 411×914 (phone, **Desktop shrink-to-fit**);
   - 914×411 (phone ngang, Studio);
+  - 914×411 (phone ngang, **Desktop shrink-to-fit**);
   - 600×960 (tablet nhỏ, Studio);
   - 800×1280 (tablet dọc, Studio);
+  - 960×600 (Desktop tối thiểu, fit 100%);
   - 1280×800 (tablet ngang, Desktop);
   - 1600×900 (desktop, Desktop).
 - Mỗi ảnh kiểm:
@@ -1360,7 +1384,8 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
   - màu đúng token;
   - icon cùng stroke;
   - không còn hero/card;
-  - sheet mở/đóng đúng.
+  - sheet mở/đóng đúng;
+  - Desktop-on-phone: UI thu nhỏ đều, không cắt, indicator fit hiển thị; chữ nhỏ là tradeoff đã chấp nhận, không tính là overflow.
 - Chụp sau khi hoàn thành một cụm thay đổi, không chụp sau từng pixel.
 - So sánh với reference tinh thần: Godot editor (mật độ, panel, timeline) + Prisma3D (touch ergonomics), không copy pixel.
 
@@ -1373,7 +1398,7 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 | Tầng | Công cụ | Phạm vi |
 |---|---|---|
 | Logic/headless | `tests/smoke.gd` | document, keyframe, easing, import, render, settings |
-| Layout | scene test mới `tests/layout.gd` | ma trận size × mode, overflow, hit target |
+| Layout | scene test mới `tests/layout.gd` | ma trận size × mode, Desktop fit, overflow, hit target logic |
 | Interaction | headless + input events | sheet, back, mode, orientation persistence, scale |
 | Visual | screenshot | token, spacing, icon, overflow |
 | Performance | headless relative + device | idle update, refresh count, frame time |
@@ -1398,22 +1423,25 @@ Với mỗi cặp `(size, mode)`:
   - `editor.size` khớp viewport;
   - mọi control visible có `global_rect` nằm trong `Rect2(0,0,w,h)` với tolerance 1 px;
   - không có control visible nằm ngoài parent;
-  - `topbar`, `transport`, `bottom bar` đều visible và không overlap;
+  - `topbar`/`menu bar`, `transport`, `bottom bar`/`status bar` tùy mode đều visible và không overlap;
   - sheet body scroll được; footer visible;
-  - hit target của các nút chính ≥ 44 dp (đo `size` hoặc wrapper);
+  - hit target của các nút chính ≥ 44 dp **logic** (đo `size` hoặc wrapper); trong Desktop fit, không assert 44 dp vật lý;
   - không có horizontal scroll ngoài ý muốn;
-  - text essential không bị clip (title được phép ellipsis).
-- Nếu fail, in rect của control vi phạm + parent + mode + size.
+  - text essential không bị clip (title được phép ellipsis);
+  - Desktop ở mọi size: `content_scale_factor` được giảm đủ để logical canvas ≥ 960×600; mode vẫn là Desktop; fit indicator hiển thị khi < 100%;
+  - Desktop trên phone: không panel nào bị ẩn/fallback; chuyển Desktop → Compact/Studio khôi phục `content_scale_factor` và không tràn;
+  - Studio ở layout width hẹp: dock chuyển drawer/tab, mode vẫn là Studio.
+- Nếu fail, in rect của control vi phạm + parent + mode + size + `content_scale_factor`.
 
 ### 15.4 Test interaction
 
 - Mở Scene sheet; tap 5 điểm trong body; assert modal vẫn mở.
 - Tap scrim; assert đóng.
 - Back: modal → đóng; back lần nữa → editor/home đúng.
-- Chuyển mode Auto/Compact/Studio/Desktop; assert mode hiệu dụng + banner nếu thiếu width; restart app (headless reload) → mode lưu.
-- Đổi UI scale 0.85/1.3; assert factor + không tràn.
+- Chuyển mode Auto/Compact/Studio/Desktop; assert mode hiệu dụng; Desktop trên 360×640 vẫn là Desktop với fit < 100%, không fallback; restart app (headless reload) → mode + user scale lưu.
+- Đổi UI scale 0.85/1.3 trong Compact/Studio; assert factor + không tràn. Trong Desktop fit < 100%, assert control UI scale disabled + hint; khi fit = 100%, assert control hoạt động.
 - Orientation setting: mock `DisplayServer`? Không mock được; test persistence + UI state; device verify.
-- Renderer: test `build_restart_args()`, preference persistence, pending guard; không restart trong test.
+- Renderer: default trên Android là Mobile, desktop là Forward+; test `build_restart_args()`, preference persistence, pending guard; không restart trong test.
 - Settings: mỗi control đổi → giá trị lưu; reload → còn; reset → default.
 - Render: still PNG tồn tại, load được, đúng size; sequence ZIP đủ frame; cancel cleanup.
 - Import: fixture OBJ/MTL/texture; glTF fixture nếu có; lỗi FBX message.
@@ -1456,17 +1484,19 @@ Với mỗi cặp `(size, mode)`:
 
 - [ ] Keyframe tại B cập nhật; playback giữ; test đỏ→xanh.
 - [ ] Idle preview không render liên tục; FPS/frame graph thật.
-- [ ] Không tràn ở 7 kích thước × 4 mode.
+- [ ] Không tràn ở ma trận 11 ảnh (3 mode layout, Auto resolve đúng), gồm Desktop trên phone portrait/landscape.
 - [ ] Panel không đóng khi tap trong.
-- [ ] Compact/Studio/Desktop chọn được, lưu, fallback có thông báo.
+- [ ] Compact/Studio/Desktop luôn chọn được, lưu; Desktop hẹp thu nhỏ đều đến khi vừa, có indicator, không fallback.
+- [ ] Desktop fit < 100% hiển thị tỉ lệ; chuyển mode khôi phục scale.
 - [ ] Orientation setting hoạt động hoặc disable có lý do.
-- [ ] UI scale 0.85–1.30 không tràn.
-- [ ] Renderer switch restart thật; backend hiển thị đúng; fallback có thông báo.
+- [ ] UI scale 0.85–1.30 không tràn (Compact/Studio); Desktop fit < 100% disable control kèm hint.
+- [ ] Renderer mặc định Mobile trên Android; switch Forward+/Compatibility restart thật; backend hiển thị đúng; fallback backend có thông báo.
 - [ ] Settings graphics/performance/editor/display/render/import đầy đủ, lưu bền, reset.
 - [ ] Render still/sequence thật, mở được; MP4 nói rõ không hỗ trợ.
 - [ ] Import glTF/OBJ+MTL; FBX nói rõ không hỗ trợ.
 - [ ] Home không còn hero/card; list/table dùng dữ liệu thật.
 - [ ] Icon redraw, token 1 px/0 px, không emoji.
+- [ ] FPS thật được đo/báo cáo trên Android 15–17; 60 fps không phải gate.
 - [ ] Smoke pass; parse sạch; screenshot matrix; CI artifact (sau khi push).
 
 ---
@@ -1476,7 +1506,7 @@ Với mỗi cặp `(size, mode)`:
 ### 16.1 Migration
 
 - Project JSON schema giữ nguyên; project cũ mở được.
-- `graphics.json` cũ: thiếu key mới → default; giữ preset/giá trị cũ; thêm `renderer_preference=auto`.
+- `graphics.json` cũ: thiếu key mới → default; giữ preset/giá trị cũ; thêm `renderer_preference=<platform default>` (Android: `mobile`; desktop: `forward_plus`).
 - `settings.json` mới: nếu chưa có → default; nếu hỏng → backup + default + toast.
 - Không đổi tên project folder/id.
 - Autosave giữ 30 s; có thể đổi qua settings.
@@ -1486,10 +1516,12 @@ Với mỗi cặp `(size, mode)`:
 
 | Rủi ro | Khả năng | Tác động | Giảm thiểu |
 |---|---|---|---|
-| Renderer restart không hoạt động trên thiết bị | Trung bình | Cao | Feature flag, fallback auto, device checklist, log |
+| Renderer restart không hoạt động trên thiết bị | Trung bình | Cao | Feature flag, fallback platform default, device checklist, log |
 | `screen_set_orientation` không hoạt động | Trung bình | Trung bình | Disable + hint; manifest fullSensor; device test |
 | Layout Godot vẫn tràn ở edge case | Cao | Cao | Test matrix, scroll, overflow menu, screenshot |
-| Perf không đạt trên máy yếu | Trung bình | Cao | Adaptive quality, preview cap, Mobile preset, on-demand |
+| Desktop trên điện thoại quá nhỏ để đọc/chạm | Cao | Trung bình | Indicator fit + chip `UI nhỏ` + nút chuyển Studio; không fallback tự động; tradeoff đã chốt |
+| Đổi mode gây nhảy scale/oscillation | Trung bình | Trung bình | Tính fit từ `device_dp` + deterministic; test chuyển mode; lưu `user_scale` |
+| Perf không đạt 60 fps trên máy yếu | Trung bình | Trung bình | Adaptive quality, preview cap, Mobile preset, on-demand; 60 fps không phải gate |
 | Keyframe fix gây regression easing/undo | Thấp | Cao | TDD, regression, smoke |
 | SAF không đọc được MTL/texture | Cao | Trung bình | Copy flow, message rõ, không fake |
 | UI rewrite làm mất thao tác cũ | Trung bình | Cao | Smoke, feature parity checklist, incremental |
@@ -1499,14 +1531,14 @@ Với mỗi cặp `(size, mode)`:
 
 ### 16.3 Device checklist (sau khi có APK)
 
-1. Cài APK debug; mở app; không crash.
+1. Cài APK debug trên Android 15, 16 và 17 (nếu có máy); mở app; không crash.
 2. Home: tạo project, mở, rename, delete, search.
 3. Compact: xoay dọc; mở Scene/Properties/Add/Settings/Render; tap trong không đóng; scroll tới cuối.
 4. Studio: xoay ngang; dock/timeline; short height; panel không tràn.
-5. Desktop: tablet/DeX; menu bar; status bar; keyboard shortcuts.
+5. Desktop: tablet/DeX; menu bar; status bar; keyboard shortcuts. Trên điện thoại: chọn Desktop, xác nhận UI thu nhỏ đều, không fallback, indicator fit, chuyển lại Studio/Compact.
 6. Keyframe: 2 key, sửa tại B, play, seek; autokey on/off; undo.
-7. Performance: FPS overlay; orbit; kéo gizmo; play; idle; nhiệt/pin 5 phút.
-8. Renderer: đổi Mobile/Forward+/Compatibility; restart; backend hiển thị đúng; fallback.
+7. Performance: FPS overlay; orbit; kéo gizmo; play; idle; nhiệt/pin 5 phút. Ghi FPS thật; 60 fps không phải gate.
+8. Renderer: fresh install phải là Mobile; đổi Forward+/Compatibility; restart; backend hiển thị đúng; fallback backend.
 9. Orientation: Auto/Portrait/Landscape; app xoay đúng; layout reflow.
 10. UI scale: 0.85/1.0/1.3; không tràn.
 11. Render: still PNG mở được; sequence ZIP đủ frame; cancel cleanup.
@@ -1533,7 +1565,7 @@ Mỗi bước: viết test trước nếu là logic/UI behavior; chạy smoke; c
 3. **Prefs + scale/orientation + layout modes.**
    - `Prefs` autoload; settings.json.
    - Scale clamp; orientation; breakpoint 600/960.
-   - Layout matrix test; banner fallback.
+   - Layout matrix test; Desktop shrink-to-fit + indicator; không fallback.
 4. **Token + icon + shell + Home.**
    - `tokens.gd`/`Kit` mới; icon redraw.
    - Top bar/rail/status; Home list/table; New project sheet.
@@ -1542,7 +1574,7 @@ Mỗi bước: viết test trước nếu là logic/UI behavior; chạy smoke; c
    - Interaction tests; screenshot.
 6. **Settings + renderer.**
    - Settings surfaces; graphics/performance/editor/display/render/import.
-   - Renderer restart flow; capability gating.
+   - Renderer mặc định Mobile trên Android; restart flow; capability gating.
 7. **Render/import polish + visual QA.**
    - Render sheet; sequence; import; SAF messages.
    - Screenshot matrix; fix overflow.
@@ -1554,34 +1586,36 @@ Không làm big-bang: mỗi bước phải giữ app chạy được. Cuối bư
 
 ---
 
-## 18. Quyết định cần bạn duyệt
+## 18. Quyết định đã chốt và xác nhận cuối
 
-Ba mục dưới đây là quyết định sản phẩm, không phải chi tiết kỹ thuật. Tôi đề xuất phương án đầu tiên; bạn có thể đổi.
+Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài liệu đã cập nhật theo đúng câu trả lời; không còn câu hỏi mở nào trong ba mục này.
 
-### 18.1 Desktop mode trên điện thoại
+### 18.1 Desktop mode trên điện thoại — đã chốt: thu nhỏ đều
 
-- **Đề xuất:** Desktop cần ≥ 960 dp; chọn trên điện thoại sẽ fallback Studio + banner, lựa chọn được lưu.
-- **Lý do:** 3 pane trên 411 dp sẽ giết viewport hoặc buộc thu nhỏ chữ, trái với mục tiêu không tràn/không chữ nhỏ.
-- **Thay thế:** cho phép Desktop “thu nhỏ toàn bộ” trên điện thoại (không khuyến nghị).
+- Desktop **luôn chọn được** trên điện thoại.
+- Nếu không vừa, toàn bộ UI Desktop được thu nhỏ đều cho đến khi vừa; không fallback Studio, không ẩn panel, không đổi mode.
+- Cơ chế: giảm `content_scale_factor` để canvas logic đạt tối thiểu 960×600; xem 6.1 và 6.6.
+- Hệ quả: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. Bạn đã chấp nhận tradeoff này. UI hiển thị tỉ lệ fit và gợi ý chuyển mode, nhưng không tự đổi. Khi fit < 100%, control UI scale bị disable kèm hint vì fit sẽ bù lại mọi thay đổi.
 
-### 18.2 Renderer mặc định trên Android
+### 18.2 Renderer mặc định trên Android — đã chốt: Mobile
 
-- **Đề xuất:** `Auto` = mặc định nền tảng; đổi `project.godot` để Android dùng **Mobile**, desktop/headless dùng Forward+.
-- **Lý do:** Mobile nhẹ hơn trên GPU điện thoại; vẫn có thể chọn Forward+ bằng restart.
-- **Thay thế:** giữ Forward+ mặc định, chỉ khuyến nghị Mobile trong Settings.
+- Mặc định trên Android là **Mobile**; desktop/headless là Forward+.
+- `Auto`, `Forward+`, `Compatibility` vẫn chọn được; đổi bằng restart có kiểm chứng.
+- `project.godot` phải đổi `renderer/rendering_method.mobile` từ `forward_plus` sang `mobile`.
+- Fallback backend (Vulkan → OpenGL) là thật và được hiển thị; không fake.
 
-### 18.3 Thiết bị tham chiếu và mức xác minh
+### 18.3 Thiết bị tham chiếu và mức xác minh — đã chốt: Android 15–17, 60 fps không bắt buộc
 
-- **Câu hỏi:** bạn sẽ test APK trên máy nào (model/SoC/RAM/Android version)? Có bắt buộc đạt 60 fps trên máy đó không?
-- **Đề xuất:** chốt một máy tham chiếu nếu có; nếu không, trạng thái cuối là “logic verified, device-unverified”, không claim 60 fps.
-- **Lý do:** không có thiết bị trong môi trường này; mọi kết luận về cảm giác chạm, orientation, renderer restart và FPS thật đều phụ thuộc máy test. Con số 60 fps chỉ có nghĩa khi gắn với một thiết bị cụ thể.
+- Xác minh trên **Android 15–17** (máy cụ thể do bạn test).
+- **60 fps là mục tiêu, không phải cổng chấp nhận** trên máy test. Phải đo và báo cáo FPS thật; không tuyên bố đạt 60 nếu chưa có số đo.
+- Trạng thái cuối nếu chưa test đủ: “logic verified, device-unverified”; không claim cảm giác chạm/orientation/renderer restart/FPS khi chưa có thiết bị.
 
 ### 18.4 Những quyết định tôi đã tự chốt (bạn check khi đọc)
 
 Các mục này không cần bạn trả lời; chúng đã được ghi trong doc. Nếu thấy sai, nói rõ.
 
 - Home dạng list/table; liệt kê **tất cả project** qua `Store.list_projects()` mới; `recent_projects()` chỉ dùng để sort; không hiển thị template vì project JSON không lưu.
-- 44 dp cho mọi hành động, kể cả Desktop; mật độ đến từ typography/padding.
+- 44 dp logic cho mọi hành động, kể cả Desktop; mật độ đến từ typography/padding. Desktop fit và user scale < 1.0 làm giảm kích thước vật lý; có indicator. Desktop fit < 100% disable UI scale control.
 - Export: PNG still + PNG sequence ZIP; không MP4.
 - Import: glTF/GLB + OBJ+MTL; FBX báo không hỗ trợ; một document object mỗi file.
 - UI tiếng Anh; single-select; không Save As.
@@ -1590,9 +1624,9 @@ Các mục này không cần bạn trả lời; chúng đã được ghi trong d
 - Ease preset: Hold / Ease Out / Linear / Ease In / Custom; không có Ease In Out vì transition là một scalar.
 - Compact Properties sheet cao tối đa 72%, mỗi edit gọi `UPDATE_ONCE` để preview cập nhật.
 - Desktop `Project → New/Open/Close` quay về Home sau khi confirm lưu; không Save As.
-- Breakpoint mode dùng **device dp**; panel policy dùng **layout width** sau scale.
+- `Auto` dùng **device dp**; panel policy của Studio/Compact dùng **layout width** sau scale; Desktop dùng shrink-to-fit, không dùng panel fallback.
 
-Nếu bạn đồng ý 18.1–18.3, chỉ cần nói “duyệt”. Nếu muốn đổi mục nào trong 18.4, nói rõ mục đó.
+Tài liệu đã sẵn sàng để duyệt. Nếu đồng ý, chỉ cần nói **“duyệt”**; bước tiếp theo là lập kế hoạch triển khai (writing-plans), rồi implement test-first theo thứ tự ở mục 17.
 
 ---
 
@@ -1647,7 +1681,8 @@ Nếu bạn đồng ý 18.1–18.3, chỉ cần nói “duyệt”. Nếu muốn
 - `DisplayServer.screen_set_orientation(orientation, screen=-1)` — constants `SCREEN_SENSOR`, `SCREEN_PORTRAIT`, `SCREEN_LANDSCAPE`; device-unverified.
 - `DisplayServer.get_display_safe_area()` — safe insets.
 - `DisplayServer.screen_get_dpi()` / `screen_get_scale()` — density; OS font scale chưa xác nhận.
-- `RenderingServer.get_current_rendering_method()` — backend thực.
+- `RenderingServer.get_current_rendering_method()` — backend thực. Default: Android `mobile`, desktop/headless `forward_plus`; `project.godot` phải đặt `.mobile="mobile"`.
+- `Window.content_scale_factor` — scale UI; Desktop fit giảm factor để canvas logic đạt 960×600.
 - `Viewport.scaling_3d_scale`, `msaa_3d`, `use_taa`, `transparent_bg`.
 - `Environment` — SSAO/SSIL/SSR/glow/tonemap/volumetric fog; capability-gated.
 - `Performance` — FPS/frame time/draw calls.
@@ -1656,6 +1691,9 @@ Nếu bạn đồng ý 18.1–18.3, chỉ cần nói “duyệt”. Nếu muốn
 ### 19.4 Glossary
 
 - **dp:** density-independent pixel; UI unit.
+- **device dp:** `physical px / density`; dùng cho `Auto` chọn mode.
+- **layout width:** chiều rộng logic sau `content_scale_factor`; dùng cho panel policy của Studio/Compact.
+- **Desktop fit:** tỉ lệ thu nhỏ đều của toàn bộ UI Desktop khi canvas logic không đạt 960×600; không phải fallback mode.
 - **Compact/Studio/Desktop:** ba mode layout.
 - **Autokey:** chế độ tự tạo key khi transform đổi.
 - **Unkeyed:** thay đổi pose chưa có key tại playhead.
@@ -1667,4 +1705,4 @@ Nếu bạn đồng ý 18.1–18.3, chỉ cần nói “duyệt”. Nếu muốn
 
 ---
 
-*Hết tài liệu. Trạng thái: chờ duyệt. Sau khi duyệt, bước tiếp theo là lập kế hoạch triển khai (writing-plans), rồi implement test-first theo thứ tự ở mục 17.*
+*Hết tài liệu. Trạng thái: chờ duyệt lần cuối. Sau khi duyệt, bước tiếp theo là lập kế hoạch triển khai (writing-plans), rồi implement test-first theo thứ tự ở mục 17.*
