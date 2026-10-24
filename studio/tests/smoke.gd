@@ -143,6 +143,39 @@ func _ready() -> void:
 	doc.set_object_transform(key_id, Vector3(7.0, 0.0, 0.0), Quaternion.IDENTITY, Vector3.ONE)
 	_check(doc.get_channel_keys(key_id, "position").size() == 3, "autokey on inserts a missing key")
 	doc.set_autokey(false)
+
+	# A key write re-seeks the AnimationPlayer. The intended pose of channels
+	# without a key at the playhead must survive that re-sample.
+	var pose_id: String = doc.add_primitive("cube", Vector3.ZERO)
+	doc.set_selection(pose_id)
+	doc.seek(0.0)
+	doc.set_object_transform(pose_id, Vector3.ZERO, Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_channel_key("position")
+	doc.insert_channel_key("rotation")
+	doc.seek(2.0)
+	doc.set_object_transform(pose_id, Vector3(2.0, 0.0, 0.0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_channel_key("position")
+	var intended_rotation := Quaternion(Vector3.UP, deg_to_rad(35.0))
+	doc.begin_edit("Move keyed object")
+	doc.set_object_transform(pose_id, Vector3(3.0, 0.0, 0.0), intended_rotation, Vector3.ONE)
+	doc.end_edit()
+	_check(doc.get_channel_keys(pose_id, "position").size() == 2, "keyed channel updates in place")
+	_check(absf((doc.get_channel_keys(pose_id, "position")[1]["value"] as Vector3).x - 3.0) < 0.0001, "keyed channel stores the new value")
+	_check((doc.get_object_transform(pose_id)["rotation"] as Quaternion).angle_to(intended_rotation) < deg_to_rad(0.5), "unkeyed channel keeps the edited pose")
+
+	# key=false is a pure pose write even when the playhead sits on a key.
+	doc.set_object_transform(pose_id, Vector3(9.0, 0.0, 0.0), Quaternion.IDENTITY, Vector3.ONE, false)
+	_check(doc.get_channel_keys(pose_id, "position").size() == 2, "key=false does not add a key")
+	_check(absf((doc.get_channel_keys(pose_id, "position")[1]["value"] as Vector3).x - 3.0) < 0.0001, "key=false does not update an existing key")
+	doc.seek(0.0)
+	doc.seek(2.0)
+
+	# The insert-keys action updates an existing key instead of duplicating it.
+	doc.set_object_transform(pose_id, Vector3(4.0, 0.0, 0.0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_transform_keys()
+	_check(doc.get_channel_keys(pose_id, "position").size() == 2, "insert keys updates an existing key")
+	_check(absf((doc.get_channel_keys(pose_id, "position")[1]["value"] as Vector3).x - 4.0) < 0.0001, "insert keys stores the playhead pose")
+
 	# Restore the selection/time the later smoke blocks expect.
 	doc.set_selection(ease_id)
 	doc.seek(0.0)

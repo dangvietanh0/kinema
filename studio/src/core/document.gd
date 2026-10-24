@@ -896,25 +896,39 @@ func set_object_transform(id: String, position: Vector3, rotation: Quaternion, p
 		changed.append("rotation")
 	if not _vec3_close(node.scale, p_scale, 0.00001):
 		changed.append("scale")
+	var values := {
+		"position": position,
+		"rotation": next_rotation,
+		"scale": p_scale,
+	}
+	_apply_pose_to_node(id, position, next_rotation, p_scale)
+	if key and not _loading:
+		for channel in changed:
+			var existing := _key_index_at(id, channel, current_time)
+			if existing >= 0:
+				# Editing on a key updates that key even when autokey is off.
+				_write_key(id, channel, values[channel], "update_only")
+			elif autokey:
+				_write_key(id, channel, values[channel], "insert_only")
+		# A key write re-seeks the AnimationPlayer, which re-samples every
+		# track. Restore the intended pose so unkeyed channels are not lost.
+		_apply_pose_to_node(id, position, next_rotation, p_scale)
+	_dirty = true
+	dirty_changed.emit(true)
+	object_changed.emit(id)
+
+func _apply_pose_to_node(id: String, position: Vector3, rotation: Quaternion, p_scale: Vector3) -> void:
+	var node: Node3D = nodes.get(id)
+	if node == null:
+		return
 	node.position = position
-	node.quaternion = next_rotation
+	node.quaternion = rotation
 	node.scale = p_scale
 	var obj := get_object(id)
 	if not obj.is_empty():
 		obj["position"] = node.position
 		obj["rotation"] = node.quaternion
 		obj["scale"] = node.scale
-	if key and not _loading:
-		for channel in changed:
-			var existing := _key_index_at(id, channel, current_time)
-			if existing >= 0:
-				# Editing on a key updates that key even when autokey is off.
-				_write_key(id, channel, _channel_value(id, channel), "update_only")
-			elif autokey:
-				_write_key(id, channel, _channel_value(id, channel), "insert_only")
-	_dirty = true
-	dirty_changed.emit(true)
-	object_changed.emit(id)
 
 func _vec3_close(a: Vector3, b: Vector3, epsilon: float) -> bool:
 	return absf(a.x - b.x) <= epsilon and absf(a.y - b.y) <= epsilon and absf(a.z - b.z) <= epsilon
@@ -923,6 +937,9 @@ func _key_index_at(id: String, channel: String, time: float) -> int:
 	return get_key_index_at(id, channel, time, 0.5 / float(maxi(1, fps)))
 
 func _write_key(id: String, channel: String, value: Variant, mode: String) -> int:
+	if mode != "update_only" and mode != "insert_only" and mode != "update_or_insert":
+		push_error("Unknown key write mode: " + mode)
+		return -1
 	var existing := _key_index_at(id, channel, current_time)
 	if existing >= 0:
 		if mode != "insert_only":
@@ -1035,32 +1052,41 @@ func _insert_track_value(track: int, channel: String, time: float, value: Varian
 		_:
 			return animation.track_insert_key(track, time, value)
 
-func _key_selected_transform(record_history: bool = true) -> void:
+func _key_selected_transform() -> void:
 	if selected_id == "":
 		return
-	if record_history:
-		begin_edit("Insert keys")
+	begin_edit("Insert keys")
+	var values := {}
 	for channel in CHANNELS:
 		var value: Variant = _channel_value(selected_id, channel)
-		if value == null:
-			continue
-		_write_key(selected_id, channel, value, "update_or_insert")
-	if record_history:
-		end_edit()
+		if value != null:
+			values[channel] = value
+	for channel in CHANNELS:
+		if values.has(channel):
+			_write_key(selected_id, channel, values[channel], "update_or_insert")
+	if values.size() == 3:
+		_apply_pose_to_node(selected_id, values["position"], values["rotation"], values["scale"])
+	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
 	object_changed.emit(selected_id)
 
 func insert_transform_keys() -> void:
-	_key_selected_transform(true)
+	_key_selected_transform()
 
 func insert_channel_key(channel: String) -> void:
 	if selected_id == "":
 		return
 	begin_edit("Insert " + channel + " key")
-	var value: Variant = _channel_value(selected_id, channel)
-	if value != null:
-		_write_key(selected_id, channel, value, "update_or_insert")
+	var values := {}
+	for name in CHANNELS:
+		var value: Variant = _channel_value(selected_id, name)
+		if value != null:
+			values[name] = value
+	if values.has(channel):
+		_write_key(selected_id, channel, values[channel], "update_or_insert")
+	if values.size() == 3:
+		_apply_pose_to_node(selected_id, values["position"], values["rotation"], values["scale"])
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
