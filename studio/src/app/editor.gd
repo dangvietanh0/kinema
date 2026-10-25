@@ -79,6 +79,8 @@ var _wide := true
 var _short := false
 var _drawer_open := false
 var _compact_tab := "scene"
+var layout_info: Dictionary = {}
+var workbench_mode := "studio"
 var _timeline_visible := true
 var _short_timeline_open := false
 var _closing := false
@@ -459,6 +461,15 @@ func _build_drawer_scrim() -> void:
 # Documents
 # -------------------------------------------------------------------------
 
+## Applies a resolved layout result from Main. The workbench selects its
+## Compact / Studio / Desktop arrangement from `mode`; the value is kept so a
+## rebuild of the shell can restore it without asking the window again.
+func apply_layout(layout: Dictionary) -> void:
+	layout_info = layout
+	workbench_mode = str(layout.get("mode", "studio"))
+	if has_method("_on_workbench_mode_changed"):
+		call("_on_workbench_mode_changed")
+
 func open_new(meta: Dictionary, template: String) -> void:
 	_project_meta = meta.duplicate(true)
 	var document := DocumentScript.new()
@@ -498,7 +509,9 @@ func _adopt_document(document: Node3D) -> void:
 	_update_header()
 	_update_history_buttons()
 	_select_tool(_tool)
-	_set_compact_tab(_compact_tab)
+	# Both calls end with a deferred reframe; apply the pending window mode
+	# afterwards so the first frame is already arranged for it.
+	call_deferred("apply_layout", layout_info)
 
 func _on_document_scene_changed() -> void:
 	_update_header()

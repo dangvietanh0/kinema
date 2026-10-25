@@ -4,7 +4,6 @@ extends Node
 const RenderExport = preload("res://src/core/render_export.gd")
 
 var _failures: Array[String] = []
-
 func _check(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -17,6 +16,47 @@ func _ready() -> void:
 	_check(get_tree().root.theme != null, "app theme installed on root")
 	_check(Kit.font_regular != null, "Inter loaded")
 	_check(Kit.icon_texture("box") != null, "box icon loaded")
+
+	print("SMOKE STEP: layout math")
+	var LayoutMathScript = load("res://src/app/layout_math.gd")
+	_check(LayoutMathScript != null, "layout math module exists")
+	if LayoutMathScript != null:
+		var phone = LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "auto", true)
+		_check(phone["mode"] == "compact", "auto resolves a phone to compact")
+		var tablet = LayoutMathScript.resolve(Vector2i(1280, 800), 160.0, "Linux", 1.0, "auto", true)
+		_check(tablet["mode"] == "desktop", "auto resolves a wide tablet to desktop")
+		var wide_phone = LayoutMathScript.resolve(Vector2i(2400, 1080), 420.0, "Android", 1.0, "auto", true)
+		_check(wide_phone["mode"] == "studio", "landscape phone resolves to studio")
+		var phone_desktop = LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "desktop", true)
+		_check(phone_desktop["mode"] == "desktop", "desktop is selectable on a phone")
+		_check(phone_desktop["fit"] < 1.0, "desktop on a phone shrinks to fit")
+		_check(phone_desktop["logical_after"].x >= 959.0 and phone_desktop["logical_after"].y >= 599.0, "desktop fit keeps 960x600 logical")
+		_check(not phone_desktop["user_scale_enabled"], "desktop fit disables user scale")
+		var desktop_min = LayoutMathScript.resolve(Vector2i(960, 600), 160.0, "Linux", 1.0, "desktop", true)
+		_check(is_equal_approx(desktop_min["fit"], 1.0), "960x600 desktop has 100 percent fit")
+		var scaled_phone = LayoutMathScript.resolve(Vector2i(360, 640), 160.0, "Android", 1.3, "compact", false)
+		_check(scaled_phone["factor"] <= 1.125, "compact scale clamps to keep 320x480")
+		_check(scaled_phone["logical_after"].x >= 319.0 and scaled_phone["logical_after"].y >= 479.0, "compact minimum canvas holds")
+		_check(LayoutMathScript.orientation_constant("portrait") == DisplayServer.SCREEN_PORTRAIT, "portrait maps to the engine constant")
+		_check(LayoutMathScript.orientation_constant("landscape") == DisplayServer.SCREEN_LANDSCAPE, "landscape maps to the engine constant")
+
+	print("SMOKE STEP: prefs persistence")
+	var PrefsScript = load("res://src/core/prefs.gd")
+	_check(PrefsScript != null, "prefs module exists")
+	if PrefsScript != null:
+		var test_path := "user://settings_test.json"
+		var prefs_a = PrefsScript.new()
+		prefs_a.settings_path = test_path
+		prefs_a.load_settings()
+		_check(prefs_a.get_value("display.layout", "") == "auto", "prefs provide display defaults")
+		prefs_a.set_value("display.user_scale", 1.3)
+		var prefs_b = PrefsScript.new()
+		prefs_b.settings_path = test_path
+		prefs_b.load_settings()
+		_check(is_equal_approx(float(prefs_b.get_value("display.user_scale", 0.0)), 1.3), "prefs persist values")
+		prefs_a.free()
+		prefs_b.free()
+		DirAccess.remove_absolute(test_path)
 
 	var packed: PackedScene = load("res://src/app/main.tscn")
 	var main: Control = packed.instantiate()
@@ -33,6 +73,24 @@ func _ready() -> void:
 		_finish()
 		return
 	var doc = editor.doc
+	# Mode resolution is proven against real physical sizes; the headless window
+	# has no screen, so the live window size is not used here.
+	_check(str(LayoutMathScript.resolve(Vector2i(1280, 800), 160.0, "Linux", 1.0, "auto", false).get("mode", "")) == "desktop", "wide desktop window uses the desktop shell")
+	Prefs.set_value("display.layout", "compact")
+	_check(str(LayoutMathScript.resolve(Vector2i(1280, 800), 160.0, "Linux", 1.0, str(Prefs.get_value("display.layout", "")), true).get("mode", "")) == "compact", "compact layout is actively selectable")
+	Prefs.set_value("display.layout", "auto")
+	var live_layout = main.refresh_layout_scale()
+	_check(editor.workbench_mode == str(live_layout.get("mode", "")), "editor receives the resolved mode")
+	# The shell follows the preference even when the window itself cannot be
+	# measured. Restore the editor to the live window mode afterwards.
+	editor.apply_layout(LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "compact", true))
+	_check(editor.workbench_mode == "compact", "editor switches to the compact shell")
+	editor.apply_layout(LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "desktop", true))
+	_check(editor.workbench_mode == "desktop", "desktop stays selected on a phone")
+	_check(float(editor.layout_info.get("fit", 1.0)) < 1.0, "desktop fit is reported to the editor")
+	editor.apply_layout(live_layout)
+	_check(editor.workbench_mode == str(live_layout.get("mode", "")), "editor returns to the live mode")
+	_check(not main.apply_orientation("portrait"), "orientation is disabled when the display server has no feature")
 	_check(doc != null and doc.objects.size() >= 3, "study template has objects")
 	_check(editor._view != null and editor._view._viewport != null, "preview viewport built")
 	_check(doc.get_channel_keys(str(doc.objects[0]["id"]), "position").size() >= 0, "channels readable")
@@ -292,6 +350,9 @@ func _ready() -> void:
 	var view = editor._view
 	doc.set_selection(mesh_id)
 	view.set_tool("move")
+	await get_tree().process_frame
+	view._frame_all(false)
+	await get_tree().process_frame
 	await get_tree().process_frame
 	var before_x: float = doc.get_selected_node().position.x
 	view._start_gizmo("x", Vector2(100, 100))
