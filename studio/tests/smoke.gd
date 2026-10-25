@@ -17,6 +17,29 @@ func _ready() -> void:
 	_check(Kit.font_regular != null, "Inter loaded")
 	_check(Kit.icon_texture("box") != null, "box icon loaded")
 
+	print("SMOKE STEP: tokens and icons")
+	_check(Kit.BG.to_html(false).to_upper() == "0B0F14", "BG token is exact")
+	_check(Kit.FOCUS.to_html(false).to_upper() == "4C8DE6", "FOCUS token is exact")
+	_check(Kit.TIME.to_html(false).to_upper() == "D9A565", "TIME token is exact")
+	var sharp := Kit.flat_style(Kit.SURFACE)
+	_check(sharp.corner_radius_top_left == 0 and sharp.corner_radius_bottom_right == 0, "panels and inputs are square")
+	_check(Kit.icon_button("play", "Play").custom_minimum_size == Vector2(44, 44), "icon buttons have a 44 dp hit target")
+	_check(Kit.text_button("Render", "", true).custom_minimum_size.y >= 48.0, "primary buttons have a 48 dp hit target")
+	_check(Kit.hairline().custom_minimum_size == Vector2(0, 1), "hairlines are 1 px")
+	for icon_name in [
+		"play", "pause", "stop", "key-round", "diamond-plus", "speed-graph",
+		"clapperboard", "upload", "tool-select", "tool-move", "tool-rotate",
+		"tool-scale", "eye", "eye-closed", "lock", "unlock", "camera",
+		"lightbulb", "box", "square-dashed", "smartphone", "tablet", "monitor",
+		"gauge", "restart",
+	]:
+		var icon_path := "res://assets/icons/%s.svg" % icon_name
+		_check(FileAccess.file_exists(icon_path), "icon exists: %s" % icon_name)
+		if FileAccess.file_exists(icon_path):
+			var svg := FileAccess.get_file_as_string(icon_path)
+			_check(svg.contains("viewBox=\"0 0 24 24\""), "icon uses the 24 px grid: %s" % icon_name)
+			_check(svg.contains("stroke-width=\"1.5\""), "icon uses a 1.5 px stroke: %s" % icon_name)
+
 	print("SMOKE STEP: layout math")
 	var LayoutMathScript = load("res://src/app/layout_math.gd")
 	_check(LayoutMathScript != null, "layout math module exists")
