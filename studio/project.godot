@@ -23,6 +23,7 @@ config/quit_on_go_back=false
 Kit="*res://src/ui/kit.gd"
 Store="*res://src/core/project_store.gd"
 Gfx="*res://src/core/gfx.gd"
+Perf="*res://src/core/perf.gd"
 
 [display]
 

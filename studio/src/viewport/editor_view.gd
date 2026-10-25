@@ -46,6 +46,11 @@ var _multi_mid := Vector2.ZERO
 var _multi_dist := 1.0
 var _pan_last := Vector2.ZERO
 var _camera_ready := false
+var _interactive := false
+var _preview_scale := 1.0
+var _preview_cap := 1920
+var _dirty_visual := true
+var _redraw_needed := true
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -56,13 +61,15 @@ func _ready() -> void:
 	resized.connect(_on_resized)
 	call_deferred("_on_resized")
 	set_process(true)
+	if Perf != null:
+		Perf.watch(self)
 
 func _build_viewport() -> void:
 	_viewport = SubViewport.new()
 	_viewport.name = "PreviewViewport"
 	_viewport.gui_disable_input = true
 	_viewport.handle_input_locally = false
-	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	_viewport.msaa_3d = Viewport.MSAA_2X
 	_viewport.size = Vector2i(1280, 800)
 	_viewport.add_to_group("kinema_viewport")
@@ -106,7 +113,7 @@ func _on_graphics_changed() -> void:
 		Gfx.apply_viewport(_viewport)
 	if _env_node != null and _env_node.environment != null:
 		Gfx.apply_environment(_env_node.environment)
-	queue_redraw()
+	_repaint()
 
 func _build_stage() -> void:
 	_grid_root = Node3D.new()
@@ -256,6 +263,8 @@ func set_document(document: Node3D) -> void:
 	_viewport.add_child(doc)
 	doc.scene_changed.connect(_on_scene_changed)
 	doc.selection_changed.connect(_on_selection_changed)
+	doc.transform_changed.connect(_on_transform_changed)
+	doc.keyframes_changed.connect(_on_keyframes_changed)
 	doc.object_changed.connect(_on_object_changed)
 	doc.playback_changed.connect(_on_playback_changed)
 	_frame_all(false)
@@ -268,24 +277,32 @@ func set_tool(new_tool: String) -> void:
 	queue_redraw()
 
 func _on_resized() -> void:
+	_apply_viewport_size()
+	_repaint()
+
+func _apply_viewport_size() -> void:
 	if _viewport == null:
 		return
 	# Render the preview at device resolution instead of at UI units. Phones
 	# scale the canvas by their display density, so the raw control size would
-	# produce a soft, upscaled 3D image.
+	# produce a soft, upscaled 3D image. The adaptive quality scale and the cap
+	# trade sharpness for frame time; both are reported in the performance HUD.
 	var pixel_scale := 1.0
 	var win := get_window()
 	var visible := get_viewport().get_visible_rect().size
 	if win != null and visible.x > 1.0 and visible.y > 1.0:
 		pixel_scale = clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
-	var target := Vector2(size.x * pixel_scale, size.y * pixel_scale)
+	var target := Vector2(size.x, size.y) * pixel_scale * _preview_scale
 	var longest := maxf(target.x, target.y)
-	if longest > 2560.0:
-		target *= 2560.0 / longest
+	var cap := float(_preview_cap)
+	if longest > cap:
+		target *= cap / longest
 	var w := maxi(2, int(round(target.x)))
 	var h := maxi(2, int(round(target.y)))
-	_viewport.size = Vector2i(w, h)
-	queue_redraw()
+	if _viewport.size != Vector2i(w, h):
+		_viewport.size = Vector2i(w, h)
+		if _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+			_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func _process(_delta: float) -> void:
 	if _camera == null:
@@ -300,9 +317,12 @@ func _process(_delta: float) -> void:
 	if doc == null:
 		return
 	doc.update_marker_scales(_camera)
-	# The overlay is cheap and must track selection, gizmo and compass changes
-	# even when no input event arrives, so it redraws with the preview.
-	queue_redraw()
+	_dirty_visual = true
+	# The overlay only redraws when something visible changed; the old
+	# unconditional redraw re-ran the compass, gizmo and HUD text every frame.
+	if _redraw_needed:
+		_redraw_needed = false
+		queue_redraw()
 
 # -------------------------------------------------------------------------
 # Document events and view helpers
@@ -318,10 +338,63 @@ func _on_selection_changed(_id: String) -> void:
 
 func _on_object_changed(_id: String) -> void:
 	_refresh_status()
-	queue_redraw()
+	_repaint()
+
+func _on_transform_changed(_id: String) -> void:
+	_refresh_status()
+	_repaint()
+
+func _on_keyframes_changed(_id: String) -> void:
+	_repaint()
 
 func _on_playback_changed(_time: float, _playing: bool) -> void:
-	queue_redraw()
+	_repaint()
+
+## Ask for exactly one rendered frame. On-demand previews keep the GPU idle
+## while nothing moves; gestures switch to continuous rendering instead.
+func request_preview_update() -> void:
+	if _viewport == null:
+		return
+	_dirty_visual = true
+	if _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	_redraw_needed = true
+
+func set_interactive(active: bool) -> void:
+	if _viewport == null:
+		return
+	_interactive = active
+	if active:
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	elif _viewport.render_target_update_mode == SubViewport.UPDATE_ALWAYS:
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	_dirty_visual = true
+	_redraw_needed = true
+
+## Gestures render continuously from the first accepted event until the last
+## finger or button is released; a tap that only changes the selection renders
+## a single frame.
+func _preview_busy_check() -> void:
+	var busy := _mode == "gizmo" or _mode == "orbit" or _mode == "multi" or _mode == "pan"
+	if busy != _interactive:
+		set_interactive(busy)
+
+func is_interactive() -> bool:
+	return _interactive
+
+func set_preview_scale(value: float) -> void:
+	_preview_scale = clampf(value, 0.25, 1.0)
+	_apply_viewport_size()
+
+func set_preview_cap(value: int) -> void:
+	_preview_cap = clampi(value, 480, 7680)
+	_apply_viewport_size()
+
+func _repaint() -> void:
+	_dirty_visual = true
+	_redraw_needed = true
+	if _viewport != null and _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func _refresh_status() -> void:
 	if _status_label == null:
@@ -460,6 +533,7 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 			_tap_candidate = false
 			_update_multi_anchor()
 		accept_event()
+		_preview_busy_check()
 	else:
 		_touches.erase(event.index)
 		if _mode == "gizmo":
@@ -474,6 +548,7 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 			_mode = "idle"
 			_tap_candidate = false
 		accept_event()
+		_preview_busy_check()
 
 func _handle_screen_drag(event: InputEventScreenDrag) -> void:
 	if not _touches.has(event.index):
@@ -488,15 +563,18 @@ func _handle_screen_drag(event: InputEventScreenDrag) -> void:
 	elif _mode == "multi" and _touches.size() >= 2:
 		_update_multi_gesture()
 	accept_event()
+	_preview_busy_check()
 
 func _handle_mouse_button(event: InputEventMouseButton) -> void:
 	if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
 		distance = clampf(distance * 0.9, 0.9, 80.0)
 		accept_event()
+		_preview_busy_check()
 		return
 	if event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
 		distance = clampf(distance * 1.1, 0.9, 80.0)
 		accept_event()
+		_preview_busy_check()
 		return
 	if event.button_index != MOUSE_BUTTON_LEFT and event.button_index != MOUSE_BUTTON_RIGHT and event.button_index != MOUSE_BUTTON_MIDDLE:
 		return
@@ -513,6 +591,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			_mode = "pan"
 			_pan_last = event.position
 		accept_event()
+		_preview_busy_check()
 	else:
 		if _mode == "gizmo":
 			_finish_gizmo()
@@ -521,6 +600,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 		_mode = "idle"
 		_tap_candidate = false
 		accept_event()
+		_preview_busy_check()
 
 func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	if _mode == "gizmo":
@@ -530,6 +610,7 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	else:
 		return
 	accept_event()
+	_preview_busy_check()
 
 func _orbit(relative: Vector2) -> void:
 	if relative.length() < 0.01:

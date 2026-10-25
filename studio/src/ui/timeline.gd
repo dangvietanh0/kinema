@@ -77,6 +77,8 @@ func setup(document: Node3D) -> void:
 	doc.playback_changed.connect(_on_playback_changed)
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
+	doc.transform_changed.connect(_on_transform_changed)
+	doc.keyframes_changed.connect(_on_keyframes_changed)
 	doc.scene_changed.connect(_on_scene_changed)
 	_sync_flags = true
 	_loop_button.button_pressed = doc.loop
@@ -264,6 +266,16 @@ func _on_selection_changed(_id: String) -> void:
 		_sheet.queue_redraw()
 
 func _on_object_changed(_id: String) -> void:
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+func _on_transform_changed(_id: String) -> void:
+	# The sheet only plots keys and the playhead; live values do not redraw it.
+	pass
+
+func _on_keyframes_changed(_id: String) -> void:
+	_selected_index = -1
+	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
 

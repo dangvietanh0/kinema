@@ -28,6 +28,8 @@ var _color_button: Button
 var _key_buttons: Dictionary = {}
 var _swatch_value := Color(0.6, 0.6, 0.6)
 var _field_drag := false
+## Section build counter for diagnostics and the smoke suite.
+var section_build_count := 0
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -38,6 +40,9 @@ func setup(document: Node3D) -> void:
 	doc = document
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
+	# Value-only refreshes: a transform edit never rebuilds the sections.
+	doc.transform_changed.connect(_on_transform_changed)
+	doc.keyframes_changed.connect(_on_keyframes_changed)
 	doc.scene_changed.connect(_on_scene_changed)
 	_rebuild()
 
@@ -103,9 +108,22 @@ func _on_object_changed(id: String) -> void:
 	_refresh_values()
 	_refresh_keys()
 
+func _on_transform_changed(id: String) -> void:
+	if id != _built_for:
+		return
+	_refresh_values()
+
+func _on_keyframes_changed(id: String) -> void:
+	if _built_for == "":
+		return
+	if id != "" and id != _built_for:
+		return
+	_refresh_keys()
+
 func _rebuild() -> void:
 	if _content == null:
 		return
+	section_build_count += 1
 	if _field_drag:
 		_field_drag = false
 	for child in _content.get_children():

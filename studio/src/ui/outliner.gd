@@ -13,6 +13,8 @@ var _search: LineEdit
 var _empty: VBoxContainer
 var _rows: Dictionary = {}
 var _filter := ""
+## Rebuild counter for diagnostics and the smoke suite.
+var rebuild_count := 0
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -24,6 +26,8 @@ func setup(document: Node3D) -> void:
 	doc.scene_changed.connect(_on_scene_changed)
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
+	# Transform edits change values, not rows: the outliner ignores them.
+	doc.keyframes_changed.connect(_on_keyframes_changed)
 	_rebuild()
 
 func _build() -> void:
@@ -112,12 +116,25 @@ func _on_selection_changed(_id: String) -> void:
 	_refresh_selection()
 
 func _on_object_changed(id: String) -> void:
+	# Material, visibility and camera edits only change a row's badges.
 	_update_row(id)
 	_refresh_selection()
+
+func _on_keyframes_changed(id: String) -> void:
+	if doc != null and id != "" and _rows.has(id):
+		_update_row(id)
+	else:
+		_refresh_animation_markers()
+
+func _refresh_animation_markers() -> void:
+	# Key changes only affect the animated dot on each row.
+	for id in _rows.keys():
+		_update_row(str(id))
 
 func _rebuild() -> void:
 	if doc == null or _list == null:
 		return
+	rebuild_count += 1
 	var scroll_pos := _scroll.scroll_vertical
 	for child in _list.get_children():
 		_list.remove_child(child)

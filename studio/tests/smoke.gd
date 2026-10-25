@@ -180,6 +180,31 @@ func _ready() -> void:
 	doc.set_selection(ease_id)
 	doc.seek(0.0)
 
+	print("SMOKE STEP: refresh and preview policy")
+	var preview = editor._view
+	preview.set_interactive(false)
+	preview.request_preview_update()
+	_check(preview._viewport.render_target_update_mode == SubViewport.UPDATE_ONCE, "idle preview requests one frame")
+	await get_tree().process_frame
+	_check(preview._viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS, "idle preview stops rendering")
+	preview.set_interactive(true)
+	_check(preview._viewport.render_target_update_mode == SubViewport.UPDATE_ALWAYS, "gesture preview renders continuously")
+	preview.set_interactive(false)
+	_check(preview._viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS, "gesture end stops continuous preview")
+
+	doc.set_selection(ease_id)
+	await get_tree().process_frame
+	var outliner_before: int = editor._outliner.rebuild_count
+	var inspector_sections_before: int = editor._inspector.section_build_count
+	var old_pose: Vector3 = doc.get_object_transform(ease_id)["position"]
+	doc.set_object_transform(ease_id, old_pose + Vector3(0.25, 0.0, 0.0), Quaternion.IDENTITY, Vector3.ONE)
+	await get_tree().process_frame
+	_check(editor._outliner.rebuild_count == outliner_before, "transform does not rebuild the outliner")
+	_check(editor._inspector.section_build_count == inspector_sections_before, "transform does not rebuild inspector sections")
+	_check(Perf.next_preview_scale(1.0, 20.0, 60, 0.6) < 1.0, "adaptive quality lowers preview scale")
+	_check(Perf.next_preview_scale(0.8, 70.0, 60, 0.6) > 0.8, "adaptive quality raises preview scale when there is headroom")
+	_check(is_equal_approx(Perf.next_preview_scale(0.6, 20.0, 60, 0.6), 0.6), "adaptive quality respects the floor")
+
 	print("SMOKE STEP: graph editor")
 	var timeline = editor._timeline
 	_check(timeline != null, "timeline exists")

@@ -9,6 +9,12 @@ extends Node3D
 signal scene_changed
 signal selection_changed(id: String)
 signal object_changed(id: String)
+## Emitted when only the transform of an object changed. Listeners that need
+## live values (preview, inspector values, gizmo) use this; listeners that
+## rebuild structure (outliner rows, panel sections) ignore it.
+signal transform_changed(id: String)
+## Emitted after any track, key or interpolation edit.
+signal keyframes_changed(id: String)
 signal playback_changed(time: float, is_playing: bool)
 signal history_changed
 signal dirty_changed(is_dirty: bool)
@@ -902,20 +908,26 @@ func set_object_transform(id: String, position: Vector3, rotation: Quaternion, p
 		"scale": p_scale,
 	}
 	_apply_pose_to_node(id, position, next_rotation, p_scale)
+	var wrote_key := false
 	if key and not _loading:
 		for channel in changed:
 			var existing := _key_index_at(id, channel, current_time)
 			if existing >= 0:
 				# Editing on a key updates that key even when autokey is off.
 				_write_key(id, channel, values[channel], "update_only")
+				wrote_key = true
 			elif autokey:
 				_write_key(id, channel, values[channel], "insert_only")
+				wrote_key = true
 		# A key write re-seeks the AnimationPlayer, which re-samples every
 		# track. Restore the intended pose so unkeyed channels are not lost.
 		_apply_pose_to_node(id, position, next_rotation, p_scale)
-	_dirty = true
-	dirty_changed.emit(true)
-	object_changed.emit(id)
+	if not changed.is_empty():
+		_dirty = true
+		dirty_changed.emit(true)
+		transform_changed.emit(id)
+		if wrote_key:
+			keyframes_changed.emit(id)
 
 func _apply_pose_to_node(id: String, position: Vector3, rotation: Quaternion, p_scale: Vector3) -> void:
 	var node: Node3D = nodes.get(id)
@@ -1069,7 +1081,7 @@ func _key_selected_transform() -> void:
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(selected_id)
+	keyframes_changed.emit(selected_id)
 
 func insert_transform_keys() -> void:
 	_key_selected_transform()
@@ -1090,7 +1102,7 @@ func insert_channel_key(channel: String) -> void:
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(selected_id)
+	keyframes_changed.emit(selected_id)
 
 func get_channel_keys(id: String, channel: String) -> Array:
 	var track := get_track(id, channel)
@@ -1120,7 +1132,7 @@ func set_key_transition(id: String, channel: String, key_index: int, value: floa
 	animation.track_set_key_transition(track, key_index, clampf(value, 0.0, 4.0))
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(id)
+	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 
@@ -1168,7 +1180,7 @@ func delete_key(id: String, channel: String, key_index: int) -> void:
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(id)
+	keyframes_changed.emit(id)
 	scene_changed.emit()
 	if anim_player != null:
 		anim_player.seek(current_time, true)
@@ -1187,6 +1199,7 @@ func set_key_time(id: String, channel: String, key_index: int, new_time: float) 
 	animation.length = duration
 	_dirty = true
 	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 	return new_index
@@ -1198,6 +1211,7 @@ func set_key_value(id: String, channel: String, key_index: int, value: Variant) 
 	animation.track_set_key_value(track, key_index, value)
 	_dirty = true
 	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 
@@ -1285,7 +1299,7 @@ func set_interpolation(mode: String) -> void:
 			animation.track_set_interpolation_type(ti, _interpolation_value())
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(selected_id)
+	keyframes_changed.emit("")
 
 func frame_to_time(frame: int) -> float:
 	return clampf(float(frame) / float(fps), 0.0, duration)
