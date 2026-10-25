@@ -6,6 +6,8 @@ extends VBoxContainer
 ## while still allowing keys to be created, retimed and deleted directly.
 
 signal notice(text: String)
+## Emitted by the compact sheet header so the editor can fold the timeline.
+signal close_requested
 
 class DopeSheet:
 	extends Control
@@ -43,6 +45,16 @@ var _end_button: Button
 var _mode_button: Button
 var _ease_button: Button
 
+var _transport_panel: PanelContainer
+var _transport_style: StyleBoxFlat
+var _time_box: VBoxContainer
+var _compact_header: PanelContainer
+var _compact_mode_button: Button
+var _compact_loop_button: Button
+var _compact_snap_button: Button
+var _compact_delete_button: Button
+var _compact_close_button: Button
+
 var _selected_channel := "position"
 var _selected_index := -1
 var _selected_data_id := ""
@@ -58,6 +70,10 @@ var _mode := "dope"
 var _graph_max_speed := 0.0001
 var _graph_baseline := 0.0
 var _graph_top := 0.0
+var _sheet_rule: ColorRect
+var _sheet_open := true
+var _chrome_mode := "studio"
+var _transport_buttons: Array[Button] = []
 
 var _label_width := 104.0
 var _ruler_h := 22.0
@@ -69,6 +85,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 0)
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_build_transport()
+	_build_compact_header()
 	_build_sheet()
 	resized.connect(_refresh_compact)
 
@@ -93,6 +110,7 @@ func setup(document: Node3D) -> void:
 
 func _build_transport() -> void:
 	var panel := PanelContainer.new()
+	_transport_panel = panel
 	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
 	style.border_width_top = 1
 	style.border_width_bottom = 1
@@ -101,6 +119,7 @@ func _build_transport() -> void:
 	style.content_margin_top = 4
 	style.content_margin_bottom = 4
 	panel.add_theme_stylebox_override("panel", style)
+	_transport_style = style
 	add_child(panel)
 
 	var row := HBoxContainer.new()
@@ -108,6 +127,7 @@ func _build_transport() -> void:
 	panel.add_child(row)
 
 	var time_box := VBoxContainer.new()
+	_time_box = time_box
 	time_box.add_theme_constant_override("separation", 0)
 	time_box.custom_minimum_size.x = 76
 	row.add_child(time_box)
@@ -120,6 +140,7 @@ func _build_transport() -> void:
 	_mode_button.toggle_mode = true
 	_mode_button.toggled.connect(_on_mode_toggled)
 	row.add_child(_mode_button)
+	_transport_buttons.append(_mode_button)
 
 	var spacer_l := Control.new()
 	spacer_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -128,25 +149,29 @@ func _build_transport() -> void:
 	_start_button = Kit.icon_button("skip-back", "Go to start", 28, 14)
 	_start_button.pressed.connect(_on_start)
 	row.add_child(_start_button)
+	_transport_buttons.append(_start_button)
 	var prev := Kit.icon_button("chevron-left", "Previous key", 28, 15)
 	prev.pressed.connect(_on_prev_key)
 	row.add_child(prev)
+	_transport_buttons.append(prev)
 
 	_play_button = Kit.icon_button("play", "Play / pause", 32, 15)
 	_play_button.add_theme_color_override("icon_normal_color", Color(0.09, 0.07, 0.05))
 	_play_button.add_theme_color_override("icon_hover_color", Color(0.09, 0.07, 0.05))
-	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.ACCENT, 16, Kit.ACCENT, 0))
-	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.ACCENT_BRIGHT, 16, Kit.ACCENT_BRIGHT, 0))
-	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.ACCENT.darkened(0.1), 16, Kit.ACCENT, 0))
+	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.TIME, 0, Kit.TIME, 0))
+	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.TIME_BRIGHT, 0, Kit.TIME_BRIGHT, 0))
+	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.TIME.darkened(0.1), 0, Kit.TIME, 0))
 	_play_button.pressed.connect(_on_play)
 	row.add_child(_play_button)
 
 	var next := Kit.icon_button("chevron-right", "Next key", 28, 15)
 	next.pressed.connect(_on_next_key)
 	row.add_child(next)
+	_transport_buttons.append(next)
 	_end_button = Kit.icon_button("skip-forward", "Go to end", 28, 14)
 	_end_button.pressed.connect(_on_end)
 	row.add_child(_end_button)
+	_transport_buttons.append(_end_button)
 
 	var spacer_r := Control.new()
 	spacer_r.custom_minimum_size.x = 6
@@ -156,10 +181,15 @@ func _build_transport() -> void:
 	_loop_button.toggle_mode = true
 	_loop_button.toggled.connect(_on_loop_toggled)
 	row.add_child(_loop_button)
+	_transport_buttons.append(_loop_button)
 
 	_auto_button = Kit.text_toggle("AUTO", "", true)
 	_auto_button.custom_minimum_size = Vector2(38, 26)
 	_auto_button.tooltip_text = "Auto-key transforms while editing"
+	_auto_button.add_theme_stylebox_override("normal", Kit.style_with_margins(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0, Vector4(4, 2, 4, 2)))
+	_auto_button.add_theme_stylebox_override("hover", Kit.style_with_margins(Kit.SURFACE_HOVER, 0, Color(0, 0, 0, 0), 0, Vector4(4, 2, 4, 2)))
+	_auto_button.add_theme_stylebox_override("pressed", Kit.style_with_margins(Kit.FOCUS_DARK, 0, Kit.FOCUS * Color(1, 1, 1, 0.34), 0, Vector4(4, 2, 4, 2)))
+	_auto_button.add_theme_stylebox_override("hover_pressed", Kit.style_with_margins(Kit.FOCUS_DARK.lightened(0.03), 0, Kit.FOCUS * Color(1, 1, 1, 0.52), 0, Vector4(4, 2, 4, 2)))
 	_auto_button.toggled.connect(_on_auto_toggled)
 	row.add_child(_auto_button)
 
@@ -167,16 +197,19 @@ func _build_transport() -> void:
 	_snap_button.toggle_mode = true
 	_snap_button.toggled.connect(_on_snap_toggled)
 	row.add_child(_snap_button)
+	_transport_buttons.append(_snap_button)
 
 	var key_button := Kit.icon_button("diamond-plus", "Insert transform keys at playhead", 28, 14)
 	key_button.pressed.connect(_on_key_all)
 	row.add_child(key_button)
+	_transport_buttons.append(key_button)
 
 	_delete_button = Kit.icon_button("trash-2", "Delete selected key", 28, 13)
 	_delete_button.disabled = true
 	_delete_button.add_theme_color_override("icon_disabled_color", Kit.TEXT_DIM * Color(1, 1, 1, 0.4))
 	_delete_button.pressed.connect(_on_delete_key)
 	row.add_child(_delete_button)
+	_transport_buttons.append(_delete_button)
 
 	_ease_button = Kit.text_button("EASE", "", false, true)
 	_ease_button.custom_minimum_size = Vector2(44, 26)
@@ -185,25 +218,166 @@ func _build_transport() -> void:
 	_ease_button.pressed.connect(_open_ease_menu)
 	row.add_child(_ease_button)
 
+
+## The phone sheet header. Compact transport carries only the actions a thumb
+## needs while scrubbing; graph, loop, snap, delete and fold live here, where
+## they belong to the sheet the user is actually looking at. Keeping them out
+## of the transport row is what lets the shell fit a 320 dp phone.
+func _build_compact_header() -> void:
+	_compact_header = PanelContainer.new()
+	_compact_header.custom_minimum_size.y = 48
+	_compact_header.visible = false
+	var style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	style.border_width_bottom = 1
+	style.content_margin_left = 6
+	style.content_margin_right = 6
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
+	_compact_header.add_theme_stylebox_override("panel", style)
+	add_child(_compact_header)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 2)
+	_compact_header.add_child(row)
+
+	_compact_mode_button = Kit.icon_button("speed-graph", "Speed graph editor", 44, 18)
+	_compact_mode_button.toggle_mode = true
+	_compact_mode_button.toggled.connect(_on_compact_mode_toggled)
+	row.add_child(_compact_mode_button)
+
+	_compact_loop_button = Kit.icon_button("repeat", "Loop playback", 44, 18)
+	_compact_loop_button.toggle_mode = true
+	_compact_loop_button.toggled.connect(_on_compact_loop_toggled)
+	row.add_child(_compact_loop_button)
+
+	_compact_snap_button = Kit.icon_button("magnet", "Snap keys to frames", 44, 18)
+	_compact_snap_button.toggle_mode = true
+	_compact_snap_button.toggled.connect(_on_compact_snap_toggled)
+	row.add_child(_compact_snap_button)
+
+	_compact_delete_button = Kit.icon_button("trash-2", "Delete selected key", 44, 17)
+	_compact_delete_button.disabled = true
+	_compact_delete_button.pressed.connect(_on_delete_key)
+	row.add_child(_compact_delete_button)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(spacer)
+
+	_compact_close_button = Kit.icon_button("chevron-down", "Fold the timeline", 44, 18)
+	_compact_close_button.pressed.connect(func() -> void: close_requested.emit())
+	row.add_child(_compact_close_button)
+
+
+func _sync_compact_header() -> void:
+	if _compact_mode_button == null:
+		return
+	_sync_flags = true
+	_compact_mode_button.set_pressed_no_signal(_mode == "graph")
+	_compact_loop_button.set_pressed_no_signal(doc != null and doc.loop)
+	_compact_snap_button.set_pressed_no_signal(doc != null and doc.snap)
+	_sync_flags = false
+	_style_flag_button(_compact_mode_button, _mode == "graph")
+	_style_flag_button(_compact_loop_button, doc != null and doc.loop)
+	_style_flag_button(_compact_snap_button, doc != null and doc.snap)
+	var has_key := doc != null and _selected_index >= 0 and _selected_data_id == doc.selected_id
+	_compact_delete_button.disabled = not has_key
+
+
+func _on_compact_mode_toggled(enabled: bool) -> void:
+	if _sync_flags:
+		return
+	set_mode("graph" if enabled else "dope")
+	if _mode == "graph" and doc != null and doc.selected_id == "":
+		notice.emit("Select an object to edit its speed graph.")
+
+
+func _on_compact_loop_toggled(enabled: bool) -> void:
+	if _sync_flags or doc == null:
+		return
+	doc.set_loop(enabled)
+	_loop_button.set_pressed_no_signal(enabled)
+	_style_flag_button(_loop_button, enabled)
+	_style_flag_button(_compact_loop_button, enabled)
+
+
+func _on_compact_snap_toggled(enabled: bool) -> void:
+	if _sync_flags or doc == null:
+		return
+	doc.set_snap(enabled)
+	_snap_button.set_pressed_no_signal(enabled)
+	_style_flag_button(_snap_button, enabled)
+	_style_flag_button(_compact_snap_button, enabled)
+
 func _build_sheet() -> void:
-	var rule := Kit.vsep(Kit.BORDER_SOFT)
-	add_child(rule)
+	_sheet_rule = Kit.vsep(Kit.BORDER_SOFT)
+	add_child(_sheet_rule)
 	_sheet = DopeSheet.new()
 	_sheet.timeline = self
 	_sheet.custom_minimum_size.y = 96
 	_sheet.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(_sheet)
 
+
+## Compact screens keep the transport and fold the sheet away, so the 3D view
+## keeps its height until the user asks for the dope sheet.
+func set_sheet_visible(open: bool) -> void:
+	_sheet_open = open
+	_sheet_rule.visible = open
+	if _sheet != null:
+		_sheet.visible = open
+	if _compact_header != null:
+		_compact_header.visible = open and _chrome_mode == "compact"
+
+
+func sheet_visible() -> bool:
+	return _sheet_open
+
+
+## Touch mode grows every transport control to a 44 dp target; studio and
+## desktop keep the denser 36 dp row.
+func set_chrome_mode(mode: String) -> void:
+	_chrome_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
+	var target := 44 if _chrome_mode == "compact" else 36
+	var icon := 20 if _chrome_mode == "compact" else 18
+	for button in _transport_buttons:
+		if button == null or not is_instance_valid(button):
+			continue
+		button.custom_minimum_size = Vector2(target, target)
+		button.add_theme_constant_override("icon_max_width", icon)
+	if _play_button != null:
+		_play_button.custom_minimum_size = Vector2(target, target)
+		_play_button.add_theme_constant_override("icon_max_width", icon)
+	if _mode_button != null:
+		_mode_button.custom_minimum_size = Vector2(target, target)
+	for button in [_auto_button, _ease_button]:
+		if button != null:
+			button.custom_minimum_size.y = float(target)
+	_refresh_compact()
+
 func _refresh_compact() -> void:
 	if _start_button == null:
 		return
+	var touch := _chrome_mode == "compact"
 	var compact := size.x < 560.0
-	_start_button.visible = not compact
-	_end_button.visible = not compact
-	_snap_button.visible = not compact
-	_frame_label.visible = size.x >= 420.0
+	# The transport keeps only one-thumb actions in compact; the sheet header
+	# carries graph, loop, snap and delete so the row fits a 320 dp phone.
+	_start_button.visible = not touch and not compact
+	_end_button.visible = not touch and not compact
+	_snap_button.visible = not touch and not compact
+	_mode_button.visible = not touch
+	_loop_button.visible = not touch
+	_delete_button.visible = not touch
+	_frame_label.visible = not touch and size.x >= 420.0
+	_time_box.custom_minimum_size.x = 58 if touch else 76
+	_transport_style.content_margin_left = 4 if touch else 6
+	_transport_style.content_margin_right = 4 if touch else 6
+	if _compact_header != null:
+		_compact_header.visible = touch and _sheet_open
 	if _ease_button != null:
-		_ease_button.visible = _mode == "graph"
+		_ease_button.visible = not touch and _mode == "graph"
+	_sync_compact_header()
 	if _sheet != null:
 		_sheet.queue_redraw()
 
@@ -233,6 +407,7 @@ func _sync_flag_states() -> void:
 	_sync_flags = false
 	_style_flag_button(_loop_button, doc.loop)
 	_style_flag_button(_snap_button, doc.snap)
+	_sync_compact_header()
 
 func _style_flag_button(button: Button, active: bool) -> void:
 	if active:
@@ -252,6 +427,8 @@ func _refresh_transport(time: float, playing: bool) -> void:
 	_play_button.tooltip_text = "Pause" if playing else "Play"
 	var has_key := _selected_index >= 0 and _selected_data_id == doc.selected_id
 	_delete_button.disabled = not has_key
+	if _compact_delete_button != null:
+		_compact_delete_button.disabled = not has_key
 
 func _on_playback_changed(time: float, playing: bool) -> void:
 	_refresh_transport(time, playing)
@@ -318,6 +495,7 @@ func _on_loop_toggled(enabled: bool) -> void:
 		return
 	doc.set_loop(enabled)
 	_style_flag_button(_loop_button, enabled)
+	_sync_compact_header()
 
 func _on_auto_toggled(enabled: bool) -> void:
 	if _sync_flags or doc == null:
@@ -329,6 +507,7 @@ func _on_snap_toggled(enabled: bool) -> void:
 		return
 	doc.set_snap(enabled)
 	_style_flag_button(_snap_button, enabled)
+	_sync_compact_header()
 
 func _on_key_all() -> void:
 	if doc == null:

@@ -25,8 +25,8 @@ func _ready() -> void:
 	var window := get_window()
 	if not window.size_changed.is_connected(_update_display_scale):
 		window.size_changed.connect(_update_display_scale)
-	if not Prefs.changed.is_connected(_on_user_scale_changed):
-		Prefs.changed.connect(_on_user_scale_changed)
+	if not Prefs.changed.is_connected(_on_pref_changed):
+		Prefs.changed.connect(_on_pref_changed)
 
 	var background := ColorRect.new()
 	background.color = Kit.BG
@@ -115,8 +115,11 @@ func apply_orientation(value: String) -> bool:
 	return true
 
 
-func _on_user_scale_changed(_key: String, _value: Variant) -> void:
-	refresh_layout_scale()
+func _on_pref_changed(key: String, _value: Variant) -> void:
+	# Only layout preferences move the canvas; everything else is the editor's
+	# business and must not trigger a re-layout in the middle of an edit.
+	if key == "display.layout" or key == "display.user_scale":
+		refresh_layout_scale()
 
 # -------------------------------------------------------------------------
 # Safe area
@@ -183,6 +186,8 @@ func _open_editor(record: Dictionary, template: String, loaded: bool) -> void:
 	var editor := EditorShellScript.new()
 	_host.add_child(editor)
 	editor.exit_requested.connect(_on_editor_exit)
+	if not editor.workspace_mode_changed.is_connected(_on_workspace_mode_changed):
+		editor.workspace_mode_changed.connect(_on_workspace_mode_changed)
 	if loaded:
 		editor.open_loaded(record.get("meta", {}), record.get("data", {}))
 	else:
@@ -191,6 +196,10 @@ func _open_editor(record: Dictionary, template: String, loaded: bool) -> void:
 	if _home != null:
 		_home.visible = false
 	refresh_layout_scale()
+
+func _on_workspace_mode_changed(_mode: String) -> void:
+	refresh_layout_scale()
+
 
 func _on_editor_exit() -> void:
 	if _editor == null:

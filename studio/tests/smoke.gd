@@ -12,6 +12,13 @@ func _check(condition: bool, message: String) -> void:
 		print("SMOKE OK: " + message)
 
 func _ready() -> void:
+	# The stretch mode is disabled, so the headless window would otherwise stay
+	# at its 64x64 default and every shell/sheet measurement would be fiction.
+	# Pin the canvas to a real phone size before the app is built.
+	get_window().size = Vector2i(412, 915)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(get_viewport().get_visible_rect().size == Vector2(412, 915), "smoke runs at a 412x915 phone canvas")
 	await get_tree().process_frame
 	_check(get_tree().root.theme != null, "app theme installed on root")
 	_check(Kit.font_regular != null, "Inter loaded")
@@ -381,6 +388,62 @@ func _ready() -> void:
 	editor._overlay._on_handle_input(long_release)
 	await get_tree().process_frame
 	_check(not editor._overlay.has_modal(), "a long handle drag dismisses the sheet")
+
+	print("SMOKE STEP: workspace modes")
+	editor.set_workspace_mode("compact")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor.workspace_mode() == "compact", "compact mode applies")
+	_check(editor._bottom_bar.visible, "compact bottom action bar is visible")
+	_check(editor._top_bar.size.y >= 47.0, "compact top bar is 48 dp")
+	var compact_min: float = editor._layout.get_combined_minimum_size().x
+	print("SMOKE INFO: compact shell minimum width ", compact_min)
+	_check(compact_min <= 320.0, "compact shell fits a 320 dp phone without horizontal overflow")
+	_check(editor._bottom_bar.get_combined_minimum_size().x <= 320.0, "compact action bar fits a 320 dp phone")
+	_check(editor._timeline.get_combined_minimum_size().x <= 320.0, "compact transport fits a 320 dp phone")
+	_check(not editor._top_bar._undo_button.visible and not editor._top_bar._settings_button.visible, "compact header keeps back, title and overflow only")
+	_check(editor._top_bar._menu_button.visible, "compact header keeps the overflow menu")
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	_check(editor._bottom_bar.is_active("timeline"), "timeline action reports active while the sheet is open")
+	_check(editor._timeline._compact_header.visible, "compact sheet header appears with the timeline")
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	_check(not editor._bottom_bar.is_active("timeline"), "timeline action clears when the sheet folds")
+	editor._toggle_drawer("scene")
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._drawer_open and editor._dock.visible, "compact scene drawer opens")
+	_check(editor._drawer_scene_tab.size.y >= 43.0, "drawer tabs keep a 44 dp target")
+	var inside_drawer := InputEventScreenTouch.new()
+	inside_drawer.pressed = true
+	inside_drawer.position = editor._dock.get_global_rect().get_center()
+	editor.get_viewport().push_input(inside_drawer)
+	await get_tree().process_frame
+	_check(editor._drawer_open, "a tap inside the drawer keeps it open")
+	var outside_drawer := InputEventScreenTouch.new()
+	outside_drawer.pressed = true
+	outside_drawer.position = Vector2(5, 400)
+	editor.get_viewport().push_input(outside_drawer)
+	await get_tree().process_frame
+	_check(not editor._drawer_open, "a tap outside the drawer closes it")
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor.workspace_mode() == "studio", "studio mode applies")
+	_check(editor._dock.visible, "studio dock is visible")
+	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
+	_check(absf(editor._dock.get_global_rect().end.y - editor.size.y) <= 1.0, "studio dock reaches the bottom edge")
+	_check(editor._outliner_panel.size.y >= 240.0, "studio scene list gets a usable share of the dock")
+	editor.set_workspace_mode("desktop")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor.workspace_mode() == "desktop", "desktop mode applies on any screen")
+	_check(editor._status_bar.visible, "desktop status bar is visible")
+	_check(editor._top_bar.size.y >= 35.0 and editor._top_bar.size.y <= 38.0, "desktop menu bar is 36 dp")
+	_check(str(Prefs.get_value("display.layout", "")) == "desktop", "workspace mode persists")
+	editor.set_workspace_mode("compact")
+	await get_tree().process_frame
 
 	print("SMOKE STEP: graph editor")
 	var timeline = editor._timeline

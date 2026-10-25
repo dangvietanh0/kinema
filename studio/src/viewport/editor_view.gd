@@ -441,7 +441,22 @@ func _apply_preset(label: String, new_yaw: float, new_pitch: float) -> void:
 
 func _on_grid_toggled(enabled: bool) -> void:
 	_set_grid_strength(1.0 if enabled else 0.0)
-	queue_redraw()
+	_repaint()
+
+
+## Frames the whole scene. The shell's Frame all action and the empty-state
+## button both route here.
+func frame_all() -> void:
+	_frame_all(true)
+
+
+func toggle_grid() -> void:
+	if _grid_button == null:
+		return
+	_grid_button.button_pressed = not _grid_button.button_pressed
+	# set_pressed_no_signal keeps the button and the stage in step; the toggled
+	# signal is emitted manually so the strength follows either entry point.
+	_on_grid_toggled(_grid_button.button_pressed)
 
 func focus_selection() -> void:
 	if doc == null:

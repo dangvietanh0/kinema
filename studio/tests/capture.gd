@@ -24,6 +24,7 @@ func _ready() -> void:
 			expected = Vector2(float(parts[0]), float(parts[1]))
 	if args.size() >= 3:
 		out_path = args[2]
+	var action := args[3] if args.size() >= 4 else ""
 	if mode != "auto":
 		Prefs.set_value("display.layout", mode)
 	# Let the window reach its requested size before the shell is built.
@@ -37,7 +38,27 @@ func _ready() -> void:
 	main._on_new_project_requested("Capture", "study")
 	for _i in 30:
 		await get_tree().process_frame
+	match action:
+		"timeline":
+			if not main._editor._timeline_visible:
+				main._editor._toggle_timeline()
+		"drawer-scene":
+			main._editor._toggle_drawer("scene")
+		"drawer-props":
+			main._editor._toggle_drawer("inspector")
+		"add-sheet":
+			main._editor._open_add_sheet()
+		"settings":
+			main._editor._open_settings()
+	if action != "":
+		for _i in 15:
+			await get_tree().process_frame
 	var viewport_size := get_viewport().get_visible_rect().size
+	print("DBG pref=", Prefs.get_value("display.layout", "?"), " mode=", main._editor.workbench_mode)
+	var bar: Control = main._editor._bottom_bar
+	print("DBG bar size=", bar.size, " min=", bar.get_combined_minimum_size())
+	for c in bar.get_child(0).get_children():
+		print("DBG   btn=", (c as Button).text, " size=", c.size, " min=", c.get_combined_minimum_size())
 	var image := get_viewport().get_texture().get_image()
 	var dir := out_path.get_base_dir()
 	if dir != "" and not DirAccess.dir_exists_absolute(dir):
