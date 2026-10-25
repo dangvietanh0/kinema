@@ -263,6 +263,102 @@ func _ready() -> void:
 	_check(Perf.next_preview_scale(0.8, 70.0, 60, 0.6) > 0.8, "adaptive quality raises preview scale when there is headroom")
 	_check(is_equal_approx(Perf.next_preview_scale(0.6, 20.0, 60, 0.6), 0.6), "adaptive quality respects the floor")
 
+	print("SMOKE STEP: sheet contract")
+	editor._overlay.set_layout_mode("compact")
+	editor._open_add_sheet()
+	for _i in 5:
+		await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "add sheet opens")
+	var viewport_size: Vector2 = editor.get_viewport_rect().size
+	var panel: Rect2 = editor._overlay.panel_rect()
+	_check(panel.size.y <= viewport_size.y * 0.86 + 1.0, "compact sheet stays under 86 percent")
+	_check(is_equal_approx(panel.size.x, viewport_size.x), "compact sheet spans the full width")
+	_check(editor._overlay._handle_row.visible, "compact sheet shows a drag handle")
+	_check(editor._overlay._panel_style.corner_radius_top_left == 0, "compact sheet corners are square")
+	_check(editor._overlay.is_point_inside_panel(panel.position + panel.size * 0.5), "the panel rect reports inside points")
+	_check(editor._overlay.body_rect().size.y > 0.0, "the body rect is measurable")
+	for p in [
+		panel.position + panel.size * 0.5,
+		panel.position + Vector2(8, 8),
+		panel.position + Vector2(panel.size.x - 8, 8),
+		panel.position + Vector2(8, panel.size.y - 8),
+		panel.position + Vector2(panel.size.x - 8, panel.size.y - 8),
+	]:
+		var inside := InputEventScreenTouch.new()
+		inside.position = p
+		inside.pressed = true
+		editor.get_viewport().push_input(inside)
+		await get_tree().process_frame
+		_check(editor._overlay.has_modal(), "tap inside the sheet keeps it open")
+	# The body cap follows max_height_ratio, not a fixed fraction.
+	var tall := VBoxContainer.new()
+	for row_index in 30:
+		tall.add_child(Kit.label("Row %d" % row_index, 13, Kit.TEXT))
+	editor._overlay.show_sheet("Tall", "", tall, [], {"max_height_ratio": 0.4})
+	for _i in 5:
+		await get_tree().process_frame
+	_check(editor._overlay.panel_rect().size.y <= viewport_size.y * 0.4 + 1.0, "sheet honours a custom height cap")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	# Studio hosts a centred modal, never a bottom sheet.
+	editor._overlay.set_layout_mode("studio")
+	editor._open_add_sheet()
+	for _i in 5:
+		await get_tree().process_frame
+	var modal_panel: Rect2 = editor._overlay.panel_rect()
+	_check(not editor._overlay._handle_row.visible, "studio modal has no drag handle")
+	_check(modal_panel.size.x <= viewport_size.x - 48.0 + 1.0, "studio modal fits the viewport width")
+	_check(modal_panel.size.y <= 640.0 + 1.0, "studio modal respects the height cap")
+	_check(not is_equal_approx(modal_panel.size.x, viewport_size.x), "studio modal is centered, not full width")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+	editor._overlay.set_layout_mode("compact")
+	editor._open_add_sheet()
+	for _i in 2:
+		await get_tree().process_frame
+
+	var outside := InputEventScreenTouch.new()
+	outside.position = Vector2(2, 2)
+	outside.pressed = true
+	editor._overlay._on_backdrop_input(outside)
+	await get_tree().process_frame
+	_check(not editor._overlay.has_modal(), "scrim tap closes the sheet")
+	editor._open_add_sheet()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main._on_go_back()
+	await get_tree().process_frame
+	_check(not editor._overlay.has_modal(), "back closes the sheet before the editor")
+
+	# A deliberate downward drag on the handle dismisses the sheet; a short one
+	# snaps back without closing it.
+	editor._open_add_sheet()
+	for _i in 3:
+		await get_tree().process_frame
+	var short_press := InputEventScreenTouch.new()
+	short_press.pressed = true
+	editor._overlay._on_handle_input(short_press)
+	var short_drag := InputEventScreenDrag.new()
+	short_drag.relative = Vector2(0, 20)
+	editor._overlay._on_handle_input(short_drag)
+	var short_release := InputEventScreenTouch.new()
+	short_release.pressed = false
+	editor._overlay._on_handle_input(short_release)
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "a short handle drag keeps the sheet open")
+	var long_press := InputEventScreenTouch.new()
+	long_press.pressed = true
+	editor._overlay._on_handle_input(long_press)
+	var long_drag := InputEventScreenDrag.new()
+	long_drag.relative = Vector2(0, 90)
+	editor._overlay._on_handle_input(long_drag)
+	var long_release := InputEventScreenTouch.new()
+	long_release.pressed = false
+	editor._overlay._on_handle_input(long_release)
+	await get_tree().process_frame
+	_check(not editor._overlay.has_modal(), "a long handle drag dismisses the sheet")
+
 	print("SMOKE STEP: graph editor")
 	var timeline = editor._timeline
 	_check(timeline != null, "timeline exists")
