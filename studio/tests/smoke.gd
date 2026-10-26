@@ -61,7 +61,12 @@ func _ready() -> void:
 	var sharp := Kit.flat_style(Kit.SURFACE)
 	_check(sharp.corner_radius_top_left == 0 and sharp.corner_radius_bottom_right == 0, "panels and inputs are square")
 	_check(Kit.icon_button("play", "Play").custom_minimum_size == Vector2(44, 44), "icon buttons have a 44 dp hit target")
-	_check(Kit.text_button("Render", "", true).custom_minimum_size.y >= 48.0, "primary buttons have a 48 dp hit target")
+	var done_probe := Kit.text_button("Done", "", true)
+	_check(done_probe.custom_minimum_size.x >= 96.0, "primary actions are landscape rectangles")
+	_check(done_probe.custom_minimum_size.y == 44.0, "primary actions use a 44 dp target height")
+	_check(done_probe.custom_minimum_size.x > done_probe.custom_minimum_size.y, "primary actions are wider than tall")
+	_check(Kit._active_edge_style(Kit.FOCUS_DARK, "left").border_width_left == 1, "active left edge is 1 px")
+	_check(Kit._active_edge_style(Kit.FOCUS_DARK, "bottom").border_width_bottom == 1, "active bottom edge is 1 px")
 	_check(Kit.hairline().custom_minimum_size == Vector2(0, 1), "hairlines are 1 px")
 	for icon_name in [
 		"play", "pause", "stop", "key-round", "diamond-plus", "speed-graph",
@@ -149,7 +154,7 @@ func _ready() -> void:
 		var new_project := _button_with_text(home, "New project")
 		_check(new_project != null, "the browser exposes a New project action")
 		if new_project != null:
-			_check(new_project.get_combined_minimum_size().y >= 48.0, "the browser primary action has a 48 dp target")
+			_check(new_project.get_combined_minimum_size().y >= 44.0, "the browser primary action has a 44 dp target")
 		home._open_new_project_sheet()
 		for _i in 4:
 			await get_tree().process_frame
@@ -549,6 +554,31 @@ func _ready() -> void:
 			short_targets += 1
 			print("SMOKE SHORT: '", (target as Button).text, "' variation=", (target as Button).theme_type_variation, " min=", target.get_combined_minimum_size(), " visible=", target.visible)
 	_check(short_targets == 0, "every visible editor button keeps a 44 dp touch target")
+
+	print("SMOKE STEP: action geometry and chrome")
+	_check(editor._outliner._row_style(true).border_width_left == 1, "selected outliner row uses a 1 px edge")
+	_check(editor._timeline.get("CHANNEL_EDGE") == 1.0, "selected timeline channel uses a 1 px edge")
+	_check(editor._view.get("_status_label") == null, "viewport HUD has no selection info strip")
+	editor._open_settings("general")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var done_button := _button_with_text(editor._overlay, "Done")
+	_check(done_button != null, "sheet footer exposes Done")
+	if done_button != null:
+		_check(done_button.size.x >= 96.0 and done_button.size.y >= 44.0, "Done keeps a 96x44 minimum")
+		_check(done_button.size.x > done_button.size.y, "Done renders as a landscape action")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+	editor._show_about()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var about_text := ""
+	for label in _labels_under(editor._overlay):
+		about_text += label.text + "\n"
+	_check(not about_text.contains("Geist"), "About names the real UI font")
+	_check(about_text.contains("IBM Plex"), "About names IBM Plex")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
 
 	print("SMOKE STEP: landscape shell")
 	editor.size = Vector2(915.0, 412.0)

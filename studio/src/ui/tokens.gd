@@ -70,7 +70,7 @@ const SPACE_32 := 32.0
 
 # --- Hit targets (dp) -----------------------------------------------------
 const HIT := 44.0
-const PRIMARY_HIT := 48.0
+const PRIMARY_HIT := 44.0
 const FIELD := 44.0
 const TOUCH_GAP := 8.0
 

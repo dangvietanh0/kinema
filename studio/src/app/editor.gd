@@ -2647,7 +2647,7 @@ func _show_about() -> void:
 	var limits := Kit.label("Import: glTF/GLB and OBJ. Binary FBX must be converted to GLB or OBJ first because Godot's FBX importer is editor-only. On Android, SAF may prevent an OBJ from reading sibling MTL/texture files.", 9, Kit.TEXT_DIM)
 	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(limits)
-	var licenses := Kit.label("Engine: Godot (MIT). Fonts: Geist and Geist Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
+	var licenses := Kit.label("Engine: Godot (MIT). Fonts: IBM Plex Sans and IBM Plex Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
 	licenses.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(licenses)
 	_overlay.show_modal("About Kinema", "A quiet tool for motion.", body, [

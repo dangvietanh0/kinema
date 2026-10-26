@@ -29,7 +29,6 @@ var _camera: Camera3D
 var _env_node: WorldEnvironment
 var _grid_root: Node3D
 var _grid_mesh: MeshInstance3D
-var _status_label: Label
 var _view_chip: Button
 var _grid_button: Button
 var _fps_chip: Button
@@ -306,23 +305,6 @@ func _build_hud() -> void:
 	_grid_button.toggled.connect(_on_grid_toggled)
 	top_right.add_child(_grid_button)
 
-	_status_label = Kit.label("No selection", 10, Kit.TEXT_MUTED, 500)
-	_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var status_panel := PanelContainer.new()
-	var status_style := Kit.flat_style(HUD_BG, 0, Color(0, 0, 0, 0), 0)
-	status_style.content_margin_left = 8
-	status_style.content_margin_right = 8
-	status_style.content_margin_top = 4
-	status_style.content_margin_bottom = 4
-	status_panel.add_theme_stylebox_override("panel", status_style)
-	status_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	status_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	status_panel.offset_left = 12
-	status_panel.offset_bottom = -12
-	status_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	status_panel.add_child(_status_label)
-	_hud_root.add_child(status_panel)
-
 func _override_hud_button(button: Button) -> void:
 	# HUD controls read as floating surfaces, not framed cards. State is
 	# carried by fill and glyph luminance; only the field frames in the
@@ -353,7 +335,6 @@ func set_document(document: Node3D) -> void:
 	doc.playback_changed.connect(_on_playback_changed)
 	_frame_all(false)
 	call_deferred("_reframe_after_layout")
-	_refresh_status()
 	queue_redraw()
 
 func set_tool(new_tool: String) -> void:
@@ -479,20 +460,16 @@ func _process(delta: float) -> void:
 # -------------------------------------------------------------------------
 
 func _on_scene_changed() -> void:
-	_refresh_status()
 	queue_redraw()
 
 func _on_selection_changed(_id: String) -> void:
-	_refresh_status()
 	queue_redraw()
 
 func _on_object_changed(_id: String) -> void:
-	_refresh_status()
 	_repaint()
 
 func _on_transform_changed(_id: String) -> void:
 	_note_edit_burst()
-	_refresh_status()
 	_repaint()
 
 func _on_keyframes_changed(_id: String) -> void:
@@ -654,31 +631,6 @@ func _repaint() -> void:
 	_redraw_needed = true
 	if _viewport != null and _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
 		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-
-func _refresh_status() -> void:
-	if _status_label == null:
-		return
-	if doc == null or doc.selected_id == "":
-		_status_label.text = "No selection  ·  tap an object"
-		return
-	var obj: Dictionary = doc.get_selected_object()
-	if obj.is_empty():
-		_status_label.text = "No selection"
-		return
-	var kind := str(obj.get("kind", "mesh"))
-	var label := str(obj.get("name", "Object"))
-	var detail := kind.capitalize()
-	if kind == "mesh":
-		detail = str(obj.get("primitive", "mesh")).capitalize()
-	elif kind == "import":
-		detail = "Imported model"
-	elif kind == "light":
-		detail = "Omni light" if str(obj.get("light_type", "")) == "omni" else "Directional light"
-	var keys := 0
-	for channel in doc.CHANNELS:
-		keys += doc.get_channel_keys(doc.selected_id, channel).size()
-	var suffix := "  ·  %d key%s" % [keys, "" if keys == 1 else "s"] if keys > 0 else ""
-	_status_label.text = "%s  ·  %s%s" % [label, detail, suffix]
 
 func _cycle_view() -> void:
 	match _preset:

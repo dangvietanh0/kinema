@@ -330,6 +330,8 @@ func show_sheet(title: String, subtitle: String = "", body: Control = null,
 		)
 		if bool(data.get("destructive", false)):
 			button.add_theme_color_override("font_color", Kit.DANGER)
+		if not bool(data.get("primary", false)):
+			button.custom_minimum_size.x = maxf(button.custom_minimum_size.x, Kit.FOOTER_MIN_WIDTH)
 		var callback: Callable = data.get("callback", Callable())
 		button.pressed.connect(func() -> void:
 			if callback.is_valid():

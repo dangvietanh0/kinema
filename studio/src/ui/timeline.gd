@@ -81,6 +81,7 @@ var _chrome_mode := "studio"
 var _available_width := -1.0
 var _transport_buttons: Array[Button] = []
 
+const CHANNEL_EDGE := 1.0
 var _label_width := 104.0
 var _ruler_h := 22.0
 var _row_h := 26.0
@@ -632,7 +633,7 @@ func _draw_sheet(canvas: Control) -> void:
 		var center_y := top + _row_h * 0.5
 		if channel == _selected_channel:
 			canvas.draw_rect(Rect2(0, top, w, _row_h), Kit.SURFACE_2)
-			canvas.draw_rect(Rect2(0, top, 2, _row_h), Kit.ACCENT)
+			canvas.draw_rect(Rect2(0, top, CHANNEL_EDGE, _row_h), Kit.ACCENT)
 		elif ci % 2 == 1:
 			canvas.draw_rect(Rect2(_label_width, top, w - _label_width, _row_h), Kit.SURFACE * Color(1, 1, 1, 0.35))
 		canvas.draw_line(Vector2(0, top + _row_h), Vector2(w, top + _row_h), Kit.BORDER_SOFT, 1.0)
@@ -692,7 +693,7 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 		var center_y := top + _row_h * 0.5
 		if channel == _selected_channel:
 			canvas.draw_rect(Rect2(0, top, _label_width, _row_h), Kit.SURFACE_2)
-			canvas.draw_rect(Rect2(0, top, 2, _row_h), Kit.ACCENT)
+			canvas.draw_rect(Rect2(0, top, CHANNEL_EDGE, _row_h), Kit.ACCENT)
 		canvas.draw_line(Vector2(0, top + _row_h), Vector2(_label_width, top + _row_h), Kit.BORDER_SOFT, 1.0)
 		var label := str(doc.CHANNEL_LABELS.get(channel, channel))
 		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)

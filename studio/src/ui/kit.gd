@@ -51,6 +51,11 @@ const TYPE_MONO_LARGE := Tokens.TYPE_MONO_LARGE
 const TYPE_RULER := Tokens.TYPE_RULER
 const FIELD := Tokens.FIELD
 
+# Action geometry: primary actions are landscape rectangles, never squares.
+# Footer secondaries still clear the 44 dp touch floor with room for a label.
+const ACTION_MIN_WIDTH := 96.0
+const FOOTER_MIN_WIDTH := 80.0
+
 const FONT_UI := "res://assets/fonts/IBMPlexSans-Regular.ttf"
 const FONT_UI_MEDIUM := "res://assets/fonts/IBMPlexSans-Medium.ttf"
 const FONT_UI_SEMIBOLD := "res://assets/fonts/IBMPlexSans-SemiBold.ttf"
@@ -380,7 +385,7 @@ func text_button(text_value: String, icon_name: String = "", primary: bool = fal
 	if icon_name != "":
 		b.icon = icon_texture(icon_name)
 		b.add_theme_constant_override("icon_max_width", 15)
-	b.custom_minimum_size = Vector2(Tokens.HIT, Tokens.PRIMARY_HIT if primary else Tokens.HIT)
+	b.custom_minimum_size = Vector2(ACTION_MIN_WIDTH, Tokens.HIT) if primary else Vector2(Tokens.HIT, Tokens.HIT)
 	b.add_theme_constant_override("h_separation", 6)
 	if primary:
 		b.theme_type_variation = "PrimaryButton"
@@ -415,9 +420,9 @@ func set_icon_active(button: Button, active: bool, edge: String = "left") -> voi
 func _active_edge_style(fill: Color, edge: String) -> StyleBoxFlat:
 	var style := flat_style(fill, 0, FOCUS_BRIGHT, 0)
 	if edge == "bottom":
-		style.border_width_bottom = 2
+		style.border_width_bottom = 1
 	else:
-		style.border_width_left = 2
+		style.border_width_left = 1
 	return style
 
 func text_toggle(text_value: String, icon_name: String = "", accent: bool = false) -> Button:

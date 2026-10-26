@@ -291,7 +291,7 @@ func _make_row(obj: Dictionary) -> Control:
 func _row_style(selected: bool, hover: bool = false) -> StyleBoxFlat:
 	if selected:
 		var sb := Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0)
-		sb.border_width_left = 2
+		sb.border_width_left = 1
 		sb.border_color = Kit.ACCENT
 		sb.content_margin_left = 4
 		sb.content_margin_right = 4

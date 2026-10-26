@@ -158,7 +158,7 @@ func _build_page_header(parent: Control) -> void:
 	titles.add_child(Kit.label("Local projects on this device", Kit.TYPE_BODY, Kit.TEXT_MUTED))
 
 	var new_button := Kit.text_button("New project", "plus", true)
-	new_button.custom_minimum_size = Vector2(148, 48)
+	new_button.custom_minimum_size = Vector2(148, 44)
 	new_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	new_button.pressed.connect(_open_new_project_sheet)
 	row.add_child(new_button)
@@ -475,7 +475,7 @@ func _show_about() -> void:
 	var limits := Kit.label("Import: glTF and OBJ. Binary FBX needs conversion to GLB or OBJ because Godot's FBX importer is editor-only. On Android, an OBJ may not resolve sibling MTL/texture files through SAF. Export: PNG stills and ZIP frame sequences; MP4 encoding is not included.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(limits)
-	var note := Kit.label("Fonts: Geist and Geist Mono (SIL OFL). Icons: Lucide (ISC). Both are bundled with their licenses.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	var note := Kit.label("Fonts: IBM Plex Sans and IBM Plex Mono (SIL OFL). Icons: Lucide (ISC). Both are bundled with their licenses.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
 	_overlay.show_modal("About Kinema", "Local-first 3D animation", body, [{"text": "Close", "primary": true}])
