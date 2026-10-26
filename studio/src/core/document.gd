@@ -1154,6 +1154,21 @@ func set_key_transition(id: String, channel: String, key_index: int, value: floa
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 
+func set_channel_transition(id: String, channel: String, value: float) -> void:
+	## Godot stores one transition scalar per key, so a channel-wide easing is
+	## the same clamped value written to every key in the track.
+	var track := get_track(id, channel)
+	if track < 0:
+		return
+	var clamped := clampf(value, 0.0, 4.0)
+	for key_index in range(animation.track_get_key_count(track)):
+		animation.track_set_key_transition(track, key_index, clamped)
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
+	if anim_player != null:
+		anim_player.seek(current_time, true)
+
 func sample_channel(id: String, channel: String, time: float) -> Variant:
 	## Interpolated value at an arbitrary time, straight from the animation
 	## resource. The graph editor plots this so the curve matches playback

@@ -669,12 +669,100 @@ func _ready() -> void:
 	var timeline = editor._timeline
 	_check(timeline != null, "timeline exists")
 	if timeline != null:
+		doc.set_selection(key_id)
+		var graph_keys: Array = doc.get_channel_keys(key_id, "position")
+		_check(graph_keys.size() >= 3, "graph fixture has at least three position keys")
+
+		_check(doc.has_method("set_channel_transition"), "document exposes channel easing")
+		if doc.has_method("set_channel_transition") and graph_keys.size() >= 3:
+			doc.set_channel_transition(key_id, "position", 0.5)
+			var all_channel_eased := true
+			for ki in range(graph_keys.size()):
+				if not is_equal_approx(doc.get_key_transition(key_id, "position", ki), 0.5):
+					all_channel_eased = false
+			_check(all_channel_eased, "channel transition applies to every key")
+			doc.set_channel_transition(key_id, "position", 9.0)
+			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 0), 4.0), "channel transition clamps high")
+			doc.set_channel_transition(key_id, "position", -1.0)
+			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 0), 0.0), "channel transition clamps low")
+			doc.set_channel_transition(key_id, "position", 1.0)
+
 		timeline.set_mode("graph")
 		_check(timeline._mode == "graph", "graph mode activates")
-		var graph_speed: float = timeline._channel_speed(ease_id, "position", 1.0)
+		var graph_speed: float = timeline._channel_speed(key_id, "position", 0.5)
 		_check(graph_speed > 0.01, "graph samples real channel speed")
+		var presets_raw = timeline.get("GRAPH_PRESETS")
+		var presets: Array = presets_raw if presets_raw is Array else []
+		_check(presets.size() >= 8, "graph exposes an expanded preset set")
+		_check(timeline.has_method("graph_height_hint"), "graph reports a height hint")
+		if timeline.has_method("graph_height_hint"):
+			_check(timeline.graph_height_hint() > 0.0, "graph mode requests a taller sheet")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var graph_panel_height: float = editor._timeline_panel.custom_minimum_size.y
+		_check(graph_panel_height > 180.0, "graph mode gives the sheet more height")
+		_check(timeline.has_method("graph_plot_rect"), "graph exposes its plot rect")
+		if timeline.has_method("graph_plot_rect"):
+			var graph_rect: Rect2 = timeline.graph_plot_rect()
+			_check(graph_rect.size.x > 100.0, "graph plot has a real drawing area")
+			_check(graph_rect.position.y >= timeline._ruler_h + 44.0, "channel tabs sit above the graph plot")
+		_check(timeline.has_method("channel_tab_rects"), "graph exposes channel tab hit rects")
+		if timeline.has_method("channel_tab_rects"):
+			var tabs: Array = timeline.channel_tab_rects()
+			_check(tabs.size() == 3, "graph exposes three channel tabs")
+			if tabs.size() == 3:
+				_check((tabs[0]["rect"] as Rect2).size.y >= 44.0, "graph channel tabs keep 44 dp targets")
+
+		timeline.set_channel("rotation")
+		_check(timeline._selected_channel == "rotation", "graph switches channels directly")
+		timeline.set_channel("position")
+
+		_check(timeline.has_method("select_segment_at_time"), "graph supports segment selection")
+		if timeline.has_method("select_segment_at_time"):
+			timeline.select_segment_at_time(0.5)
+			_check(timeline._selected_index >= 0, "tapping a segment selects it")
+		_check(timeline.has_method("graph_stats"), "graph exposes live stats")
+		if timeline.has_method("graph_stats"):
+			var stats: Dictionary = timeline.graph_stats()
+			_check(int(stats.get("keys", 0)) >= 3, "graph stats report real key count")
+			_check(float(stats.get("peak", 0.0)) > 0.0, "graph stats report a real peak speed")
+			var segment_stats: Dictionary = stats.get("segment", {})
+			_check(not segment_stats.is_empty(), "graph stats describe the selected segment")
+			_check(float(segment_stats.get("duration", 0.0)) > 0.0, "segment stats include duration")
+
+		_check(timeline.has_method("ease_value_for_drag"), "graph maps vertical drag to easing")
+		if timeline.has_method("ease_value_for_drag"):
+			_check(is_equal_approx(timeline.ease_value_for_drag(0.5, 100.0, 58.0), 1.0), "upward drag doubles the transition")
+			_check(is_equal_approx(timeline.ease_value_for_drag(0.5, 100.0, 142.0), 0.25), "downward drag halves the transition")
+
+		# Copy, paste and invert operate on the real Godot transition scalar.
+		if timeline.has_method("copy_ease") and timeline.has_method("paste_ease") and timeline.has_method("invert_ease"):
+			doc.set_key_transition(key_id, "position", 0, 0.5)
+			timeline.select_segment_at_time(0.5)
+			_check(timeline.copy_ease(), "graph copies the selected easing")
+			doc.set_key_transition(key_id, "position", 1, 1.0)
+			timeline.select_segment_at_time(1.5)
+			_check(timeline.paste_ease(), "graph pastes easing onto another segment")
+			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 1), 0.5), "paste writes the copied transition")
+			_check(timeline.invert_ease(), "graph inverts the selected easing")
+			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 1), 2.0), "invert maps 0.5 to 2.0")
+
+		if timeline.has_method("apply_ease_to_channel"):
+			timeline.select_segment_at_time(0.5)
+			_check(timeline.apply_ease_to_channel(), "graph applies easing to the channel")
+			var applied := true
+			for ki in range(graph_keys.size()):
+				if not is_equal_approx(doc.get_key_transition(key_id, "position", ki), 0.5):
+					applied = false
+			_check(applied, "apply-to-channel writes every segment")
+			doc.set_channel_transition(key_id, "position", 1.0)
+
 		timeline.set_mode("dope")
+		await get_tree().process_frame
 		_check(timeline._mode == "dope", "dope mode restores")
+		_check(editor._timeline_panel.custom_minimum_size.y < graph_panel_height, "dope mode returns the extra height")
+		doc.set_selection(ease_id)
+		doc.seek(0.0)
 
 	print("SMOKE STEP: render export")
 	var frame_dir := "user://render_export_fixture"

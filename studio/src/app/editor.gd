@@ -253,6 +253,7 @@ func _build_timeline() -> void:
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.close_requested.connect(_on_timeline_close_requested)
+	_timeline.mode_changed.connect(_on_timeline_mode_changed)
 	_timeline_panel.add_child(_timeline)
 
 func _build_dock() -> void:
@@ -1072,6 +1073,19 @@ func _sync_timeline_visibility() -> void:
 			_timeline_panel.custom_minimum_size.y = 156.0 if _short else 180.0
 			if not sheet:
 				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
+	if sheet:
+		var extra: float = _timeline.graph_height_hint()
+		if _short:
+			extra = minf(extra, 40.0)
+		_timeline_panel.custom_minimum_size.y += extra
+
+func _on_timeline_mode_changed(mode: String) -> void:
+	# A graph that is folded away cannot be edited. Asking for graph mode while
+	# the sheet is closed reveals it; folding it again still returns the old
+	# transport-only height.
+	if mode == "graph" and not _timeline_visible:
+		_timeline_visible = true
+	_sync_timeline_visibility()
 
 func _toggle_drawer(tab: String) -> void:
 	if not _dock_overlay_mode():
