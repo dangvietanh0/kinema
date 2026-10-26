@@ -72,12 +72,7 @@ func set_available_height(value: float) -> void:
 
 
 func rail_width() -> float:
-	match _mode:
-		"compact":
-			return 0.0
-		"desktop":
-			return 40.0
-	return 44.0
+	return 0.0 if _mode == "compact" else 48.0
 
 
 func _rebuild() -> void:
@@ -134,7 +129,7 @@ func _rebuild() -> void:
 	_box.add_child(_frame_button)
 
 	_add_button = Kit.icon_button("plus", "Add object", 44, 20)
-	_add_button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
+	_add_button.add_theme_color_override("icon_normal_color", Kit.TEXT)
 	_add_button.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT)
 	_add_button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
 	_add_button.pressed.connect(func() -> void: add_requested.emit())
@@ -156,13 +151,14 @@ func _rebuild() -> void:
 
 
 func _apply_tool_state() -> void:
+	var edge := "bottom" if _mode == "compact" else "left"
 	for id in _buttons:
 		var button: Button = _buttons[id]
-		Kit.set_icon_active(button, str(id) == _tool)
+		Kit.set_icon_active(button, str(id) == _tool, edge)
 	if _tools_button != null:
 		_tools_button.visible = _collapsed
 		if _collapsed:
-			Kit.set_icon_active(_tools_button, true)
+			Kit.set_icon_active(_tools_button, true, edge)
 	for id in _buttons:
 		var button: Button = _buttons[id]
 		button.visible = not _collapsed

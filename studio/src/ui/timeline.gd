@@ -156,11 +156,14 @@ func _build_transport() -> void:
 	_transport_buttons.append(prev)
 
 	_play_button = Kit.icon_button("play", "Play / pause", 32, 15)
-	_play_button.add_theme_color_override("icon_normal_color", Color(0.09, 0.07, 0.05))
-	_play_button.add_theme_color_override("icon_hover_color", Color(0.09, 0.07, 0.05))
-	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.TIME, 0, Kit.TIME, 0))
-	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.TIME_BRIGHT, 0, Kit.TIME_BRIGHT, 0))
-	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.TIME.darkened(0.1), 0, Kit.TIME, 0))
+	# Transport is a tool, not a call to action. A bright glyph on a dark
+	# surface keeps it legible without turning the row into a white slab.
+	_play_button.add_theme_color_override("icon_normal_color", Kit.TIME_BRIGHT)
+	_play_button.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT)
+	_play_button.add_theme_color_override("icon_pressed_color", Kit.BG)
+	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
+	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.TIME_BRIGHT, 0, Kit.TIME_BRIGHT, 0))
 	_play_button.pressed.connect(_on_play)
 	row.add_child(_play_button)
 
@@ -327,19 +330,19 @@ func set_sheet_visible(open: bool) -> void:
 	_sheet_rule.visible = open
 	if _sheet != null:
 		_sheet.visible = open
-	if _compact_header != null:
-		_compact_header.visible = open and _chrome_mode == "compact"
+	_refresh_compact()
 
 
 func sheet_visible() -> bool:
 	return _sheet_open
 
 
-## Touch mode grows every transport control to a 44 dp target; studio and
-## desktop keep the denser 36 dp row.
+## Touch mode grows every transport control to a 44 dp target. The same target
+## is kept in Studio and Desktop: a phone can host any of the three modes and a
+## transport is the most-used control in the app.
 func set_chrome_mode(mode: String) -> void:
 	_chrome_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
-	var target := 44 if _chrome_mode == "compact" else 36
+	var target := 44
 	var icon := 20 if _chrome_mode == "compact" else 18
 	for button in _transport_buttons:
 		if button == null or not is_instance_valid(button):
@@ -353,30 +356,35 @@ func set_chrome_mode(mode: String) -> void:
 		_mode_button.custom_minimum_size = Vector2(target, target)
 	for button in [_auto_button, _ease_button]:
 		if button != null:
-			button.custom_minimum_size.y = float(target)
+			button.custom_minimum_size = Vector2(target, target)
 	_refresh_compact()
 
 func _refresh_compact() -> void:
 	if _start_button == null:
 		return
 	var touch := _chrome_mode == "compact"
-	var compact := size.x < 560.0
-	# The transport keeps only one-thumb actions in compact; the sheet header
-	# carries graph, loop, snap and delete so the row fits a 320 dp phone.
-	_start_button.visible = not touch and not compact
-	_end_button.visible = not touch and not compact
-	_snap_button.visible = not touch and not compact
-	_mode_button.visible = not touch
-	_loop_button.visible = not touch
-	_delete_button.visible = not touch
-	_frame_label.visible = not touch and size.x >= 420.0
+	# A Studio landscape split by the dock can leave the sheet narrower than a
+	# phone. The same overflow header keeps graph, loop, snap, delete and fold
+	# reachable instead of silently dropping them from the transport. The
+	# threshold is measured against the transport's real 44 dp controls, not
+	# the old 28 dp icons.
+	var narrow := size.x < 640.0
+	var narrow_chrome := touch or narrow
+	var show_header := _sheet_open and narrow_chrome
+	_start_button.visible = not narrow_chrome
+	_end_button.visible = not narrow_chrome
+	_snap_button.visible = not narrow_chrome
+	_mode_button.visible = not narrow_chrome
+	_loop_button.visible = not narrow_chrome
+	_delete_button.visible = not narrow_chrome
+	_frame_label.visible = not narrow_chrome and size.x >= 420.0
 	_time_box.custom_minimum_size.x = 58 if touch else 76
 	_transport_style.content_margin_left = 4 if touch else 6
 	_transport_style.content_margin_right = 4 if touch else 6
 	if _compact_header != null:
-		_compact_header.visible = touch and _sheet_open
+		_compact_header.visible = show_header
 	if _ease_button != null:
-		_ease_button.visible = not touch and _mode == "graph"
+		_ease_button.visible = not narrow_chrome and _mode == "graph"
 	_sync_compact_header()
 	if _sheet != null:
 		_sheet.queue_redraw()
@@ -413,10 +421,10 @@ func _style_flag_button(button: Button, active: bool) -> void:
 	if active:
 		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
 		button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.FOCUS_DARK, 5, Kit.FOCUS * Color(1, 1, 1, 0.35), 1))
+		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.FOCUS_DARK, 0, Color(0, 0, 0, 0), 0))
 	else:
 		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 5, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
 
 func _refresh_transport(time: float, playing: bool) -> void:
 	if doc == null:
@@ -567,7 +575,7 @@ func _draw_sheet(canvas: Control) -> void:
 	canvas.draw_line(Vector2(0, _ruler_h), Vector2(w, _ruler_h), Kit.BORDER_SOFT, 1.0)
 
 	var channel_header := "CHANNELS"
-	canvas.draw_string(Kit.font_for(600), Vector2(12, 15), channel_header, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Kit.TEXT_DIM)
+	canvas.draw_string(Kit.font_for(600), Vector2(12, 15), channel_header, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 
 	if doc == null:
 		return
@@ -582,7 +590,7 @@ func _draw_sheet(canvas: Control) -> void:
 		canvas.draw_line(Vector2(x, 0), Vector2(x, h), Kit.BORDER_SOFT * Color(1, 1, 1, 0.55), 1.0)
 		if x < w - 26.0:
 			var label := "%.1fs" % time if major < 1.0 else "%ds" % int(round(time))
-			canvas.draw_string(Kit.font_mono, Vector2(x + 3, 15), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Kit.TEXT_DIM)
+			canvas.draw_string(Kit.font_mono, Vector2(x + 3, 15), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_RULER, Kit.TEXT_MUTED)
 
 	if _mode == "graph":
 		_draw_graph(canvas, w, h)
@@ -602,16 +610,18 @@ func _draw_sheet(canvas: Control) -> void:
 		canvas.draw_line(Vector2(0, top + _row_h), Vector2(w, top + _row_h), Kit.BORDER_SOFT, 1.0)
 
 		var label := str(doc.CHANNEL_LABELS.get(channel, channel))
-		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
-		var dot_color: Color = [Kit.AXIS_X, Kit.AXIS_Y, Kit.AXIS_Z][ci]
+		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
+		# Channel identity lives in the label. Coloured dots would introduce a
+		# second semantic palette into an otherwise luminance-only workbench.
+		var dot_color: Color = [Kit.TEXT_MUTED, Kit.TEXT_DIM, Kit.BORDER][ci]
 		canvas.draw_circle(Vector2(12, center_y), 2.4, dot_color)
 
 		var keys: Array = doc.get_channel_keys(doc.selected_id, channel) if doc.selected_id != "" else []
 		if keys.is_empty():
 			continue
 		var count_text := str(keys.size())
-		var count_size := Kit.font_mono.get_string_size(count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8)
-		canvas.draw_string(Kit.font_mono, Vector2(_label_width - 10 - count_size.x, center_y + 3), count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT_DIM)
+		var count_size := Kit.font_mono.get_string_size(count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO)
+		canvas.draw_string(Kit.font_mono, Vector2(_label_width - 10 - count_size.x, center_y + 3), count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO, Kit.TEXT_DIM)
 		for key in keys:
 			if key["time"] > doc.duration + 0.001:
 				continue
@@ -634,11 +644,11 @@ func _draw_sheet(canvas: Control) -> void:
 	canvas.draw_colored_polygon(head, Kit.ACCENT)
 
 	if doc.selected_id == "":
-		canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 20, _ruler_h + 32), "Select an object to view its animation channels.", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 24, 10, Kit.TEXT_DIM)
+		canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 20, _ruler_h + 32), "Select an object to view its animation channels.", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 24, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	else:
 		var rows_bottom := row_top + float(channels.size()) * _row_h
 		if h > rows_bottom + 12.0:
-			canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 8, rows_bottom + 14), "Drag diamonds to retime · tap the ruler to scrub", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 16, 9, Kit.TEXT_DIM)
+			canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 8, rows_bottom + 14), "Drag diamonds to retime · tap the ruler to scrub", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 16, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 
 # -------------------------------------------------------------------------
 # Speed graph
@@ -657,8 +667,8 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 			canvas.draw_rect(Rect2(0, top, 2, _row_h), Kit.ACCENT)
 		canvas.draw_line(Vector2(0, top + _row_h), Vector2(_label_width, top + _row_h), Kit.BORDER_SOFT, 1.0)
 		var label := str(doc.CHANNEL_LABELS.get(channel, channel))
-		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
-		var dot_color: Color = [Kit.AXIS_X, Kit.AXIS_Y, Kit.AXIS_Z][ci]
+		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
+		var dot_color: Color = [Kit.TEXT_MUTED, Kit.TEXT_DIM, Kit.BORDER][ci]
 		canvas.draw_circle(Vector2(12, center_y), 2.4, dot_color)
 	_graph_top = _ruler_h + 6.0
 	_graph_baseline = h - 26.0
@@ -672,13 +682,13 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 	canvas.draw_rect(Rect2(_grid_left, _graph_baseline + 1.0, maxf(0.0, w - _grid_left - 8.0), maxf(0.0, h - _graph_baseline - 1.0)), Kit.SURFACE_2)
 
 	if doc.selected_id == "":
-		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "Select an object to shape its speed.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, 10, Kit.TEXT_DIM)
+		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "Select an object to shape its speed.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 		_draw_graph_playhead(canvas, h)
 		return
 
 	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
 	if keys.is_empty():
-		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "No keys on this channel. Insert a key at the playhead.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, 10, Kit.TEXT_DIM)
+		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "No keys on this channel. Insert a key at the playhead.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 		_draw_graph_playhead(canvas, h)
 		return
 
@@ -740,10 +750,10 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 		_ease_hits.append({"index": key_index, "pos": Vector2(x, y), "transition": transition})
 		if selected_seg:
 			var readout := "EASE %.2f× · %s" % [transition, _ease_name(transition)]
-			var text_size := Kit.font_mono.get_string_size(readout, HORIZONTAL_ALIGNMENT_LEFT, -1, 8)
+			var text_size := Kit.font_mono.get_string_size(readout, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO)
 			var text_pos := Vector2(minf(w - text_size.x - 12.0, x + 8.0), maxf(_graph_top + 8.0, y - 8.0))
 			canvas.draw_rect(Rect2(text_pos - Vector2(4, 8), text_size + Vector2(8, 4)), Kit.SURFACE * Color(1, 1, 1, 0.92))
-			canvas.draw_string(Kit.font_mono, text_pos, readout, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT)
+			canvas.draw_string(Kit.font_mono, text_pos, readout, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO, Kit.TEXT)
 	_draw_graph_playhead(canvas, h)
 
 func _draw_graph_playhead(canvas: Control, h: float) -> void:

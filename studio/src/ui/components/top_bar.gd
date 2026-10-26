@@ -4,15 +4,14 @@ extends PanelContainer
 ## Three arrangements share one set of actions:
 ##   compact  48 dp - back, title, undo/redo, overflow.
 ##   studio   44 dp - back, title, undo/redo, render, settings, overflow.
-##   desktop  36 dp - a real menu bar, then undo/redo, the renderer chip and
-##                    settings. The 36 dp row is a mouse target; every action
-##                    that a finger reaches keeps a 44 dp target.
+##   desktop  36 dp - a real menu bar, a centred document title, undo/redo and
+##                    the editor actions. The 36 dp row is a mouse target; every
+##                    action that a finger reaches keeps a 44 dp target.
 ##
 ## The bar only reports intent. The editor owns every action.
 
 signal action_requested(action: String)
 signal layout_requested
-signal renderer_requested
 
 const ACTION_BACK := "back"
 const ACTION_UNDO := "undo"
@@ -31,6 +30,7 @@ const ACTION_TOGGLE_GRID := "toggle_grid"
 const ACTION_RENDER_STILL := "render_still"
 const ACTION_RENDER_SEQUENCE := "render_sequence"
 const ACTION_RESET_LAYOUT := "reset_layout"
+const ACTION_TIMELINE := "timeline"
 const ACTION_ABOUT := "about"
 const ACTION_SHORTCUTS := "shortcuts"
 
@@ -87,15 +87,19 @@ const MENUS := [
 
 var _mode := "studio"
 var _row: HBoxContainer
+var _title_box: VBoxContainer
 var _title_label: Label
 var _subtitle_label: Label
 var _dirty_dot: ColorRect
+var _center_title_host: CenterContainer
+var _center_title_label: Label
+var _center_subtitle_label: Label
+var _center_dirty_dot: ColorRect
 var _undo_button: Button
 var _redo_button: Button
 var _back_button: Button
 var _menu_button: Button
 var _settings_button: Button
-var _renderer_button: Button
 var _render_button: Button
 var _fit_label: Label
 var _menu_bar: HBoxContainer
@@ -136,6 +140,7 @@ func _build() -> void:
 		_menu_bar.add_child(button)
 
 	var title_box := VBoxContainer.new()
+	_title_box = title_box
 	title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	title_box.add_theme_constant_override("separation", 0)
@@ -176,10 +181,43 @@ func _build() -> void:
 	_redo_button.pressed.connect(func() -> void: action_requested.emit(ACTION_REDO))
 	_row.add_child(_redo_button)
 
-	_renderer_button = Kit.text_button("Mobile", "", false, true)
-	_renderer_button.tooltip_text = "Renderer  ·  tap to switch"
-	_renderer_button.pressed.connect(func() -> void: renderer_requested.emit())
-	_row.add_child(_renderer_button)
+	# Desktop gets a genuinely centred document title. The row title is still
+	# used by compact and studio; this overlay is pointer-transparent so the
+	# menu and actions underneath keep their full hit areas.
+	_center_title_host = CenterContainer.new()
+	_center_title_host.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_center_title_host.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_center_title_host.visible = false
+	add_child(_center_title_host)
+	var center_box := VBoxContainer.new()
+	center_box.custom_minimum_size.x = 300
+	center_box.add_theme_constant_override("separation", 0)
+	center_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_center_title_host.add_child(center_box)
+	var center_row := HBoxContainer.new()
+	center_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	center_row.add_theme_constant_override("separation", 6)
+	center_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_box.add_child(center_row)
+	_center_title_label = Kit.label("Untitled", 13, Kit.TEXT, 600)
+	_center_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_center_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_center_title_label.clip_text = true
+	_center_title_label.custom_minimum_size.x = 300
+	_center_title_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_row.add_child(_center_title_label)
+	_center_dirty_dot = ColorRect.new()
+	_center_dirty_dot.color = Color(0, 0, 0, 0)
+	_center_dirty_dot.custom_minimum_size = Vector2(5, 5)
+	_center_dirty_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_center_dirty_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_row.add_child(_center_dirty_dot)
+	_center_subtitle_label = Kit.mono_label("", 10, Kit.TEXT_DIM)
+	_center_subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_center_subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_center_subtitle_label.clip_text = true
+	_center_subtitle_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_box.add_child(_center_subtitle_label)
 
 	_fit_label = Kit.mono_label("", 10, Kit.TEXT_DIM)
 	_fit_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -209,14 +247,14 @@ func mode() -> String:
 
 
 func set_project(title: String, dirty: bool, saved: bool) -> void:
-	_title_label.text = title if title != "" else "Untitled"
-	_dirty_dot.color = Kit.WARNING if dirty else Color(0, 0, 0, 0)
-	_subtitle_label.text = ("Unsaved edits" if dirty else "Saved") if saved else ""
-
-
-func set_renderer(text: String, fallback: bool) -> void:
-	_renderer_button.text = text
-	_renderer_button.add_theme_color_override("font_color", Kit.WARNING if fallback else Kit.TEXT_MUTED)
+	var clean := title if title != "" else "Untitled"
+	var status := ("Unsaved edits" if dirty else "Saved") if saved else ""
+	_title_label.text = clean
+	_dirty_dot.color = Kit.TEXT if dirty else Color(0, 0, 0, 0)
+	_subtitle_label.text = status
+	_center_title_label.text = clean
+	_center_dirty_dot.color = Kit.TEXT if dirty else Color(0, 0, 0, 0)
+	_center_subtitle_label.text = status
 
 
 func set_fit(percent: float, small: bool) -> void:
@@ -224,7 +262,7 @@ func set_fit(percent: float, small: bool) -> void:
 		_fit_label.text = ""
 		return
 	_fit_label.text = "Fit %d%%" % int(round(percent))
-	_fit_label.add_theme_color_override("font_color", Kit.WARNING if small else Kit.TEXT_DIM)
+	_fit_label.add_theme_color_override("font_color", Kit.TEXT if small else Kit.TEXT_DIM)
 
 
 func set_history(can_undo: bool, can_redo: bool) -> void:
@@ -237,7 +275,6 @@ func set_history(can_undo: bool, can_redo: bool) -> void:
 func _apply_mode() -> void:
 	var height := 48.0
 	var icon_size := 20
-	var button_size := 44
 	match _mode:
 		"compact":
 			height = 48.0
@@ -245,9 +282,16 @@ func _apply_mode() -> void:
 			height = 44.0
 		"desktop":
 			height = 36.0
-			button_size = 36
 			icon_size = 16
 	custom_minimum_size.y = height
+	var desktop := _mode == "desktop"
+	# Desktop is a mouse surface with a 36 dp menu bar. Touch modes keep the
+	# full 44 dp target, even when that leaves the icon visually small.
+	for menu_button in _menu_bar.get_children():
+		if menu_button is Button:
+			menu_button.custom_minimum_size.y = 32 if desktop else Kit.Tokens.HIT
+			menu_button.add_theme_font_size_override("font_size", 11 if desktop else Kit.TYPE_BODY)
+
 	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
 	style.border_width_bottom = 1
 	style.content_margin_left = 6
@@ -257,9 +301,14 @@ func _apply_mode() -> void:
 	add_theme_stylebox_override("panel", style)
 	_menu_bar.visible = _mode == "desktop"
 	_back_button.visible = _mode != "desktop"
-	_subtitle_label.visible = _mode != "compact"
-	_renderer_button.visible = _mode == "desktop"
+	_subtitle_label.visible = _mode != "compact" and not desktop
 	_fit_label.visible = _mode == "desktop"
+	# Desktop centres the title in its own overlay and leaves the row title
+	# empty as an expanding spacer; compact and studio keep the inline title.
+	_title_box.visible = true
+	_title_label.visible = not desktop
+	_dirty_dot.visible = not desktop
+	_center_title_host.visible = desktop
 	# Compact is a phone header, not a toolbar: back, title/dirty and one
 	# overflow. Undo, redo, save, render and settings live in that menu.
 	_undo_button.visible = _mode != "compact"
@@ -267,19 +316,18 @@ func _apply_mode() -> void:
 	_settings_button.visible = _mode != "compact"
 	if _render_button != null:
 		_render_button.visible = _mode != "compact"
-	# The renderer chip is a 36 dp bar citizen; every touch-mode control keeps
-	# a 44 dp target regardless of how dense the bar looks.
-	_renderer_button.custom_minimum_size.y = height - 8 if _mode == "desktop" else Kit.Tokens.HIT
-	_renderer_button.add_theme_font_size_override("font_size", 11 if _mode == "desktop" else 12)
 	# Desktop is a mouse surface: the 36 dp bar may use 36 dp targets there.
 	# Every touch arrangement keeps 44 dp, which is why the list below is
 	# resized by mode rather than fixed at construction time.
 	for button in [_back_button, _undo_button, _redo_button, _render_button, _settings_button, _menu_button]:
 		if button == null:
 			continue
-		var exempt := _mode == "desktop"
-		button.custom_minimum_size = Vector2(button_size if exempt else maxi(button_size, 44), maxi(36, height - 2))
-		button.add_theme_constant_override("icon_max_width", icon_size if not exempt else 18)
+		if desktop:
+			button.custom_minimum_size = Vector2(36, 36)
+			button.add_theme_constant_override("icon_max_width", 18)
+		else:
+			button.custom_minimum_size = Vector2(44, 44)
+			button.add_theme_constant_override("icon_max_width", icon_size)
 
 
 func _open_menu(button: Control, menu: Dictionary) -> void:
@@ -316,6 +364,7 @@ func _open_overflow() -> void:
 		{"id": ACTION_IMPORT, "text": "Import model"},
 		{"id": ACTION_PERFORMANCE, "text": "Performance"},
 		{"id": ACTION_SETTINGS, "text": "Settings"},
+		{"id": ACTION_TIMELINE, "text": "Show or hide timeline"},
 		{"id": ACTION_FRAME_ALL, "text": "Frame all"},
 	]
 	if _mode == "desktop":

@@ -23,7 +23,7 @@ Bản dựng lại giữ nguyên engine, Android host, document model và các p
 | **Studio** | điện thoại ngang, tablet dọc (600–959 dp) | rail trái + viewport + dock phải; timeline dock dưới |
 | **Desktop** | tablet ngang, DeX, màn hình lớn; **trên điện thoại vẫn chọn được** | menu bar + rail + viewport + dock + timeline + status bar; nếu không vừa, thu nhỏ đều toàn bộ UI cho đến khi vừa |
 
-Cùng một ngôn ngữ hình ảnh cho cả ba: nền tối, hairline 1 px, góc 0 px, Inter + JetBrains Mono, **xanh FOCUS cho thao tác UI**, **hổ phách chỉ dành cho thời gian** (key, playhead, transport, selection 3D). Mật độ đến từ chữ 11–13 sp, khoảng cách 4/8/12 px và đường kẻ 1 px — không đến từ việc thu nhỏ vùng chạm.
+Cùng một ngôn ngữ hình ảnh cho cả ba: nền graphite đơn sắc, hairline 1 px, góc 0 px, IBM Plex Sans + IBM Plex Mono. Trạng thái được phân biệt bằng **độ sáng**, không bằng hue: trắng gần tuyệt đối cho thao tác UI, xám cho thời gian (key, playhead, transport, selection 3D), và đỏ là tín hiệu màu duy nhất dành cho destructive/error. Mật độ đến từ chữ 11–13 sp, khoảng cách 4/8/12 px và đường kẻ 1 px — không đến từ việc thu nhỏ vùng chạm.
 
 Ba lỗi gốc được sửa trước khi làm giao diện:
 
@@ -33,7 +33,7 @@ Ba lỗi gốc được sửa trước khi làm giao diện:
 
 Bề mặt mới có thật, không phải label giả:
 
-- **Renderer:** **Mobile mặc định trên Android**; Auto / Forward+ / Compatibility vẫn chọn được, chuyển bằng restart có kiểm chứng; hiển thị backend thực tế; tính năng không được hỗ trợ bị disable kèm lý do.
+- **Renderer:** **Mobile mặc định trên Android**; Forward+ / Mobile / Compatibility chọn được, chuyển bằng restart có kiểm chứng; hiển thị backend thực tế; tính năng không được hỗ trợ bị disable kèm lý do.
 - **Graphics / Performance / Editor / Display:** các control map trực tiếp vào API Godot, lưu bền, có reset từng nhóm.
 - **FPS / frame time / draw calls / preview resolution:** hiển thị thật, lấy từ `Performance` và `RenderingServer`.
 - **Render:** PNG still và PNG sequence đóng ZIP thật; **MP4 không được hỗ trợ** và UI nói rõ.
@@ -128,7 +128,7 @@ Home hiện dùng hero lớn, card template, illustration trang trí. Editor dù
 | G6 | Renderer thật, không giả | Restart bằng `OS.set_restart_on_exit`; hiển thị backend thực; test args/persistence; device checklist |
 | G7 | Settings sâu, có thật | Mọi control map vào API; lưu `user://`; reset từng nhóm; option không hỗ trợ bị disable kèm lý do |
 | G8 | Render/export và import thật | PNG still + ZIP sequence mở được; glTF/GLB/OBJ+MTL import được; FBX/MP4 nói rõ không hỗ trợ |
-| G9 | Ngôn ngữ hình ảnh chuyên nghiệp, vuông vức | Token 1 px/0 px; Inter + JetBrains Mono; icon redraw; review screenshot |
+| G9 | Ngôn ngữ hình ảnh chuyên nghiệp, vuông vức | Token 1 px/0 px; IBM Plex Sans + IBM Plex Mono; icon redraw; review screenshot |
 | G10 | Bằng chứng trước khi tuyên bố hoàn thành | Smoke pass, parse sạch, screenshot, CI artifact; không claim khi chưa chạy |
 
 ### 2.2 Không mục tiêu
@@ -242,12 +242,12 @@ Dùng Godot `Control` cho cấu trúc, input, scroll, focus, sheet; dùng `_draw
 - Hướng C.
 - Tối giản, chuyên nghiệp, vuông vức.
 - Ba mode Compact/Studio/Desktop, chọn được trong app.
-- Xanh FOCUS cho UI; hổ phách cho thời gian.
+- Trắng FOCUS cho UI; xám TIME cho thời gian; chỉ DANGER giữ sắc đỏ.
 - Không fake renderer/MP4/FBX.
 - Key tại playhead phải cập nhật key.
 - Build qua GitHub Actions, package `studio.kinema.app`, arm64-v8a.
 - Desktop trên điện thoại: thu nhỏ đều toàn bộ UI cho đến khi vừa; không fallback Studio.
-- Renderer mặc định trên Android: Mobile; Forward+/Compatibility/Auto vẫn chọn được.
+- Renderer mặc định trên Android: Mobile; Forward+/Mobile/Compatibility chọn được; không có Auto giả.
 - Thiết bị xác minh: Android 15–17; 60 fps là mục tiêu, không bắt buộc.
 
 ---
@@ -257,10 +257,10 @@ Dùng Godot `Control` cho cấu trúc, input, scroll, focus, sheet; dùng `_draw
 ### 5.1 Nguyên tắc
 
 1. **Đây là công cụ, không phải trang web.** Không hero, không card marketing, không illustration trang trí. Thông tin và điều khiển là nội dung.
-2. **Một điểm nhấn mỗi lúc.** Xanh FOCUS đánh dấu lựa chọn/hành động UI. Hổ phách đánh dấu thời gian. Hai nghĩa không tranh nhau.
+2. **Một điểm nhấn mỗi lúc.** Trắng FOCUS đánh dấu lựa chọn/hành động UI. Xám TIME đánh dấu thời gian. Hai nghĩa không tranh nhau.
 3. **Đường kẻ thay cho bóng đổ.** Phân cấp bằng surface step + hairline 1 px. Không drop shadow, không blur, không glass.
 4. **Vuông vức.** Góc 0 px cho panel, input, button, sheet. Không pill trừ khi đó là toggle trạng thái có lý do (ví dụ chip AUTO), và ngay cả khi đó cũng dùng hình chữ nhật 2 px.
-5. **Số phải thẳng hàng.** Mọi số, timecode, giá trị transform dùng JetBrains Mono, tabular. Không để số nhảy layout khi đổi giá trị.
+5. **Số phải thẳng hàng.** Mọi số, timecode, giá trị transform dùng IBM Plex Mono, tabular. Không để số nhảy layout khi đổi giá trị.
 6. **Mật độ đến từ nhịp, không từ thu nhỏ.** Chữ 11–13 sp, padding 4/8/12, hàng 44 dp; không dùng 8–9 sp.
 7. **Không trang trí làm chậm.** Animation chỉ để giải thích thay đổi trạng thái; không animation nền, không particle, không glow UI.
 8. **Trạng thái phải nhìn thấy.** Selected, active, disabled, dirty, unkeyed, unsaved, renderer-pending đều có dấu hiệu hình học + chữ, không chỉ màu.
@@ -269,60 +269,62 @@ Dùng Godot `Control` cho cấu trúc, input, scroll, focus, sheet; dùng `_draw
 
 Tất cả nằm trong `Kit` (hoặc file token mới `src/ui/tokens.gd` được `Kit` re-export). Không hardcode hex trong screen/component.
 
-| Token | Hex | Dùng cho | Ghi chú tương phản |
+| Token | Hex | Dùng cho | Tương phản đo được |
 |---|---|---|---|
-| `BG` | `#0B0F14` | nền app, khoảng trống viewport | — |
-| `SURFACE` | `#11161D` | panel, top bar, dock | — |
-| `SURFACE_2` | `#151B23` | input, row hover nhẹ, sheet body | — |
-| `SURFACE_3` | `#1B232D` | row active, button pressed | — |
-| `SURFACE_HOVER` | `#202A36` | hover/focus nền | — |
-| `BORDER` | `#26303C` | hairline chính, divider | 1 px |
-| `BORDER_SOFT` | `#1A222C` | hairline phụ, tách section | 1 px |
-| `TEXT` | `#E8ECF2` | chữ chính | ~15:1 trên BG |
-| `TEXT_MUTED` | `#8C97A8` | chữ phụ, metadata đọc được | ~5.8:1 trên SURFACE |
-| `TEXT_DIM` | `#5F6B7C` | **chỉ** disabled/decorative, không dùng cho metadata quan trọng | ~3.2:1; không đạt body |
-| `FOCUS` | `#4C8DE6` | selection UI, primary action, focus ring | ~5.2:1 trên BG |
-| `FOCUS_BRIGHT` | `#6BA6F2` | hover/active của FOCUS, icon active | ~7:1 |
-| `FOCUS_DARK` | `#14243A` | nền selected row, toggle on | — |
-| `TIME` | `#D9A565` | key, playhead, transport, selection 3D | ~8:1 trên BG |
-| `TIME_BRIGHT` | `#EDBE7F` | hover key/playhead | — |
-| `WARNING` | `#D98E5F` | unkeyed, pending restart, cảnh báo | khác hue với TIME |
-| `DANGER` | `#D76C6C` | xoá, lỗi | ~5.4:1 |
-| `SUCCESS` | `#6FB68A` | lưu xong, render xong | ~7.5:1 |
-| `AXIS_X` | `#D96962` | trục X, gizmo X | — |
-| `AXIS_Y` | `#7FB069` | trục Y, gizmo Y | — |
-| `AXIS_Z` | `#5B8FD9` | trục Z, gizmo Z | — |
-| `SCRIM` | `rgba(2,5,8,0.62)` | nền sau sheet/modal | không blur |
-| `GRID` | `rgba(255,255,255,0.08)` | grid viewport | — |
-| `GRID_MAJOR` | `rgba(255,255,255,0.16)` | grid 10 đơn vị | — |
+| `BG` | `#080808` | nền app, khoảng trống viewport | — |
+| `SURFACE` | `#101010` | panel, top bar, dock | — |
+| `SURFACE_2` | `#151515` | field, segmented track, sheet body | — |
+| `SURFACE_3` | `#1B1B1B` | row active, segment selected, button pressed | — |
+| `SURFACE_HOVER` | `#232323` | hover/focus nền | — |
+| `BORDER` | `#3A3A3A` | hairline chính, divider, field frame | 1 px |
+| `BORDER_SOFT` | `#292929` | hairline phụ, tách section | 1 px |
+| `TEXT` | `#F0F0F0` | chữ chính | 17.6:1 trên BG, 16.7:1 trên SURFACE |
+| `TEXT_MUTED` | `#A6A6A6` | chữ phụ, metadata đọc được | 7.8:1 trên SURFACE, 7.1:1 trên SURFACE_3 |
+| `TEXT_DIM` | `#8C8C8C` | chữ cấp ba, hint ngắn; **không** cho disabled-only | 5.7:1 trên SURFACE, 5.1:1 trên SURFACE_3 |
+| `FOCUS` | `#E6E6E6` | selection UI, primary action, focus ring | 16.0:1 trên BG |
+| `FOCUS_BRIGHT` | `#FFFFFF` | hover/active của FOCUS, icon active | cao nhất |
+| `FOCUS_DARK` | `#262626` | nền selected row, toggle on | — |
+| `TIME` | `#C8C8C8` | key, playhead, transport, selection 3D | 12.0:1 trên BG |
+| `TIME_BRIGHT` | `#F2F2F2` | hover key/playhead | — |
+| `TIME_DARK` | `#2A2A2A` | nền key/selection thời gian | — |
+| `WARNING` | `#C8C8C8` | unkeyed, pending restart, cảnh báo | dùng hình học + chữ, không dựa vào hue |
+| `DANGER` | `#E06C6C` | xoá, lỗi | 5.9:1 trên SURFACE |
+| `SUCCESS` | `#B0B0B0` | lưu xong, render xong | trạng thái bằng độ sáng + icon |
+| `AXIS_X` | `#A66A66` | trục X, gizmo X | chỉ trong viewport |
+| `AXIS_Y` | `#7F9A78` | trục Y, gizmo Y | chỉ trong viewport |
+| `AXIS_Z` | `#6D8099` | trục Z, gizmo Z | chỉ trong viewport |
+| `SCRIM` | `rgba(0,0,0,0.68)` | nền sau sheet/modal | không blur |
+| `GRID` | `rgba(255,255,255,0.07)` | grid viewport | — |
+| `GRID_MAJOR` | `rgba(255,255,255,0.14)` | grid 10 đơn vị | — |
 
 **Quy tắc màu:**
 
-- Hổ phách **không** dùng cho primary button, selected row, link hay focus ring. Chỉ thời gian và selection 3D.
-- Xanh FOCUS **không** dùng cho key/playhead.
-- Đỏ chỉ cho destructive/error; không dùng cho “đang ghi”.
-- `TEXT_DIM` không dùng cho hướng dẫn, nhãn field, hay metadata mà người dùng cần đọc. Nếu cần phụ, dùng `TEXT_MUTED`.
-- Màu trạng thái luôn đi kèm icon/chữ: `AUTO` + chấm, `Unkeyed` + dấu ngoặc, `Restart required` + icon.
+- Không có hue trong chrome. Trạng thái UI dùng `FOCUS`/`FOCUS_BRIGHT`; trạng thái thời gian dùng `TIME`/`TIME_BRIGHT`. Hai nghĩa không hoán đổi.
+- `DANGER` là tín hiệu màu duy nhất; chỉ cho destructive/error, không cho “đang ghi”.
+- `WARNING` và `SUCCESS` là bậc độ sáng, luôn đi kèm icon/chữ: `Unkeyed` + ngoặc, `Restart required` + icon, `Saved` + check.
+- `TEXT_DIM` chỉ dùng cho hint ngắn hoặc nhãn cấp ba; hướng dẫn và metadata quan trọng dùng `TEXT_MUTED`.
+- Màu trục chỉ tồn tại trong viewport (gizmo, selection, grid axis). Không dùng màu trục cho chrome.
+- Không hardcode hex ngoài `src/ui/tokens.gd`; `Kit` re-export mọi token.
 
 ### 5.3 Typography
 
-| Vai trò | Font | Size / line | Weight | Dùng |
-|---|---|---|---|---|
-| Display | Inter | 22 / 28 | 600 | chỉ tiêu đề Home/empty state lớn |
-| Title | Inter | 18 / 24 | 600 | tên project, sheet title |
-| Heading | Inter | 13 / 18 | 600 | section trong inspector/settings |
-| Control | Inter | 13 / 18 | 500 | button, tab, field label |
-| Body | Inter | 12 / 17 | 400 | mô tả, nội dung sheet |
-| Meta | Inter | 11 / 15 | 400 | metadata, hint, trạng thái |
-| Micro | Inter | 10 / 14 | 600 | label uppercase, tracking nhẹ; không cho nội dung dài |
-| Timecode | JetBrains Mono | 13 / 18 | 500 | transport, ruler |
-| Numeric | JetBrains Mono | 12 / 16 | 450 | transform, duration, FPS |
-| Code/ID | JetBrains Mono | 10 / 14 | 450 | project id, renderer id, debug |
+| Vai trò | Token | Font | Size | Weight | Dùng |
+|---|---|---|---|---|---|
+| Page | `TYPE_PAGE` | IBM Plex Sans | 18 | 600 | tiêu đề Home, empty state lớn |
+| Title | `TYPE_TITLE` | IBM Plex Sans | 15 | 600 | tên project, sheet title |
+| Emphasis | `TYPE_EMPHASIS` | IBM Plex Sans | 13 | 500 | section heading, field value, button label |
+| Body | `TYPE_BODY` | IBM Plex Sans | 12 | 400 | mô tả, nội dung sheet, nhãn điều khiển |
+| Caption | `TYPE_CAPTION` | IBM Plex Sans | 11 | 400/500 | metadata, hint, trạng thái; **sàn đọc** |
+| Mono | `TYPE_MONO` | IBM Plex Mono | 11 | 400 | FPS, draw call, ID, eyebrow uppercase |
+| Mono Large | `TYPE_MONO_LARGE` | IBM Plex Mono | 12 | 400 | transform, duration, timecode |
+| Ruler | `TYPE_RULER` | IBM Plex Mono | 10 | 400 | **chỉ** tick số trên ruler timeline |
 
+- `Kit.label()` và `Kit.mono_label()` clamp mọi cỡ về tối thiểu 11 sp; chỉ ruler tự vẽ 10 sp.
 - Không dùng quá 3 cỡ chữ trong một panel.
-- Số trong field dùng mono; label dùng Inter.
-- Inter phải cover tiếng Việt; nếu JetBrains Mono thiếu glyph tiếng Việt, đặt Inter làm fallback cho mono label. Cần kiểm tra glyph coverage trước khi chốt.
-- Không dùng font mặc định của engine trừ khi fallback.
+- Số trong field, timecode và mọi giá trị kỹ thuật dùng IBM Plex Mono; nhãn dùng IBM Plex Sans.
+- Section eyebrow dùng IBM Plex Mono uppercase 11 sp, không dùng làm nội dung dài.
+- Cả hai họ font đều có glyph tiếng Việt; font dự phòng của engine chỉ dùng khi file font không tải được và phải phát warning.
+- Không dùng font mặc định của engine cho UI.
 
 ### 5.4 Spacing, hình học, hit target
 
@@ -473,10 +475,10 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 
 - **Top bar 44 dp:** back, title + dirty, undo/redo, render, settings, overflow. Không dùng menu bar kiểu desktop.
 - **Rail 44 dp**, dock phải rộng `clamp(width × 0.28, 280, 340) dp`.
-- **Dock:** Scene trên (40% chiều cao, min 180), Properties dưới (60%, scroll). Có divider kéo được? Bản này cố định tỉ lệ; có thể thêm sau. Trong `short`, dock chuyển thành tab Scene/Properties để tiết kiệm chiều cao.
-- **Timeline 180 dp**, gập còn 44 dp transport; mặc định mở ở Studio, gập ở short.
+- **Dock:** Scene trên (38% chiều cao, min 180, max 320), Properties dưới (scroll). Trong `short`, dock chuyển thành tab Scene/Properties để tiết kiệm chiều cao.
+- **Timeline 180 dp** (short: 156 dp), gập còn **56 dp** transport; mặc định mở ở Studio, gập ở short. Lựa chọn gập/mở thủ công sống qua rotation cho đến lần đổi mode kế tiếp.
 - **Panel** vẫn docked; không có scrim. Tap bên trong không đóng vì không có gì để đóng.
-- **Sheet** (Add/Settings/Render/Import) dùng modal giữa hoặc bottom sheet tùy chiều cao; trên tablet ưu tiên modal 560–720 dp rộng.
+- **Sheet** (Add/Settings/Render/Import) dùng modal giữa hoặc bottom sheet tùy chiều cao; trên tablet ưu tiên modal 560–720 dp rộng. Sheet Graphics dùng 860 dp khi editor đủ rộng để hai cột không tràn.
 
 ### 6.4 Desktop — màn hình lớn
 
@@ -527,7 +529,8 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 - `effective_factor = base_factor × user_scale`.
 - `logical_width = physical_width / effective_factor`, `logical_height = physical_height / effective_factor` (trước fit).
 - **Fit theo mode:**
-  - Compact/Studio: nếu `logical_width < 320 dp` hoặc `logical_height < 480 dp`, giảm `effective_factor` để giữ tối thiểu 320×480; hiển thị “UI scale bị giới hạn bởi màn hình.”
+  - Compact: giữ tối thiểu 320×480; Studio: giữ tối thiểu **480×320** vì landscape là bề mặt ưu tiên. Nếu logical nhỏ hơn, giảm `effective_factor` vừa đủ; hiển thị “UI scale bị giới hạn bởi màn hình.”
+  - Điện thoại ngang 915×412 và 800×360 phải resolve **factor 1.0**, không bị thu nhỏ oan vì minimum portrait.
   - Desktop: nếu `logical_width < 960 dp` hoặc `logical_height < 600 dp`, đặt `fit = min(1, logical_width / 960, logical_height / 600)` và `effective_factor *= fit`. Kết quả là canvas logic đạt tối thiểu 960×600. **Không có sàn fit**; đây là cách Desktop trên điện thoại thu nhỏ cho đến khi vừa. Hiển thị `Desktop fit <fit>%`.
   - Fit của Desktop là automatic, không phải setting. Khi `fit < 1`, `user_scale` bị **disable** trong mode này kèm hint: “Desktop fit đang giữ UI vừa màn hình. Chuyển sang Studio/Compact để chỉnh UI scale.” Lý do: fit sẽ bù lại mọi thay đổi user scale, nên để slider hoạt động sẽ tạo cảm giác control bị hỏng. Khi `fit = 1`, user scale hoạt động bình thường.
 - `content_scale_factor = effective_factor`; áp dụng ngay, không restart; lưu `user_scale` và mode vào `Prefs`.
@@ -561,10 +564,10 @@ Mỗi component có một file riêng trong `src/ui/components/` (mới) hoặc 
 
 **Compact (48 dp):** back 44×44, title + dirty dot (expand), overflow 44×44. Overflow chứa Undo, Redo, Save, Render, Settings, Help, Close.
 **Studio (44 dp):** back, title + dirty, undo, redo, render, settings, overflow.
-**Desktop (36 dp):** logo “Kinema” 12 sp semibold, menu buttons `Project`, `Edit`, `View`, `Render`, `Help`; bên phải là undo/redo, renderer chip, settings. Menu dùng `PopupMenu` với shortcut hiển thị bên phải.
+**Desktop (36 dp):** logo “Kinema” 12 sp semibold, menu buttons `Project`, `Edit`, `View`, `Render`, `Help`; bên phải là undo/redo, settings. Menu dùng `PopupMenu` với shortcut hiển thị bên phải.
 - Title ellipsis; dirty dot 5×5 `TIME` khi có thay đổi, rỗng khi sạch.
 - Save state: “Saved” 11 sp `TEXT_MUTED` cạnh title; khi đang lưu, “Saving…” + spinner 12 px (không animation nếu reduce motion).
-- Renderer chip ở Desktop: giá trị đang chọn (`Mobile` mặc định trên Android, `Auto`, `Forward+`, `Compatibility`) + backend thực; dấu `!` nếu fallback backend; click mở Graphics.
+- Renderer **không** lặp ở top bar. Backend thực nằm ở status bar (Desktop) và sheet Graphics/Renderer; tránh hai nguồn sự thật.
 - Không hiển thị FPS ở top bar; FPS ở HUD/status bar.
 
 ### 7.2 Tool rail
@@ -578,34 +581,37 @@ Mỗi component có một file riêng trong `src/ui/components/` (mới) hoặc 
 ### 7.3 Viewport và HUD
 
 - `SubViewport` + `TextureRect`/`Control` surface như hiện tại; camera orbit/pan/zoom giữ nguyên.
-- HUD:
-  - top-left: camera preset chip (`Persp`, `Front`, `Right`, `Top`) 32 dp + grid toggle 32 dp; hit 44.
-  - top-right: FPS chip 32 dp (`60`) — click mở Performance overlay; long-press bật/tắt graph.
-  - bottom-left: selection info: icon + name + type + “3 keys” hoặc “No keys”; 1 dòng, ellipsis; click focus inspector.
+- HUD (đều nằm trong một `_hud_root` để ẩn khi modal/sheet mở):
+  - top-left: camera preset chip (`Persp`, `Front`, `Right`, `Top`) + grid toggle; hit 44.
+  - top-right: FPS chip **48×44 dp** mono 11 sp, cập nhật 4 Hz; tap mở Performance overlay. Màu: ≥55 `TEXT`, 30–54 `TEXT_MUTED`, <30 `DANGER`; không có sample thì `—`.
+  - top-right, cạnh FPS: nút `Render` mở **quick render** ngay trong editor.
+  - draft tag nhỏ chỉ hiện khi quality đang hạ trong lúc camera/gizmo/playback/inspector edit; idle và capture không hiện.
+  - bottom-left: selection info: icon + name + type + “3 keys” hoặc “No keys”; 1 dòng, ellipsis; tap focus inspector.
   - bottom-right: preview scale indicator khi adaptive quality hạ (`75%`), chỉ hiện khi khác 100%.
   - center: gizmo; selection outline `TIME` 1.5 px; hover outline `TIME` 50%.
-- Grid: hai mức; toggle; màu `GRID`/`GRID_MAJOR`.
+  - camera/light/empty locators là glyph SVG screen-space (không phải mesh 3D); marker mesh của document ẩn trong lúc edit và capture. Locator chọn được, sáng hơn khi selected, và không được nuốt tap của object khác.
+- Grid: hai mức; toggle; màu `GRID`/`GRID_MAJOR` đã hạ độ tương phản để không tranh với hình.
 - Empty scene: text “Scene trống” + nút `Add object`; không illustration.
 - Khi render/sequence: HUD ẩn (trừ progress do editor quản lý); camera giữ nguyên.
-- Khi sheet mở: viewport vẫn hiển thị nhưng freeze update (`UPDATE_ONCE`) để tiết kiệm; không ẩn.
+- Khi sheet mở: HUD ẩn hoàn toàn để chip sáng không nổi trên scrim; viewport vẫn hiển thị và freeze update (`UPDATE_ONCE`).
 - FPS overlay (khi bật Full):
-  - panel 220×120 dp, nền `SURFACE`, border 1 px;
-  - FPS lớn 22 sp mono; frame time 12 sp; graph 120 sample, 60 sample/s? Cập nhật 4 Hz;
-  - dòng: `UI 3.2 ms · 3D 11.8 ms · draw 42`;
-  - nút `Reset` và `Close`.
-- Không vẽ FPS bằng text mỗi frame; cập nhật 4 Hz bằng Timer.
+  - panel **248×190 dp**, nền `SURFACE`, border 1 px, neo góc phải trên của viewport;
+  - FPS lớn 22 sp mono; frame time 12 sp; graph 120 sample thật, cập nhật 4 Hz, có đường tham chiếu 30 fps;
+  - dòng thật: `42 draw · 1200 prim`, `preview 72% · 960×540`, renderer + preset, `7 obj · 8 keys`;
+  - nút `Close` 44×44; không có nút Reset giả.
+- Không vẽ FPS bằng text mỗi frame; cập nhật 4 Hz từ `Perf.sample_updated`.
 
 ### 7.4 Outliner
 
 - Header 44 dp: “Scene” + count + `+` 44×44; search field 36 dp (hit 44) khi > 6 object; filter chips `All`, `Mesh`, `Light`, `Camera` (horizontal scroll nếu hẹp).
-- Row 44 dp: indent theo hierarchy (hiện tại flat; hiển thị depth nếu có), type icon 16, name 12 sp, visibility toggle 32 (hit 44), lock toggle 32, overflow `⋮` 32.
+- Row **44 dp**, gap 1, list top 6, bottom 10; row hit guard phủ toàn hàng nên tap vào khoảng trống giữa các control vẫn chọn object, không rơi xuống viewport.
 - Selected: nền `FOCUS_DARK`, text `TEXT`, viền trái 2 px `FOCUS`.
 - Hover: `SURFACE_HOVER`; pressed: `SURFACE_3`.
 - Double-tap/Enter: rename inline (LineEdit 36 dp); Esc huỷ; Enter commit; validate empty → giữ tên cũ + toast.
 - Long-press/right-click: context menu (Rename, Duplicate? non-goal, Delete, Focus, Hide/Show). Không thêm Duplicate nếu document chưa hỗ trợ; chỉ hiện action thật.
 - `+` mở Add sheet.
 - Empty: “Chưa có vật thể” + Add.
-- Không rebuild toàn bộ khi transform đổi; chỉ update row label/icon khi scene structural change.
+- Không rebuild toàn bộ khi transform đổi; chỉ update row label/icon khi scene structural change. Việc fit rows chạy deferred sau layout để row cuối không bị cắt.
 
 ### 7.5 Inspector
 
@@ -663,6 +669,7 @@ Mỗi component có một file riêng trong `src/ui/components/` (mới) hoặc 
   - scrim `SCRIM`; panel `SURFACE`, border-top 1 px `BORDER`;
   - góc 0; cao tối đa 86% màn hình; header 48 dp (title 13 semibold, subtitle 11 muted, close 44);
   - drag handle 4×32 `BORDER` ở giữa header, chỉ vùng handle mới drag-to-dismiss; body scroll; footer 48 dp + safe inset;
+  - footer là một strip `SURFACE` đặc, hairline trên 1 px, tách khỏi body scroll; action không bao giờ trôi trên nội dung;
   - tap body **không** đóng; scrim tap đóng; back đóng; Esc đóng (desktop).
 - **Modal (Studio/Desktop):**
   - rộng `min(720, width - 48)`; cao `min(640, height - 48)`; header 48; body scroll; footer;
@@ -680,7 +687,7 @@ Settings là **một màn hình** có nav, không phải một sheet dài vô t�
 - **Studio:** modal 720×600; nav trái 180; content scroll.
 - **Compact:** full-screen sheet; danh sách category (row 44) → trang detail có back; mỗi trang scroll; footer reset.
 - Row chuẩn: label 12 sp + hint 11 sp muted; control bên phải (switch 44×24 hit 44, segmented, stepper, dropdown). Row cao 44–56 dp.
-- Section header 10 sp uppercase + divider.
+- Section header dùng IBM Plex Mono uppercase **11 sp** + divider.
 - Thay đổi áp dụng ngay (trừ renderer: restart; layout: ngay; orientation: ngay nếu API).
 - Mỗi section có `Reset` (confirm nhẹ, toast “Đã đặt lại”).
 - Giá trị invalid bị clamp + hiển thị lý do; không crash.
@@ -688,6 +695,7 @@ Settings là **một màn hình** có nav, không phải một sheet dài vô t�
 
 ### 7.9 Render sheet
 
+- **Quick render trong editor:** nút `Render` trên HUD chụp **full quality** qua `capture_still`, rồi mở sheet preview ngay trong editor (ảnh cao 160 dp trên landscape thấp, 300 dp trên màn cao) với `Save PNG`. Không ghi MP4, không giả video.
 - Header `Render`; segmented `Still` / `Sequence`.
 - **Still:** resolution long edge 1280/1920/2560/3840; MSAA Off/2x/4x/8x; transparent background toggle (nếu probe hỗ trợ); render từ **editor camera hiện tại**; nút `Render PNG` 48 dp.
 - **Sequence:** frame range start/end (mặc định 0..duration×fps, số frame = end−start), FPS hiển thị (project), resolution, MSAA, transparent; nút `Render ZIP` 48 dp; ước lượng số frame + dung lượng (frame_count × resolution ước tính, ghi “ước tính”).
@@ -712,25 +720,25 @@ Settings là **một màn hình** có nav, không phải một sheet dài vô t�
 
 Home được dựng lại hoàn toàn, không hero/card.
 
-- **Top bar 48 dp:** wordmark `KINEMA` 12 sp semibold + `STUDIO` 10 sp muted; bên phải `Settings` 44, `About` 44.
-- **Compact:** search 44; list project row 64 dp; bottom `New project` 48.
-- **Studio:** hai cột: list 60% + detail 40%; detail hiển thị tên, modified, objects, duration, path, size (tính on-demand); actions Open/Rename/Delete.
-- **Desktop:** table: Name, Modified, Objects, Duration, Size; header 32; row 44; toolbar New/Search/Sort; detail panel phải 280.
-- Project row: icon 20 (cube/film), name 13, meta 11 (`Modified 2h ago · 3 objects · 6s`), overflow 44.
+- **Top bar 56 dp:** wordmark `KINEMA` 13 sp semibold + `STUDIO` 13 sp dim, mark vuông 30 dp; bên phải `About` 44×44. Không có marketing nav.
+- **Compact:** search 44; project row 56 dp; bottom `New project` 48.
+- **Studio:** hai cột khi width ≥ 720 dp: list + cột giá trị; detail hiển thị tên, modified, objects, duration, path; actions Open/Rename/Delete.
+- **Desktop:** cùng list dạng bảng: Name, Objects, Duration, Modified; header 32; row 56; toolbar New/Search/Sort; nội dung tối đa 980 dp và căn giữa.
+- Project row: icon 15 trong ô 32, name 13, meta 11 (`3 objects · 6.0s · 2h ago`), overflow 44. Không card, không viền từng hàng; chỉ hover fill và một hairline dưới header.
 - New project sheet: name field; template list (Blank, Study) dạng row 56 dp với icon + mô tả, radio 20; `Create` primary 48. Không card lớn.
-- Empty: icon 24, “Chưa có project”, “Tạo project đầu tiên để bắt đầu.” + New.
+- Empty: icon 24, “No projects yet”, “Start a blank stage, or load the primitive study…” + New.
 - Search: filter theo tên; không có kết quả → empty state.
 - Sort: Recent / Name; lưu lựa chọn.
 - **Nguồn dữ liệu:** Home liệt kê **tất cả project** dưới `user://projects/` qua `Store.list_projects()` mới (quét folder, đọc `project.json`, trả id/title/modified/objects/duration/path). `recent_projects()` chỉ dùng để xếp thứ tự “Recent”, không phải nguồn duy nhất. Không hiển thị template vì project JSON hiện không lưu template.
 - Size: tính bằng cách quét dung lượng folder khi mở detail hoặc footer; cache 5 s; không quét mỗi frame.
 - Delete: confirm nêu rõ tên + không thể hoàn tác; xoá folder thật; nếu lỗi, báo.
-- Storage: dòng “X project · Y MB” ở footer; lấy từ filesystem thật.
+- Storage: dòng “X project · Y MB” ở footer; lấy từ filesystem thật. Footer phone là stack 2 dòng, không tranh ngang.
 - Không hiển thị recent dạng card; không illustration trang trí.
 
 ### 7.12 Status bar, toast, help, about
 
-- **Status bar (Desktop):** 24 dp, `SURFACE`, border-top 1 px; trái: FPS + frame time + renderer; phải: object count + key count + save state. Text 10 sp mono; click FPS mở Performance. Khi Desktop fit < 100%, thêm `fit 43%` cạnh renderer; fit < 60% dùng `WARNING`.
-- **Toast:** bottom-center trên transport, 1 dòng 12 sp, icon 16, nền `SURFACE_3`, border 1 px; tự ẩn 2.5 s; không chặn tap; lỗi 4 s.
+- **Status bar (Desktop):** 24 dp, `SURFACE`, border-top 1 px; trái: FPS + frame time + renderer; phải: object count + key count + save state + fit. Text **11 sp mono**; click FPS mở Performance. Khi Desktop fit < 100%, thêm `fit 43%` cạnh renderer; fit < 60% dùng `WARNING`.
+- **Toast:** bottom-center trên transport, 1 dòng 12 sp, icon 16, nền `SURFACE_3`, không viền; tự ẩn 2.7 s; không chặn tap; lỗi 4 s.
 - **Help:** shortcuts + gestures + limitations; dạng bảng 2 cột; scroll; không text marketing.
 - **About:** version, engine 4.7.2, package, renderer thực, build type, licenses; nút copy build info.
 - **Empty states:** scene trống, không selection, không key, không project, không render, không search result; mỗi empty state có một hành động chính.
@@ -926,6 +934,11 @@ Thiết kế sửa cả bốn, theo thứ tự đo được.
   - Studio: 1600;
   - Desktop: 1920, nhưng khi Desktop fit trên điện thoại thì cap = `min(1920, physical long edge)` để không render vượt màn hình;
   - user setting có thể hạ xuống 720/1080.
+- **Draft edit quality** (mặc định bật):
+  - khi camera orbit/pan/zoom, kéo gizmo, playback hoặc đang sửa inspector: preview scale 0.72, cap 1400, MSAA tắt, SSAO/SSIL/SSR/glow/volumetric fog tắt, shadow filtering rẻ hơn;
+  - sau **0.45 s** không tương tác, khôi phục đúng preset đầy đủ;
+  - `capture_still` luôn khôi phục full quality trước khi chụp, và chỉ bật lại draft nếu vẫn đang tương tác/playback;
+  - tag `Draft` chỉ hiện trong lúc hạ chất lượng; không bao giờ nằm trong ảnh render.
 - `scaling_3d_scale` mặc định theo preset; adaptive quality:
   - đo frame time trung bình 30 frame;
   - nếu > 20 ms trong 30 frame → giảm scale 0.1 (sàn 0.6);
@@ -1117,15 +1130,15 @@ func set_object_transform(id, position, rotation, p_scale, key := true) -> void:
 ### 11.4 UI
 
 - Settings → Graphics → **Renderer**:
-  - segmented 2×2: Auto / Forward+ / Mobile / Compatibility; **Mobile được chọn sẵn trên Android**;
-  - dòng “Hiện tại: Mobile / Vulkan” (backend thực);
-  - dòng “Thiết bị: <adapter>” nếu API;
-  - nút `Apply & restart` 48 dp khi khác;
-  - nút `Reset to platform default` (Mobile trên Android, Forward+ trên desktop);
-  - warning nếu fallback backend;
-  - danh sách tính năng khả dụng (SSAO, SSIL, SSR, TAA, Glow) với check/cross thật.
-- Không đặt renderer trong một dropdown nhỏ không rõ; đây là thay đổi lớn, cần bề mặt rõ.
-- Status bar/Desktop hiển thị renderer thực; HUD không cần.
+  - hàng `Renderer` hiển thị backend thực + nút `Change` 44 dp mở sheet Renderer;
+  - segmented **Forward+ / Mobile / Compatibility**; **Mobile được chọn sẵn trên Android**; không có lựa chọn Auto giả;
+  - dòng `Renderer in use` đọc trực tiếp `RenderingServer.get_current_rendering_method()`;
+  - dòng `Project request` đọc `rendering/renderer/rendering_method`;
+  - dòng `Driver` và `Adapter` nếu engine trả;
+  - nút `Restart` 48 dp khi khác; gọi `OS.set_restart_on_exit(true, ["--rendering-method", value])` và lưu project trước;
+  - ghi chú thật: nếu platform bỏ qua flag, dòng `Renderer in use` vẫn báo backend đang chạy;
+  - không có dropdown nhỏ, không có reset giả, không đổi renderer tại runtime.
+- Status bar/Desktop hiển thị renderer thực; HUD chỉ hiện FPS, không lặp renderer.
 
 ---
 
@@ -1137,7 +1150,7 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 
 | Setting | Giá trị | Mặc định | API |
 |---|---|---|---|
-| Renderer | auto/forward_plus/mobile/gl_compatibility | mobile (Android) / forward_plus (desktop) | restart args |
+| Renderer | forward_plus/mobile/gl_compatibility | mobile (Android) / forward_plus (desktop) | restart args |
 | Preset | performance/balanced/quality/custom | balanced | `Gfx.apply_preset` |
 | 3D scale | 0.5–1.0 | preset | `Viewport.scaling_3d_scale` |
 | MSAA | off/2x/4x/8x | 2x | `Viewport.msaa_3d` |
@@ -1600,7 +1613,7 @@ Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài l
 ### 18.2 Renderer mặc định trên Android — đã chốt: Mobile
 
 - Mặc định trên Android là **Mobile**; desktop/headless là Forward+.
-- `Auto`, `Forward+`, `Compatibility` vẫn chọn được; đổi bằng restart có kiểm chứng.
+- `Forward+`, `Mobile`, `Compatibility` chọn được; đổi bằng restart có kiểm chứng. Không có Auto giả.
 - `project.godot` phải đổi `renderer/rendering_method.mobile` từ `forward_plus` sang `mobile`.
 - Fallback backend (Vulkan → OpenGL) là thật và được hiển thị; không fake.
 

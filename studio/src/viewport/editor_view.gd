@@ -6,7 +6,13 @@ extends Control
 ## transform readouts. One finger orbits, two fingers pan and pinch, tapping
 ## selects, dragging an axis manipulates the selected object.
 
-const HUD_BG := Color(0.043, 0.059, 0.078, 0.86)
+const HUD_BG := Color(0.063, 0.063, 0.063, 0.90)
+const DRAFT_SCALE := 0.72
+const DRAFT_CAP := 1400
+const DRAFT_IDLE_DELAY := 0.45
+
+signal quick_render_requested
+signal performance_requested
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -26,6 +32,8 @@ var _grid_mesh: MeshInstance3D
 var _status_label: Label
 var _view_chip: Button
 var _grid_button: Button
+var _fps_chip: Button
+var _hud_root: Control
 var _preset := "Persp"
 
 var _touches: Dictionary = {}
@@ -51,11 +59,17 @@ var _preview_scale := 1.0
 var _preview_cap := 1920
 var _dirty_visual := true
 var _redraw_needed := true
+var _draft_enabled := true
+var _draft_active := false
+var _draft_idle := 0.0
+var _playback_active := false
+var _draft_chip: Control
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	focus_mode = Control.FOCUS_CLICK
 	clip_contents = true
+	_draft_enabled = Gfx.draft_editing if Gfx != null else true
 	_build_viewport()
 	_build_hud()
 	resized.connect(_on_resized)
@@ -113,6 +127,10 @@ func _on_graphics_changed() -> void:
 		Gfx.apply_viewport(_viewport)
 	if _env_node != null and _env_node.environment != null:
 		Gfx.apply_environment(_env_node.environment)
+	# A settings edit during an interaction must not silently restore full
+	# quality; the draft pass is the last word until the gesture ends.
+	if _draft_active:
+		_apply_draft_state()
 	_repaint()
 
 func _build_stage() -> void:
@@ -135,11 +153,11 @@ func _build_stage() -> void:
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
-uniform vec4 base_color : source_color = vec4(0.050, 0.055, 0.062, 1.0);
-uniform vec4 minor_color : source_color = vec4(0.155, 0.165, 0.180, 1.0);
-uniform vec4 major_color : source_color = vec4(0.250, 0.265, 0.285, 1.0);
-uniform vec4 axis_x_color : source_color = vec4(0.520, 0.220, 0.210, 1.0);
-uniform vec4 axis_z_color : source_color = vec4(0.190, 0.320, 0.520, 1.0);
+uniform vec4 base_color : source_color = vec4(0.035, 0.035, 0.035, 1.0);
+uniform vec4 minor_color : source_color = vec4(0.075, 0.075, 0.075, 1.0);
+uniform vec4 major_color : source_color = vec4(0.135, 0.135, 0.135, 1.0);
+uniform vec4 axis_x_color : source_color = vec4(0.190, 0.190, 0.190, 1.0);
+uniform vec4 axis_z_color : source_color = vec4(0.155, 0.155, 0.155, 1.0);
 uniform float cell_size = 0.5;
 uniform float major_every = 4.0;
 uniform float grid_strength : hint_range(0.0, 1.0) = 1.0;
@@ -166,10 +184,10 @@ void fragment() {
 	float axis_z = 1.0 - smoothstep(0.0, fwidth(world_pos.x) * 1.6, abs(world_pos.x));
 
 	vec3 color = base_color.rgb;
-	color = mix(color, minor_color.rgb, minor * 0.40 * fade);
-	color = mix(color, major_color.rgb, major * 0.78 * fade);
-	color = mix(color, axis_x_color.rgb, axis_x * 0.72 * fade);
-	color = mix(color, axis_z_color.rgb, axis_z * 0.72 * fade);
+	color = mix(color, minor_color.rgb, minor * 0.55 * fade);
+	color = mix(color, major_color.rgb, major * 0.80 * fade);
+	color = mix(color, axis_x_color.rgb, axis_x * 0.60 * fade);
+	color = mix(color, axis_z_color.rgb, axis_z * 0.60 * fade);
 	color *= mix(0.52, 1.0, 1.0 - smoothstep(5.0, 24.0, dist));
 
 	ALBEDO = color;
@@ -192,6 +210,11 @@ func _set_grid_strength(value: float) -> void:
 		material.set_shader_parameter("grid_strength", clampf(value, 0.0, 1.0))
 
 func _build_hud() -> void:
+	_hud_root = Control.new()
+	_hud_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_hud_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_hud_root)
+
 	var top_left := HBoxContainer.new()
 	top_left.add_theme_constant_override("separation", 6)
 	top_left.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -199,13 +222,28 @@ func _build_hud() -> void:
 	top_left.offset_left = 12
 	top_left.offset_top = 10
 	top_left.grow_vertical = Control.GROW_DIRECTION_END
-	add_child(top_left)
+	_hud_root.add_child(top_left)
 
 	_view_chip = Kit.text_button("Persp", "orbit", false, true)
 	_view_chip.tooltip_text = "Cycle camera view"
 	_view_chip.pressed.connect(_cycle_view)
 	_override_hud_button(_view_chip)
 	top_left.add_child(_view_chip)
+
+	# A quiet draft tag explains the softer image during gestures; it never
+	# appears on the idle viewport or in a render.
+	var draft_panel := PanelContainer.new()
+	var draft_style := Kit.flat_style(HUD_BG, 0, Color(0, 0, 0, 0), 0)
+	draft_style.content_margin_left = 8
+	draft_style.content_margin_right = 8
+	draft_style.content_margin_top = 4
+	draft_style.content_margin_bottom = 4
+	draft_panel.add_theme_stylebox_override("panel", draft_style)
+	draft_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	draft_panel.visible = false
+	_draft_chip = draft_panel
+	_draft_chip.add_child(Kit.mono_label("DRAFT", 11, Kit.TEXT_DIM))
+	top_left.add_child(_draft_chip)
 
 	var top_right := HBoxContainer.new()
 	top_right.add_theme_constant_override("separation", 6)
@@ -215,7 +253,29 @@ func _build_hud() -> void:
 	top_right.offset_top = 10
 	top_right.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	top_right.grow_vertical = Control.GROW_DIRECTION_END
-	add_child(top_right)
+	_hud_root.add_child(top_right)
+
+	# The FPS chip is the always-on performance readout on touch devices. It
+	# is sampled at 4 Hz, not per frame, and opens the detailed overlay.
+	_fps_chip = Button.new()
+	_fps_chip.text = "—"
+	_fps_chip.tooltip_text = "Frames per second · tap for performance details"
+	_fps_chip.focus_mode = Control.FOCUS_NONE
+	_fps_chip.custom_minimum_size = Vector2(48, 44)
+	_fps_chip.add_theme_font_override("font", Kit.font_mono)
+	_fps_chip.add_theme_font_size_override("font_size", 11)
+	_fps_chip.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+	_fps_chip.add_theme_color_override("font_hover_color", Kit.TEXT)
+	_fps_chip.add_theme_color_override("font_pressed_color", Kit.TEXT)
+	_override_hud_button(_fps_chip)
+	_fps_chip.pressed.connect(func() -> void: performance_requested.emit())
+	top_right.add_child(_fps_chip)
+
+	var quick := Kit.text_button("Render", "camera", false, true)
+	quick.tooltip_text = "Quick render at full quality"
+	quick.pressed.connect(func() -> void: quick_render_requested.emit())
+	_override_hud_button(quick)
+	top_right.add_child(quick)
 
 	var focus := Kit.icon_button("focus", "Frame selection (F)", 30, 15)
 	_override_hud_button(focus)
@@ -232,7 +292,7 @@ func _build_hud() -> void:
 	_status_label = Kit.label("No selection", 10, Kit.TEXT_MUTED, 500)
 	_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var status_panel := PanelContainer.new()
-	var status_style := Kit.flat_style(Color(0.035, 0.047, 0.062, 0.82), 5, Kit.BORDER_SOFT, 1)
+	var status_style := Kit.flat_style(HUD_BG, 0, Color(0, 0, 0, 0), 0)
 	status_style.content_margin_left = 8
 	status_style.content_margin_right = 8
 	status_style.content_margin_top = 4
@@ -244,13 +304,16 @@ func _build_hud() -> void:
 	status_panel.offset_bottom = -12
 	status_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	status_panel.add_child(_status_label)
-	add_child(status_panel)
+	_hud_root.add_child(status_panel)
 
 func _override_hud_button(button: Button) -> void:
-	button.add_theme_stylebox_override("normal", Kit.flat_style(HUD_BG, 5, Kit.BORDER_SOFT, 1))
-	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 5, Kit.BORDER, 1))
-	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 5, Kit.FOCUS, 1))
-	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3, 5, Kit.FOCUS_BRIGHT, 1))
+	# HUD controls read as floating surfaces, not framed cards. State is
+	# carried by fill and glyph luminance; only the field frames in the
+	# inspector and the region hairlines keep an outline.
+	button.add_theme_stylebox_override("normal", Kit.flat_style(HUD_BG, 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
 	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 	button.add_theme_color_override("font_pressed_color", Kit.FOCUS_BRIGHT)
 	button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
@@ -260,6 +323,10 @@ func set_document(document: Node3D) -> void:
 	if doc == document:
 		return
 	doc = document
+	# Locators are drawn by the viewport overlay; the document's 3D marker
+	# meshes remain available for tooling and still renders but stay out of
+	# the editing view.
+	doc.markers_hidden = true
 	_viewport.add_child(doc)
 	doc.scene_changed.connect(_on_scene_changed)
 	doc.selection_changed.connect(_on_selection_changed)
@@ -293,8 +360,11 @@ func _apply_viewport_size() -> void:
 	if win != null and visible.x > 1.0 and visible.y > 1.0:
 		pixel_scale = clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
 	var target := Vector2(size.x, size.y) * pixel_scale * _preview_scale
-	var longest := maxf(target.x, target.y)
 	var cap := float(_preview_cap)
+	if _draft_active:
+		target *= DRAFT_SCALE
+		cap = minf(cap, float(DRAFT_CAP))
+	var longest := maxf(target.x, target.y)
 	if longest > cap:
 		target *= cap / longest
 	var w := maxi(2, int(round(target.x)))
@@ -304,7 +374,15 @@ func _apply_viewport_size() -> void:
 		if _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
 			_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	if _draft_enabled:
+		if _interactive or _playback_active:
+			_draft_idle = 0.0
+			_begin_draft()
+		else:
+			_draft_idle += delta
+			if _draft_active and _draft_idle >= DRAFT_IDLE_DELAY:
+				_end_draft()
 	if _camera == null:
 		return
 	var offset := Vector3(
@@ -341,14 +419,28 @@ func _on_object_changed(_id: String) -> void:
 	_repaint()
 
 func _on_transform_changed(_id: String) -> void:
+	_note_edit_burst()
 	_refresh_status()
 	_repaint()
 
 func _on_keyframes_changed(_id: String) -> void:
+	_note_edit_burst()
 	_repaint()
 
 func _on_playback_changed(_time: float, _playing: bool) -> void:
+	_playback_active = _playing
+	if _playing:
+		_begin_draft()
+	else:
+		_draft_idle = 0.0
 	_repaint()
+
+## Inspector edits and keying can change the scene many times per second while
+## a field is dragged. Keep the draft pass alive for the burst, then restore.
+func _note_edit_burst() -> void:
+	_draft_idle = 0.0
+	if _draft_enabled:
+		_begin_draft()
 
 ## Ask for exactly one rendered frame. On-demand previews keep the GPU idle
 ## while nothing moves; gestures switch to continuous rendering instead.
@@ -381,6 +473,94 @@ func _preview_busy_check() -> void:
 
 func is_interactive() -> bool:
 	return _interactive
+
+## Called from Perf.sample_updated at 4 Hz. The chip is a real monitor readout,
+## not a decoration: a missing sample shows a dash.
+func set_fps_value(fps: float, frame_ms: float) -> void:
+	if _fps_chip == null:
+		return
+	if fps > 0.0:
+		_fps_chip.text = "%d" % int(round(fps))
+		if fps >= 55.0:
+			_fps_chip.add_theme_color_override("font_color", Kit.TEXT)
+		elif fps >= 30.0:
+			_fps_chip.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+		else:
+			_fps_chip.add_theme_color_override("font_color", Kit.DANGER)
+	else:
+		_fps_chip.text = "—"
+		_fps_chip.add_theme_color_override("font_color", Kit.TEXT_DIM)
+	if frame_ms >= 0.0:
+		_fps_chip.tooltip_text = "Frames per second · %.1f ms · tap for performance details" % frame_ms
+	else:
+		_fps_chip.tooltip_text = "Frames per second · tap for performance details"
+
+func set_fps_chip_visible(on: bool) -> void:
+	if _fps_chip != null:
+		_fps_chip.visible = on
+
+func set_hud_visible(on: bool) -> void:
+	if _hud_root != null:
+		_hud_root.visible = on
+
+func preview_size() -> Vector2i:
+	if _viewport == null:
+		return Vector2i.ZERO
+	return Vector2i(_viewport.size)
+
+func is_draft_active() -> bool:
+	return _draft_active
+
+## Draft mode is the edit-time quality pass: no MSAA, no screen-space
+## lighting, no glow, a lower internal resolution and cheap shadow filtering.
+## It is only active while the camera, gizmo, playback or an inspector edit is
+## moving; the idle scene and every render capture use the full settings.
+func set_draft_quality(enabled: bool) -> void:
+	_draft_enabled = enabled
+	if not enabled:
+		_end_draft()
+	elif _interactive or _playback_active:
+		_begin_draft()
+
+func _begin_draft() -> void:
+	if not _draft_enabled or _draft_active or _viewport == null:
+		return
+	_draft_active = true
+	_apply_draft_state()
+	_apply_viewport_size()
+	_refresh_draft_chip()
+	_repaint()
+
+func _end_draft() -> void:
+	if not _draft_active:
+		return
+	_draft_active = false
+	if _viewport != null:
+		Gfx.apply_viewport(_viewport)
+	if _env_node != null and _env_node.environment != null:
+		Gfx.apply_environment(_env_node.environment)
+	Gfx.apply_globals()
+	_apply_viewport_size()
+	_refresh_draft_chip()
+	_repaint()
+
+func _apply_draft_state() -> void:
+	if _viewport != null:
+		_viewport.msaa_3d = Viewport.MSAA_DISABLED
+		_viewport.scaling_3d_scale = minf(Gfx.scale_3d, 0.75)
+	if _env_node != null and _env_node.environment != null:
+		var env := _env_node.environment
+		env.ssao_enabled = false
+		env.ssil_enabled = false
+		env.ssr_enabled = false
+		env.glow_enabled = false
+		env.volumetric_fog_enabled = false
+	RenderingServer.directional_soft_shadow_filter_set_quality(0)
+	RenderingServer.positional_soft_shadow_filter_set_quality(0)
+
+func _refresh_draft_chip() -> void:
+	if _draft_chip != null:
+		_draft_chip.visible = _draft_active
 
 func set_preview_scale(value: float) -> void:
 	_preview_scale = clampf(value, 0.25, 1.0)
@@ -856,10 +1036,46 @@ func _pixel_length_for_axis(axis: Vector3) -> float:
 func _draw() -> void:
 	if _camera == null or doc == null:
 		return
+	_draw_object_markers()
 	_draw_selection()
 	_draw_gizmo()
 	_draw_compass()
 	_draw_hud()
+
+## Camera, light and empty locators are drawn in screen space. A world-space
+## wireframe shrinks into an unreadable speck at typical edit distances; the
+## same glyphs the outliner uses stay legible and make the scene structure
+## obvious without adding chrome to the viewport.
+func _draw_object_markers() -> void:
+	if doc == null or _camera == null:
+		return
+	for obj in doc.objects:
+		var kind := str(obj.get("kind", ""))
+		if kind != "camera" and kind != "light" and kind != "empty":
+			continue
+		var id := str(obj.get("id", ""))
+		var node: Node3D = doc.nodes.get(id)
+		if node == null or not node.visible:
+			continue
+		if _camera.is_position_behind(node.global_position):
+			continue
+		if _camera.global_position.distance_to(node.global_position) < 0.6:
+			continue
+		var p := _to_ui(_camera.unproject_position(node.global_position))
+		if p.x < -24.0 or p.y < -24.0 or p.x > size.x + 24.0 or p.y > size.y + 24.0:
+			continue
+		var icon_name := "camera"
+		if kind == "light":
+			icon_name = "lightbulb"
+		elif kind == "empty":
+			icon_name = "circle-dot-dashed"
+		var selected := id == doc.selected_id
+		var box := Rect2(p - Vector2(11, 11), Vector2(22, 22))
+		var texture := Kit.icon_texture(icon_name)
+		draw_texture_rect(texture, Rect2(box.position + Vector2(1, 1), box.size), false, Color(0, 0, 0, 0.6))
+		draw_texture_rect(texture, box, false, Kit.TEXT if selected else Kit.TEXT_MUTED)
+		if selected:
+			draw_arc(p, 15.0, 0.0, TAU, 28, Kit.ACCENT * Color(1, 1, 1, 0.7), 1.0, true)
 
 func _draw_selection() -> void:
 	if doc.selected_id == "":
@@ -890,7 +1106,7 @@ func _draw_selection() -> void:
 		var a = points[edge[0]]
 		var b = points[edge[1]]
 		if a != null and b != null:
-			draw_line(a, b, Color(0.02, 0.03, 0.04, 0.45), 3.0, true)
+			draw_line(a, b, Color(0.01, 0.01, 0.01, 0.45), 3.0, true)
 			draw_line(a, b, color, 1.4, true)
 
 func _draw_gizmo() -> void:
@@ -926,9 +1142,9 @@ func _draw_gizmo() -> void:
 		var end := p0 + dir * 48.0
 		var is_active := _gizmo_axis == axis_name
 		var line_color := active_color if is_active else color
-		draw_line(p0, end, Color(0.02, 0.03, 0.04, 0.7), 5.0, true)
+		draw_line(p0, end, Color(0.01, 0.01, 0.01, 0.7), 5.0, true)
 		draw_line(p0, end, line_color, 2.4 if is_active else 1.8, true)
-		draw_circle(end, 7.0, Color(0.045, 0.06, 0.075, 0.95))
+		draw_circle(end, 7.0, Color(0.06, 0.06, 0.06, 0.95))
 		draw_arc(end, 6.0, 0.0, TAU, 20, line_color, 1.6, true)
 		if is_active:
 			draw_circle(end, 2.6, line_color)
@@ -937,7 +1153,7 @@ func _draw_gizmo() -> void:
 			_gizmo_screen_dir = dir
 	# Centre handle: screen-plane move, uniform scale, or rotation around Y.
 	var center_color := active_color if _gizmo_axis == "free" else Kit.TEXT_MUTED
-	draw_circle(p0, 6.0, Color(0.045, 0.06, 0.075, 0.95))
+	draw_circle(p0, 6.0, Color(0.06, 0.06, 0.06, 0.95))
 	draw_arc(p0, 5.0, 0.0, TAU, 18, center_color, 1.5, true)
 	_gizmo_handles.append({"axis": "free", "pos": p0})
 	if _gizmo_axis == "free":
@@ -945,7 +1161,7 @@ func _draw_gizmo() -> void:
 
 func _draw_compass() -> void:
 	var center := size - Vector2(34.0, 34.0)
-	draw_circle(center, 25.0, Color(0.035, 0.047, 0.062, 0.72))
+	draw_circle(center, 25.0, Color(0.063, 0.063, 0.063, 0.82))
 	draw_arc(center, 25.0, 0.0, TAU, 36, Kit.BORDER_SOFT, 1.0, true)
 	var inv := _camera.global_transform.basis.inverse()
 	var axes := [
@@ -965,7 +1181,7 @@ func _draw_compass() -> void:
 		draw_line(center, end, entry[2], 1.4, true)
 		draw_circle(end, 2.2, entry[2])
 		var text_pos := center + dir * 22.0 + Vector2(-3.0, 3.0)
-		draw_string(Kit.font_mono, text_pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, entry[2])
+		draw_string(Kit.font_mono, text_pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, entry[2])
 
 func _draw_hud() -> void:
 	if _hud_text == "":
@@ -973,7 +1189,7 @@ func _draw_hud() -> void:
 	var font := Kit.font_mono
 	var text_size := font.get_string_size(_hud_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
 	var rect := Rect2(Vector2((size.x - text_size.x) * 0.5 - 10.0, 46.0), text_size + Vector2(20, 12))
-	draw_rect(rect, Color(0.03, 0.043, 0.058, 0.9), true)
+	draw_rect(rect, Color(0.063, 0.063, 0.063, 0.92), true)
 	draw_rect(rect, Kit.BORDER, false, 1.0)
 	draw_string(font, rect.position + Vector2(10, text_size.y + 2), _hud_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Kit.ACCENT_BRIGHT)
 
@@ -987,9 +1203,17 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 	var base := _viewport.size
 	if base.x < 2 or base.y < 2:
 		return null
+	# A capture is never allowed to inherit the draft pass. Restore the full
+	# viewport and environment, let one frame settle, then render the probe.
+	var was_draft := _draft_active
+	if _draft_active:
+		_end_draft()
+		await RenderingServer.frame_post_draw
 	var grid_visible := _grid_button.button_pressed if _grid_button != null else true
 	_set_grid_strength(0.0)
+	var markers_were_hidden := false
 	if doc != null:
+		markers_were_hidden = doc.markers_hidden
 		doc.markers_hidden = true
 		doc.update_marker_scales(_camera)
 	# Render the frame at an explicit long edge while keeping the exact preview
@@ -1015,9 +1239,13 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 	var image := probe.get_texture().get_image()
 	probe.queue_free()
 	if doc != null:
-		doc.markers_hidden = false
+		doc.markers_hidden = markers_were_hidden
 		doc.update_marker_scales(_camera)
 	if _grid_mesh != null:
 		_set_grid_strength(1.0 if grid_visible else 0.0)
+	# Resume the draft pass only if the editor is still moving; an idle
+	# capture leaves the viewport at full quality.
+	if was_draft and _draft_enabled and (_interactive or _playback_active):
+		_begin_draft()
 	queue_redraw()
 	return image

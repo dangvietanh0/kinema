@@ -93,9 +93,9 @@ func update(sample: Dictionary, objects: int, keys: int, saved: bool, fit_percen
 	if fps > 0.0:
 		_fps_label.text = "%d fps" % int(round(fps))
 		if fps >= 55.0:
-			_fps_label.add_theme_color_override("font_color", Kit.SUCCESS)
+			_fps_label.add_theme_color_override("font_color", Kit.TEXT)
 		elif fps >= 30.0:
-			_fps_label.add_theme_color_override("font_color", Kit.WARNING)
+			_fps_label.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 		else:
 			_fps_label.add_theme_color_override("font_color", Kit.DANGER)
 	else:
@@ -104,10 +104,10 @@ func update(sample: Dictionary, objects: int, keys: int, saved: bool, fit_percen
 	var frame_ms := float(sample.get("frame_ms", -1.0))
 	_frame_label.text = "%.1f ms" % frame_ms if frame_ms >= 0.0 else "— ms"
 	var renderer := str(sample.get("renderer", ""))
-	_renderer_label.text = renderer if renderer != "" else "—"
+	_renderer_label.text = Gfx.renderer_label(renderer) if renderer != "" else "—"
 	_objects_label.text = "%d obj" % objects
 	_keys_label.text = "%d keys" % keys
 	_saved_label.text = "saved" if saved else "unsaved"
-	_saved_label.add_theme_color_override("font_color", Kit.TEXT_DIM if saved else Kit.WARNING)
+	_saved_label.add_theme_color_override("font_color", Kit.TEXT_DIM if saved else Kit.TEXT)
 	_fit_label.text = "fit %d%%" % int(round(fit_percent))
-	_fit_label.add_theme_color_override("font_color", Kit.WARNING if fit_percent < 60.0 else Kit.TEXT_DIM)
+	_fit_label.add_theme_color_override("font_color", Kit.TEXT if fit_percent < 60.0 else Kit.TEXT_DIM)

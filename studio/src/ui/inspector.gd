@@ -10,7 +10,7 @@ signal color_requested(property: String)
 
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
-const AXIS_COLORS := [Color(0.851, 0.412, 0.384), Color(0.514, 0.710, 0.427), Color(0.365, 0.553, 0.847)]
+const AXIS_COLORS := [Color(0.651, 0.416, 0.400), Color(0.498, 0.604, 0.471), Color(0.427, 0.502, 0.600)]
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -74,6 +74,7 @@ func _build_shell() -> void:
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	Kit.style_scroll_container(_scroll)
 	add_child(_scroll)
 
 	var margin := MarginContainer.new()
@@ -202,7 +203,7 @@ func _build_transform_section() -> void:
 		var head := HBoxContainer.new()
 		head.add_theme_constant_override("separation", 4)
 		section.add_child(head)
-		var channel_label := Kit.label(str(doc.CHANNEL_LABELS.get(channel, channel)).to_upper(), 9, Kit.TEXT_MUTED, 600)
+		var channel_label := Kit.label(str(doc.CHANNEL_LABELS.get(channel, channel)).to_upper(), Kit.TYPE_CAPTION, Kit.TEXT_MUTED, 600)
 		channel_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		head.add_child(channel_label)
 		var head_spacer := Control.new()
@@ -213,10 +214,17 @@ func _build_transform_section() -> void:
 		head.add_child(key_button)
 		_key_buttons[channel] = key_button
 
+		# One frame around X/Y/Z reads as a vector row. Three separately framed
+		# fields with 4 dp gaps looked like unrelated controls.
+		var fields_frame := PanelContainer.new()
+		fields_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+		section.add_child(fields_frame)
 		var fields := HBoxContainer.new()
-		fields.add_theme_constant_override("separation", 4)
-		section.add_child(fields)
+		fields.add_theme_constant_override("separation", 0)
+		fields_frame.add_child(fields)
 		for i in range(3):
+			if i > 0:
+				fields.add_child(Kit.hsep())
 			var field = NumberFieldScript.new()
 			field.axis = ["X", "Y", "Z"][i]
 			field.axis_color = AXIS_COLORS[i]
@@ -234,6 +242,8 @@ func _build_transform_section() -> void:
 				field.min_value = 0.01
 				field.max_value = 1000.0
 			field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			# The frame owns the visible outline; the field is a bare segment.
+			field.grouped = true
 			fields.add_child(field)
 			_fields[channel].append(field)
 			field.drag_started.connect(_on_field_drag_started.bind(channel))
@@ -241,7 +251,8 @@ func _build_transform_section() -> void:
 			field.value_changed.connect(_on_field_value_changed.bind(channel, i))
 			field.text_committed.connect(_on_field_text_committed.bind(channel, i))
 
-	var key_all := Kit.text_button("Insert all transform keys", "diamond-plus", false, true)
+	var key_all := Kit.text_button("Key all transforms", "diamond-plus", false, false)
+	key_all.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	key_all.pressed.connect(_on_key_all)
 	_content.add_child(key_all)
 	_content.add_child(Kit.vsep())
@@ -278,7 +289,7 @@ func _build_light(obj: Dictionary) -> void:
 	type_row.add_child(type_label)
 	var omni := str(obj.get("light_type", "directional")) == "omni"
 	type_row.add_child(Kit.mono_label("OMNI" if omni else "DIRECTIONAL", 9, Kit.TEXT_DIM))
-	_build_color_row("Light color", "light_color", str(obj.get("light_color", "#FFE8CA")))
+	_build_color_row("Light color", "light_color", str(obj.get("light_color", "#E8E8E8")))
 	_add_scrub("Energy", "light_energy", 0.0, 6.0)
 	if omni:
 		_add_scrub("Range", "light_range", 0.5, 40.0)
@@ -314,7 +325,7 @@ func _build_color_row(label_text: String, property: String, hex: String) -> void
 	hex_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(hex_label)
 	_color_button = Button.new()
-	_color_button.custom_minimum_size = Vector2(30, 24)
+	_color_button.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 	_color_button.focus_mode = Control.FOCUS_NONE
 	_color_button.tooltip_text = "Choose %s" % label_text.to_lower()
 	_color_button.set_meta("property", property)
@@ -466,16 +477,16 @@ func _set_swatch(color: Color) -> void:
 	_swatch_value = color
 	if _color_button == null:
 		return
-	var normal := Kit.flat_style(color, 4, Kit.BORDER, 1)
-	var hover := Kit.flat_style(color.lightened(0.08), 4, Kit.TEXT_MUTED, 1)
-	var pressed := Kit.flat_style(color.darkened(0.08), 4, Kit.FOCUS, 1)
+	var normal := Kit.flat_style(color, 0, Kit.BORDER, 1)
+	var hover := Kit.flat_style(color.lightened(0.08), 0, Kit.TEXT_MUTED, 1)
+	var pressed := Kit.flat_style(color.darkened(0.08), 0, Kit.FOCUS, 1)
 	_color_button.add_theme_stylebox_override("normal", normal)
 	_color_button.add_theme_stylebox_override("hover", hover)
 	_color_button.add_theme_stylebox_override("pressed", pressed)
-	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), 4, Kit.FOCUS, 1))
+	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), 0, Kit.FOCUS, 1))
 
 func str_to_var_hex(hex: String) -> Color:
-	return Color.from_string(hex, Color(0.667, 0.698, 0.749))
+	return Color.from_string(hex, Color(0.66, 0.66, 0.66))
 
 func _refresh_keys() -> void:
 	if doc == null or _built_for == "":

@@ -26,6 +26,7 @@ const TopBarScript = preload("res://src/ui/components/top_bar.gd")
 const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
 const StatusBarScript = preload("res://src/ui/components/status_bar.gd")
 const BottomBarScript = preload("res://src/ui/components/bottom_bar.gd")
+const PerfOverlayScript = preload("res://src/ui/components/perf_overlay.gd")
 const LayoutMathScript = preload("res://src/app/layout_math.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
@@ -33,11 +34,16 @@ const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
 const AUTOSAVE_SECONDS := 30.0
 const WIDE_MIN_WIDTH := 720.0
 const SHORT_MAX_HEIGHT := 520.0
+## 44 dp transport plus its 1 px rules and vertical padding. Leaving the
+## folded strip at 52 clipped the ruler baseline on landscape phones.
+const FOLDED_TIMELINE := 56.0
 
+## Material swatches are a graphite ramp. The hex field still accepts any
+## colour, but the default palette never pulls the workbench off-message.
 const COLOR_PALETTE := [
-	"#AAB2BF", "#B3A28B", "#D9C7A7", "#C8B18A", "#D9A45B", "#C97C5D",
-	"#A96A6A", "#8C9A7A", "#6F8F86", "#6B7F9E", "#7A6F9E", "#9E7A8C",
-	"#FFFFFF", "#D9DEE6", "#8A94A3", "#4B5563", "#232A33", "#11151B",
+	"#F2F2F2", "#E0E0E0", "#C8C8C8", "#B0B0B0", "#989898", "#808080",
+	"#686868", "#505050", "#3A3A3A", "#2A2A2A", "#1B1B1B", "#101010",
+	"#D8D8D8", "#BDBDBD", "#A0A0A0", "#7A7A7A", "#4A4A4A", "#202020",
 ]
 
 var doc: DocumentScript = null
@@ -53,12 +59,14 @@ var _rail: PanelContainer
 var _center: VBoxContainer
 var _viewport_host: Control
 var _view: Control
+var _perf_overlay: PanelContainer
 var _timeline_panel: PanelContainer
 var _timeline: VBoxContainer
 var _dock_slot: Control
 var _dock: PanelContainer
 var _dock_box: VBoxContainer
 var _dock_close_row: MarginContainer
+var _dock_close_button: Button
 var _drawer_scene_tab: Button
 var _drawer_props_tab: Button
 var _outliner_panel: PanelContainer
@@ -72,6 +80,9 @@ var _autosave: Timer
 var _tool := "select"
 var _wide := true
 var _short := false
+## True when the user has folded or opened the dope sheet themselves. A manual
+## choice survives rotation; automatic landscape folding does not override it.
+var _timeline_user_override := false
 var _fit_percent := 100.0
 var _fit_user_scale_enabled := true
 var _fit_clamped := false
@@ -113,6 +124,7 @@ var _render_sequence_button: Button
 var _render_still_button: Button
 var _render_save_button: Button
 var _preset_buttons: Array[Button] = []
+var _renderer_pending := ""
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -134,6 +146,7 @@ func _ready() -> void:
 	_overlay = OverlayScript.new()
 	add_child(_overlay)
 	_overlay.modal_closed.connect(_on_modal_closed)
+	_overlay.modal_opened.connect(_on_modal_opened)
 	_overlay.set_toast_anchor(_viewport_host)
 
 	_autosave = Timer.new()
@@ -141,6 +154,9 @@ func _ready() -> void:
 	_autosave.autostart = true
 	_autosave.timeout.connect(_on_autosave)
 	add_child(_autosave)
+
+	Perf.sample_updated.connect(_on_perf_sample)
+	_apply_perf_preferences()
 
 	resized.connect(_on_resized)
 	call_deferred("_apply_shell")
@@ -152,7 +168,6 @@ func _ready() -> void:
 func _build_top_bar() -> void:
 	_top_bar = TopBarScript.new()
 	_top_bar.action_requested.connect(_on_chrome_action)
-	_top_bar.renderer_requested.connect(_open_renderer_sheet)
 	_layout.add_child(_top_bar)
 
 func _build_body() -> void:
@@ -183,6 +198,13 @@ func _build_body() -> void:
 	_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_host.add_child(_view)
 	_view.set_tool(_tool)
+	_view.quick_render_requested.connect(_quick_render_preview)
+	_view.performance_requested.connect(_toggle_performance_overlay)
+
+	# The overlay is a sibling of the view so it floats above the 3D surface
+	# without becoming part of the viewport's own HUD layout.
+	_perf_overlay = PerfOverlayScript.new()
+	_viewport_host.add_child(_perf_overlay)
 
 	_build_timeline()
 
@@ -262,9 +284,9 @@ func _build_dock() -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tabs.add_child(spacer)
-	var close := Kit.icon_button("x", "Close panels", 44, 20)
-	close.pressed.connect(_close_drawer)
-	tabs.add_child(close)
+	_dock_close_button = Kit.icon_button("x", "Close panels", 44, 20)
+	_dock_close_button.pressed.connect(_close_drawer)
+	tabs.add_child(_dock_close_button)
 
 	_dock_box.add_child(Kit.vsep())
 
@@ -292,7 +314,7 @@ func _build_dock() -> void:
 
 func _build_drawer_scrim() -> void:
 	_drawer_scrim = ColorRect.new()
-	_drawer_scrim.color = Color(0.015, 0.022, 0.031, 0.55)
+	_drawer_scrim.color = Color(0, 0, 0, 0.58)
 	_drawer_scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_drawer_scrim.offset_top = 44.0
 	# The scrim is built before the dock, so the drawer receives taps inside
@@ -378,11 +400,23 @@ func _apply_workspace_mode(mode: String, notify: bool) -> void:
 	var changed := next != workbench_mode
 	workbench_mode = next
 	if changed:
-		# Phones keep the dope sheet folded until the user asks for it.
-		_timeline_visible = next != "compact"
+		# A mode switch is a deliberate arrangement change, so it resets the
+		# manual sheet choice and uses the mode default.
+		_timeline_user_override = false
+		_timeline_visible = _default_timeline_visible(next)
 	_apply_shell()
 	if changed and notify:
 		workspace_mode_changed.emit(next)
+
+
+## The dope sheet opens by default in a tall workbench and folds on a short
+## landscape phone, where height belongs to the viewport. Compact always folds.
+func _default_timeline_visible(mode: String) -> bool:
+	if mode == "compact":
+		return false
+	if mode == "studio" and size.y < SHORT_MAX_HEIGHT:
+		return false
+	return true
 
 
 func _layout_hosted() -> bool:
@@ -492,19 +526,42 @@ func _update_history_buttons() -> void:
 	var has_redo := doc != null and doc.can_redo()
 	_top_bar.set_history(has_undo, has_redo)
 
-## Reports the renderer the engine is actually running, and whether it is the
-## one the project asked for. Switching renderers is a restart-level change.
+## Reports the renderer the engine is actually running. Godot selects a
+## renderer when the process starts; the chips request one for the next launch
+## and the actual value below is always read back from RenderingServer.
 func _open_renderer_sheet() -> void:
-	var requested := str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "forward_plus"))
 	var current := Gfx.renderer_name()
+	var requested := str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "forward_plus"))
+	_renderer_pending = current
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 10)
 	var headline := Kit.label(Gfx.display_name(), 13, Kit.TEXT, 500)
 	body.add_child(headline)
+
+	var strip := _segment_strip(body)
+	var group := ButtonGroup.new()
+	group.allow_unpress = false
+	for entry in [
+		{"label": "Forward+", "value": "forward_plus"},
+		{"label": "Mobile", "value": "mobile"},
+		{"label": "Compatibility", "value": "gl_compatibility"},
+	]:
+		var data: Dictionary = entry
+		var value := str(data["value"])
+		var button := Kit.text_toggle(str(data["label"]), "", true)
+		_style_segment(button)
+		button.button_group = group
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.button_pressed = value == current
+		button.toggled.connect(func(on: bool) -> void:
+			if on:
+				_renderer_pending = value
+		)
+		strip.add_child(button)
+
 	var rows := [
-		["Renderer in use", current],
-		["Project request", requested],
-		["Fell back", "yes" if current != requested else "no"],
+		["Renderer in use", Gfx.renderer_label(current)],
+		["Project request", Gfx.renderer_label(requested)],
 		["Driver", RenderingServer.get_current_rendering_driver_name()],
 		["Adapter", RenderingServer.get_video_adapter_name()],
 	]
@@ -514,20 +571,33 @@ func _open_renderer_sheet() -> void:
 		var key := Kit.label(str(row[0]), 12, Kit.TEXT_MUTED)
 		key.custom_minimum_size.x = 132
 		line.add_child(key)
-		var value := Kit.mono_label(str(row[1]), 12, Kit.TEXT)
-		value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		value.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		line.add_child(value)
+		var value_label := Kit.mono_label(str(row[1]), 12, Kit.TEXT)
+		value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		value_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		line.add_child(value_label)
 		body.add_child(line)
+
 	var note := Kit.label(
-		"A renderer change is applied by the engine on the next launch; nothing is switched at runtime.",
+		"Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag; if this platform ignores the flag, the row above keeps reporting the renderer that is actually in use. Android builds default to Mobile.",
 		11, Kit.TEXT_DIM
 	)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
 	_overlay.show_sheet("Renderer", "Graphics backend reported by the engine", body, [
-		{"text": "Close", "primary": true},
-	])
+		{"text": "Close", "compact": true},
+		{"text": "Restart", "primary": true, "callback": _restart_with_renderer},
+	], {"width": 720.0})
+
+func _restart_with_renderer() -> void:
+	var value := _renderer_pending
+	if value == "" or value == Gfx.renderer_name():
+		_overlay.toast("That renderer is already running", "info", Kit.TEXT_MUTED)
+		return
+	Gfx.set_renderer_choice(value)
+	if doc != null and doc.is_dirty():
+		_save_project(false, true)
+	OS.set_restart_on_exit(true, PackedStringArray(["--rendering-method", value]))
+	get_tree().quit()
 
 
 func _open_shortcuts_sheet() -> void:
@@ -556,29 +626,50 @@ func _open_shortcuts_sheet() -> void:
 
 
 func _open_performance_overlay() -> void:
-	## Task 7 replaces this with the real overlay; until then the sheet reports
-	## the live monitors, which are already real.
-	var sample := Perf.sample()
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 8)
-	for row in [
-		["FPS", "%.1f" % float(sample.get("fps", 0.0))],
-		["Frame time", "%.2f ms" % float(sample.get("frame_ms", 0.0))],
-		["Draw calls", str(int(sample.get("draw_calls", 0)))],
-		["Primitives", str(int(sample.get("primitives", 0)))],
-		["Nodes", str(int(sample.get("nodes", 0)))],
-		["Preview scale", "%d%%" % int(round(float(sample.get("preview_scale", 1.0)) * 100.0))],
-	]:
-		var line := HBoxContainer.new()
-		line.add_theme_constant_override("separation", 8)
-		var key := Kit.label(str(row[0]), 12, Kit.TEXT_MUTED)
-		key.custom_minimum_size.x = 128
-		line.add_child(key)
-		var value := Kit.mono_label(str(row[1]), 12, Kit.TEXT)
-		value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		line.add_child(value)
-		body.add_child(line)
-	_overlay.show_sheet("Performance", "Live engine monitors", body, [{"text": "Close", "primary": true}])
+	_toggle_performance_overlay()
+
+func _toggle_performance_overlay() -> void:
+	if _perf_overlay == null:
+		return
+	if _perf_overlay.visible:
+		_perf_overlay.close_overlay()
+		return
+	_sync_perf_overlay()
+	_perf_overlay.open()
+
+func _sync_perf_overlay() -> void:
+	if _perf_overlay == null or _view == null:
+		return
+	var objects := 0 if doc == null else doc.objects.size()
+	_perf_overlay.set_sample(Perf.sample(), objects, _total_keys(), _view.preview_size())
+
+func _apply_perf_preferences() -> void:
+	if Perf == null:
+		return
+	Perf.set_adaptive_quality(bool(Prefs.get_value("performance.adaptive_quality", true)))
+	Perf.set_target_fps(int(Prefs.get_value("performance.target_fps", 60)))
+	Perf.min_preview_scale = clampf(float(Prefs.get_value("performance.min_preview_scale", 0.6)), 0.25, 1.0)
+	Perf.set_preview_update(str(Prefs.get_value("performance.preview_update", "on_demand")))
+	Perf.set_preview_cap(int(Prefs.get_value("performance.preview_cap", 1920)))
+	var overlay_mode := str(Prefs.get_value("performance.overlay", "compact"))
+	var show_fps := bool(Prefs.get_value("editor.show_fps", true))
+	if _view != null:
+		_view.set_fps_chip_visible(show_fps and overlay_mode != "off")
+	if _perf_overlay != null:
+		if overlay_mode == "full":
+			_sync_perf_overlay()
+			_perf_overlay.open()
+		else:
+			_perf_overlay.close_overlay()
+
+func _on_perf_sample(sample: Dictionary) -> void:
+	if _view != null:
+		_view.set_fps_value(float(sample.get("fps", -1.0)), float(sample.get("frame_ms", -1.0)))
+	if _perf_overlay != null and _perf_overlay.visible:
+		var objects := 0 if doc == null else doc.objects.size()
+		var preview: Vector2i = _view.preview_size() if _view != null else Vector2i.ZERO
+		_perf_overlay.set_sample(sample, objects, _total_keys(), preview)
+	_update_chrome_sample(sample)
 
 
 func _on_timeline_notice(text_value: String) -> void:
@@ -693,7 +784,12 @@ func _apply_shell() -> void:
 	var compact := workbench_mode == "compact"
 	var tabs_only := compact or size.y < SHORT_MAX_HEIGHT
 	_wide = not compact
+	var was_short := _short
 	_short = size.y < SHORT_MAX_HEIGHT
+	# Rotation between portrait and landscape changes the default. A manual
+	# fold/open choice is respected until the next mode switch.
+	if _short != was_short and not _timeline_user_override:
+		_timeline_visible = _default_timeline_visible(workbench_mode)
 	_top_bar.set_mode(workbench_mode)
 	_rail.set_mode(workbench_mode)
 	_rail.set_available_height(size.y)
@@ -719,11 +815,14 @@ func _apply_shell() -> void:
 		_drawer_scrim.visible = false
 		_dock.modulate.a = 1.0
 	_dock_close_row.visible = tabs_only
+	# Studio on a short landscape screen keeps the dock open, so a close button
+	# there would be inert. Only the compact drawer can be dismissed.
+	_dock_close_button.visible = compact
 	_outliner_panel.visible = not tabs_only or _compact_tab == "scene"
 	_inspector_panel.visible = not tabs_only or _compact_tab == "inspector"
 	_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL if tabs_only else Control.SIZE_FILL
 	if tabs_only:
-		_outliner_panel.custom_minimum_size.y = 210.0 if _short else 190.0
+		_outliner_panel.custom_minimum_size.y = 180.0 if _short else 190.0
 	else:
 		# The scene list owns roughly 40 percent of the dock; the inspector
 		# scrolls in the rest. A fixed 190 dp cut the list mid-row.
@@ -769,14 +868,15 @@ func _refresh_chrome_values() -> void:
 	_update_chrome_sample()
 
 
-func _update_chrome_sample() -> void:
+func _update_chrome_sample(sample: Dictionary = {}) -> void:
 	if _status_bar == null:
 		return
+	if sample.is_empty():
+		sample = Perf.sample()
 	var keys := 0
 	if doc != null and doc.animation != null:
 		for track in range(doc.animation.get_track_count()):
 			keys += doc.animation.track_get_key_count(track)
-	var sample := Perf.sample()
 	sample["renderer"] = Gfx.renderer_name()
 	var objects := 0 if doc == null else doc.objects.size()
 	var saved := doc == null or not doc.is_dirty()
@@ -794,13 +894,19 @@ func _sync_timeline_visibility() -> void:
 	# a phone keeps the 3D view height until the sheet is asked for.
 	var sheet := _timeline_should_show()
 	_timeline.set_sheet_visible(sheet)
+	# Landscape phones are a first-class surface: the dope sheet gives back
+	# height on short screens so the viewport keeps a usable working area.
 	match workbench_mode:
 		"compact":
-			_timeline_panel.custom_minimum_size.y = 200.0 if sheet else 52.0
+			_timeline_panel.custom_minimum_size.y = 180.0 if sheet else FOLDED_TIMELINE
 		"desktop":
-			_timeline_panel.custom_minimum_size.y = 220.0 if sheet else 52.0
+			_timeline_panel.custom_minimum_size.y = 180.0 if _short else 220.0
+			if not sheet:
+				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
 		_:
-			_timeline_panel.custom_minimum_size.y = 180.0 if sheet else 52.0
+			_timeline_panel.custom_minimum_size.y = 156.0 if _short else 180.0
+			if not sheet:
+				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
 
 func _toggle_drawer(tab: String) -> void:
 	if not _compact_shell():
@@ -892,6 +998,8 @@ func _on_chrome_action(action: String) -> void:
 			_open_render_sheet()
 		TopBarScript.ACTION_SETTINGS:
 			_open_settings()
+		TopBarScript.ACTION_TIMELINE:
+			_toggle_timeline()
 		TopBarScript.ACTION_PERFORMANCE:
 			_open_performance_overlay()
 		TopBarScript.ACTION_IMPORT:
@@ -919,6 +1027,7 @@ func _on_chrome_action(action: String) -> void:
 
 
 func _toggle_timeline() -> void:
+	_timeline_user_override = true
 	_timeline_visible = not _timeline_visible
 	_sync_timeline_visibility()
 	_update_bottom_bar()
@@ -927,6 +1036,7 @@ func _toggle_timeline() -> void:
 func _on_timeline_close_requested() -> void:
 	if not _timeline_visible:
 		return
+	_timeline_user_override = true
 	_timeline_visible = false
 	_sync_timeline_visibility()
 	_update_bottom_bar()
@@ -1061,7 +1171,7 @@ func _open_add_sheet() -> void:
 func _sheet_button(text_value: String, icon_name: String, action: Callable) -> Button:
 	var button := Kit.text_button(text_value, icon_name, false, true)
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, 40)
+	button.custom_minimum_size = Vector2(0, Kit.FIELD)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.pressed.connect(func() -> void:
 		_overlay.close_modal()
@@ -1226,8 +1336,8 @@ func _open_render_sheet() -> void:
 	_render_progress.step = 0.001
 	_render_progress.show_percentage = false
 	_render_progress.custom_minimum_size.y = 5
-	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, 3, Kit.BORDER_SOFT, 0))
-	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, 3, Kit.FOCUS, 0))
+	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, 0, Kit.BORDER_SOFT, 0))
+	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, 0, Kit.FOCUS, 0))
 	progress_box.add_child(_render_progress)
 	_render_status = Kit.mono_label("", 9, Kit.TEXT_MUTED)
 	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1259,6 +1369,66 @@ func _quick_still() -> void:
 		return
 	_save_still_internal(image)
 	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
+
+## Quick render: capture at full quality and show the real frame inside the
+## editor. This is the review loop for animation work; saving is optional.
+func _quick_render_preview() -> void:
+	if doc == null or _view == null or _render_busy:
+		return
+	doc.pause()
+	_set_render_busy(true)
+	var image: Image = await _view.capture_still(_render_resolution, _render_msaa)
+	_set_render_busy(false)
+	if image == null:
+		_overlay.toast("The still could not be captured", "triangle-alert", Kit.DANGER)
+		return
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+
+	var tall := size.y > 700.0
+	var preview_h := 300.0 if tall else 160.0
+	var image_aspect := float(image.get_width()) / float(maxi(1, image.get_height()))
+	var preview_w := minf(minf(820.0, size.x - 96.0), preview_h * image_aspect)
+	var frame_center := CenterContainer.new()
+	frame_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(frame_center)
+	var frame := PanelContainer.new()
+	frame.custom_minimum_size = Vector2(preview_w, preview_h)
+	frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.BG, 0, Color(0, 0, 0, 0), 0))
+	frame_center.add_child(frame)
+	var preview := TextureRect.new()
+	preview.texture = ImageTexture.create_from_image(image)
+	preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	preview.custom_minimum_size = Vector2(preview_w, preview_h)
+	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	frame.add_child(preview)
+
+	var meta := HBoxContainer.new()
+	meta.add_theme_constant_override("separation", 8)
+	meta.add_child(Kit.mono_label("%d × %d" % [image.get_width(), image.get_height()], 11, Kit.TEXT_MUTED))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	meta.add_child(spacer)
+	meta.add_child(Kit.mono_label("PNG · FULL QUALITY", 11, Kit.TEXT_DIM))
+	body.add_child(meta)
+
+	# On a short landscape sheet the frame is the whole message; a paragraph
+	# would force a scroll for no benefit.
+	if tall:
+		var hint := Kit.label("Draft quality is paused for this capture. Save it to app storage or close to keep working.", 11, Kit.TEXT_DIM)
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(hint)
+
+	var save_still := func() -> void:
+		var path := _save_still_internal(image)
+		if path != "":
+			_overlay.toast("Still saved", "check", Kit.SUCCESS)
+
+	_overlay.show_sheet("Quick render", "A real engine frame, not a viewport screenshot", body, [
+		{"text": "Close", "compact": true},
+		{"text": "Save PNG", "icon": "download", "primary": true, "callback": save_still},
+	], {"width": 860.0})
 
 func _render_still() -> void:
 	if doc == null or _view == null or _render_busy:
@@ -1476,7 +1646,7 @@ func _keep_zip_internal() -> void:
 func _menu_button(text_value: String, icon_name: String, action: Callable, danger: bool = false) -> Button:
 	var button := Kit.text_button(text_value, icon_name, false, true)
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, 38)
+	button.custom_minimum_size = Vector2(0, Kit.FIELD)
 	if danger:
 		button.add_theme_color_override("font_color", Kit.DANGER)
 		button.add_theme_color_override("icon_normal_color", Kit.DANGER)
@@ -1523,12 +1693,11 @@ func _open_settings() -> void:
 	_settings_fps_field = _number_row(body, "Frame rate", "FPS", 1.0, 120.0, 1.0, float(doc.fps), 40)
 
 	body.add_child(Kit.section_label("Interpolation"))
-	var modes := HBoxContainer.new()
-	modes.add_theme_constant_override("separation", 4)
-	body.add_child(modes)
+	var modes := _segment_strip(body)
 	var mode_group := ButtonGroup.new()
 	mode_group.allow_unpress = false
 	_settings_linear = Kit.text_toggle("Linear", "", true)
+	_style_segment(_settings_linear)
 	_settings_linear.button_group = mode_group
 	_settings_linear.custom_minimum_size.x = 82
 	_settings_linear.button_pressed = _settings_interp == "linear"
@@ -1539,6 +1708,7 @@ func _open_settings() -> void:
 	)
 	modes.add_child(_settings_linear)
 	_settings_cubic = Kit.text_toggle("Cubic", "", true)
+	_style_segment(_settings_cubic)
 	_settings_cubic.button_group = mode_group
 	_settings_cubic.custom_minimum_size.x = 82
 	_settings_cubic.button_pressed = _settings_interp == "cubic"
@@ -1575,6 +1745,29 @@ func _open_settings() -> void:
 		{"text": "Apply", "primary": true, "callback": apply},
 	])
 
+func _segment_strip(parent: Control) -> HBoxContainer:
+	# Segmented controls sit on a quiet track. The selected segment is a
+	# lighter fill, so the group reads without a frame around every option.
+	var track := PanelContainer.new()
+	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
+	parent.add_child(track)
+	var strip := HBoxContainer.new()
+	strip.add_theme_constant_override("separation", 2)
+	track.add_child(strip)
+	return strip
+
+func _style_segment(button: Button) -> void:
+	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3.lightened(0.04), 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+	button.add_theme_color_override("font_hover_color", Kit.TEXT)
+	button.add_theme_color_override("font_pressed_color", Kit.TEXT)
+	button.add_theme_color_override("font_hover_pressed_color", Kit.TEXT)
+	button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
+	button.add_theme_color_override("icon_pressed_color", Kit.TEXT)
+
 func _graphics_choice(parent: Control, title: String, hint: String, options: Array, current_value: Variant, on_change: Callable) -> void:
 	var block := VBoxContainer.new()
 	block.add_theme_constant_override("separation", 5)
@@ -1587,18 +1780,17 @@ func _graphics_choice(parent: Control, title: String, hint: String, options: Arr
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(spacer)
 	if hint != "":
-		head.add_child(Kit.label(hint, 9, Kit.TEXT_DIM))
+		head.add_child(Kit.label(hint, 11, Kit.TEXT_DIM))
 	block.add_child(head)
 
-	var strip := HBoxContainer.new()
-	strip.add_theme_constant_override("separation", 3)
-	block.add_child(strip)
+	var strip := _segment_strip(block)
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
 	for option in options:
 		var data: Dictionary = option
 		var value: Variant = data.get("value")
 		var button := Kit.text_toggle(str(data.get("label", "")), "", true)
+		_style_segment(button)
 		button.button_group = group
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.button_pressed = value == current_value
@@ -1624,7 +1816,13 @@ func _open_graphics_settings() -> void:
 	renderer_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	renderer_row.add_child(renderer_spacer)
 	var renderer_text := Gfx.display_name()
-	renderer_row.add_child(Kit.mono_label(renderer_text, 9, Kit.TEXT_MUTED))
+	renderer_row.add_child(Kit.mono_label(renderer_text, 11, Kit.TEXT_MUTED))
+	var renderer_change := Kit.text_button("Change", "chevron-right", false, true)
+	# The small button style has no side padding, so its intrinsic width can
+	# undershoot the icon-plus-label pair. Give the action a real target.
+	renderer_change.custom_minimum_size.x = 84.0
+	renderer_change.pressed.connect(_open_renderer_sheet)
+	renderer_row.add_child(renderer_change)
 	body.add_child(renderer_row)
 
 	var unavailable := ""
@@ -1633,95 +1831,133 @@ func _open_graphics_settings() -> void:
 
 	body.add_child(Kit.section_label("Quality preset"))
 	graphics_preset_row(body)
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Anti-aliasing"))
-	_graphics_choice(body, "Samples", "MSAA", [
+	# A wide sheet splits the long settings list into two readable columns.
+	# Short landscape screens otherwise scroll through a single column to reach
+	# the performance controls that matter most while editing.
+	var wide := size.x >= 700.0
+	var left: VBoxContainer = body
+	var right: VBoxContainer = null
+	if wide:
+		body.add_child(Kit.vsep())
+		var columns := HBoxContainer.new()
+		columns.add_theme_constant_override("separation", 24)
+		body.add_child(columns)
+		left = VBoxContainer.new()
+		left.add_theme_constant_override("separation", 12)
+		left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		columns.add_child(left)
+		right = VBoxContainer.new()
+		right.add_theme_constant_override("separation", 12)
+		right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		columns.add_child(right)
+
+	_graphics_antialiasing(left, unavailable)
+	_graphics_lighting(left, unavailable)
+	if wide:
+		_graphics_shadows(right)
+		_graphics_performance(right)
+	else:
+		body.add_child(Kit.vsep())
+		_graphics_shadows(body)
+		_graphics_performance(body)
+
+	var note := Kit.label("Draft quality drops MSAA, screen-space lighting, glow, shadow filtering and internal resolution only while the camera, gizmo, playback or an inspector edit is moving. Idle frames and every render capture use the full settings. Changes apply immediately and are stored on this device.", 11, Kit.TEXT_DIM)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(note)
+
+	_overlay.show_sheet("Graphics and performance", "Real engine settings, not decoration.", body, [
+		{"text": "Done", "primary": true},
+	], {"width": 860.0})
+
+func _graphics_antialiasing(parent: Control, unavailable: String) -> void:
+	parent.add_child(Kit.section_label("Anti-aliasing"))
+	_graphics_choice(parent, "Samples", "MSAA", [
 		{"label": "Off", "value": 0},
 		{"label": "2×", "value": 1},
 		{"label": "4×", "value": 2},
 		{"label": "8×", "value": 3},
 	], Gfx.msaa, func(value: Variant) -> void: Gfx.set_option("msaa", value))
-	_graphics_choice(body, "Temporal", unavailable, [
+	_graphics_choice(parent, "Temporal", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.taa, func(value: Variant) -> void: Gfx.set_option("taa", value))
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Lighting and surfaces"))
-	_graphics_choice(body, "Ambient occlusion", unavailable, [
+func _graphics_lighting(parent: Control, unavailable: String) -> void:
+	parent.add_child(Kit.vsep())
+	parent.add_child(Kit.section_label("Lighting and surfaces"))
+	_graphics_choice(parent, "Ambient occlusion", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.ssao, func(value: Variant) -> void: Gfx.set_option("ssao", value))
-	_graphics_choice(body, "AO quality", "", [
+	_graphics_choice(parent, "AO quality", "", [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
 		{"label": "Ultra", "value": 3},
 	], Gfx.ssao_quality, func(value: Variant) -> void: Gfx.set_option("ssao_quality", value))
-	_graphics_choice(body, "Indirect lighting", unavailable, [
+	_graphics_choice(parent, "Indirect lighting", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.ssil, func(value: Variant) -> void: Gfx.set_option("ssil", value))
-	_graphics_choice(body, "Screen-space reflections", unavailable, [
+	_graphics_choice(parent, "Screen-space reflections", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.ssr, func(value: Variant) -> void: Gfx.set_option("ssr", value))
-	_graphics_choice(body, "Glow", "", [
+	_graphics_choice(parent, "Glow", "", [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.glow, func(value: Variant) -> void: Gfx.set_option("glow", value))
-	_graphics_choice(body, "Volumetric fog", unavailable, [
+	_graphics_choice(parent, "Volumetric fog", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.volumetric_fog, func(value: Variant) -> void: Gfx.set_option("volumetric_fog", value))
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Shadows"))
-	_graphics_choice(body, "Filter quality", "", [
+func _graphics_shadows(parent: Control) -> void:
+	parent.add_child(Kit.section_label("Shadows"))
+	_graphics_choice(parent, "Filter quality", "", [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
 		{"label": "Ultra", "value": 3},
 	], Gfx.shadow_quality, func(value: Variant) -> void: Gfx.set_option("shadow_quality", value))
-	_graphics_choice(body, "Cascades", "sun", [
+	_graphics_choice(parent, "Cascades", "sun", [
 		{"label": "1", "value": 1},
 		{"label": "2", "value": 2},
 		{"label": "4", "value": 4},
 	], Gfx.shadow_splits, func(value: Variant) -> void: Gfx.set_option("shadow_splits", value))
-	_graphics_choice(body, "Range", "meters", [
+	_graphics_choice(parent, "Range", "meters", [
 		{"label": "25", "value": 25.0},
 		{"label": "40", "value": 40.0},
 		{"label": "60", "value": 60.0},
 		{"label": "100", "value": 100.0},
 	], Gfx.shadow_distance, func(value: Variant) -> void: Gfx.set_option("shadow_distance", value))
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Performance"))
-	_graphics_choice(body, "3D resolution", "%", [
+func _graphics_performance(parent: Control) -> void:
+	parent.add_child(Kit.vsep())
+	parent.add_child(Kit.section_label("Performance"))
+	_graphics_choice(parent, "3D resolution", "%", [
 		{"label": "60", "value": 0.6},
 		{"label": "80", "value": 0.8},
 		{"label": "100", "value": 1.0},
 	], Gfx.scale_3d, func(value: Variant) -> void: Gfx.set_option("scale_3d", value))
-	_graphics_choice(body, "Frame cap", "fps", [
+	_graphics_choice(parent, "Draft while editing", "interaction", [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.draft_editing, func(value: Variant) -> void:
+		Gfx.set_draft_editing(value)
+		if _view != null:
+			_view.set_draft_quality(value)
+	)
+	_graphics_choice(parent, "Frame cap", "fps", [
 		{"label": "30", "value": 30},
 		{"label": "60", "value": 60},
 		{"label": "90", "value": 90},
 		{"label": "120", "value": 120},
 	], Gfx.max_fps, func(value: Variant) -> void: Gfx.set_option("max_fps", value))
 
-	var note := Kit.label("Changes apply immediately and are stored on this device. Render output resolution and anti-aliasing are set in the Render sheet.", 9, Kit.TEXT_DIM)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(note)
-
-	_overlay.show_modal("Graphics and performance", "Real engine settings, not decoration.", body, [
-		{"text": "Done", "primary": true},
-	])
-
 func graphics_preset_row(parent: Control) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 3)
-	parent.add_child(row)
+	var row := _segment_strip(parent)
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
 	_preset_buttons.clear()
@@ -1733,6 +1969,7 @@ func graphics_preset_row(parent: Control) -> void:
 		var data: Dictionary = entry
 		var preset_name := str(data.get("value"))
 		var button := Kit.text_toggle(str(data.get("label")), "", true)
+		_style_segment(button)
 		button.button_group = group
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.set_meta("preset", preset_name)
@@ -1800,7 +2037,7 @@ func _open_color_sheet(property: String) -> void:
 	_color_sheet_active = true
 	_color_id = doc.selected_id
 	_color_property = property
-	_color_value = Color.from_string(str(obj.get(property, "#AAB2BF")), Color(0.6, 0.6, 0.6))
+	_color_value = Color.from_string(str(obj.get(property, "#A8A8A8")), Color(0.6, 0.6, 0.6))
 	doc.begin_edit("Change color")
 
 	var body := VBoxContainer.new()
@@ -1825,12 +2062,12 @@ func _open_color_sheet(property: String) -> void:
 		var color := Color.from_string(str(hex), Color.GRAY)
 		var swatch := Button.new()
 		swatch.focus_mode = Control.FOCUS_NONE
-		swatch.custom_minimum_size = Vector2(30, 28)
+		swatch.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 		swatch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		swatch.tooltip_text = str(hex)
-		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, 4, Kit.BORDER, 1))
-		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), 4, Kit.TEXT_MUTED, 1))
-		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), 4, Kit.FOCUS, 1))
+		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, 0, Kit.BORDER, 1))
+		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), 0, Kit.TEXT_MUTED, 1))
+		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), 0, Kit.FOCUS, 1))
 		swatch.pressed.connect(_set_color_value.bind(color))
 		grid.add_child(swatch)
 
@@ -1856,7 +2093,7 @@ func _open_color_sheet(property: String) -> void:
 		bar.max_value = 1.0
 		bar.value = _color_value[i]
 		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		bar.fill_color = Color(0.72, 0.55, 0.38) if i == 0 else (Color(0.48, 0.63, 0.43) if i == 1 else Color(0.38, 0.53, 0.75))
+		bar.fill_color = Kit.AXIS_X if i == 0 else (Kit.AXIS_Y if i == 1 else Kit.AXIS_Z)
 		bar.value_changed.connect(_on_rgb_changed.bind(i))
 		row.add_child(bar)
 		_color_rgb.append(bar)
@@ -1874,7 +2111,7 @@ func _open_color_sheet(property: String) -> void:
 	_sync_color_controls()
 
 func _color_preview_style() -> StyleBoxFlat:
-	var style := Kit.flat_style(_color_value, 7, Kit.BORDER, 1)
+	var style := Kit.flat_style(_color_value, 0, Kit.BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	return style
@@ -1894,7 +2131,7 @@ func _sync_color_controls() -> void:
 		_color_preview.add_theme_stylebox_override("panel", _color_preview_style())
 	if _color_preview_label != null:
 		var luminance := _color_value.r * 0.299 + _color_value.g * 0.587 + _color_value.b * 0.114
-		_color_preview_label.add_theme_color_override("font_color", Color(0.05, 0.06, 0.07) if luminance > 0.58 else Color(0.93, 0.94, 0.95))
+		_color_preview_label.add_theme_color_override("font_color", Color(0.03, 0.03, 0.03) if luminance > 0.58 else Color(0.94, 0.94, 0.94))
 		_color_preview_label.text = "#" + _color_value.to_html(false).to_upper()
 	_color_updating = true
 	for i in range(mini(3, _color_rgb.size())):
@@ -1924,7 +2161,15 @@ func _on_hex_focus_lost() -> void:
 	if _color_hex != null:
 		_on_hex_submitted(_color_hex.text)
 
+func _on_modal_opened() -> void:
+	# A modal dims the workbench, so its floating HUD must not peek above the
+	# surface. The 3D scene remains visible through the scrim.
+	if _view != null:
+		_view.set_hud_visible(false)
+
 func _on_modal_closed() -> void:
+	if _view != null:
+		_view.set_hud_visible(true)
 	if not _color_sheet_active:
 		return
 	_color_sheet_active = false
@@ -2006,7 +2251,7 @@ func _show_about() -> void:
 	var limits := Kit.label("Import: glTF/GLB and OBJ. Binary FBX must be converted to GLB or OBJ first because Godot's FBX importer is editor-only. On Android, SAF may prevent an OBJ from reading sibling MTL/texture files.", 9, Kit.TEXT_DIM)
 	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(limits)
-	var licenses := Kit.label("Engine: Godot (MIT). Fonts: Inter and JetBrains Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
+	var licenses := Kit.label("Engine: Godot (MIT). Fonts: Geist and Geist Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
 	licenses.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(licenses)
 	_overlay.show_modal("About Kinema", "A quiet tool for motion.", body, [

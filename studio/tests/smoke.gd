@@ -1,4 +1,4 @@
-extends Node
+extends Control
 ## Temporary headless smoke test. Not part of the app.
 
 const RenderExport = preload("res://src/core/render_export.gd")
@@ -21,13 +21,43 @@ func _ready() -> void:
 	_check(get_viewport().get_visible_rect().size == Vector2(412, 915), "smoke runs at a 412x915 phone canvas")
 	await get_tree().process_frame
 	_check(get_tree().root.theme != null, "app theme installed on root")
-	_check(Kit.font_regular != null, "Inter loaded")
+	_check(Kit.font_regular != null, "IBM Plex Sans loaded")
+	_check(Kit.FONT_UI.ends_with("IBMPlexSans-Regular.ttf"), "UI font is IBM Plex Sans")
+	_check(Kit.FONT_MONO.ends_with("IBMPlexMono-Regular.ttf"), "numeric font is IBM Plex Mono")
 	_check(Kit.icon_texture("box") != null, "box icon loaded")
 
+	print("SMOKE STEP: type and field floor")
+	_check(Kit.label("x", 8).get_theme_font_size("font_size") >= 11, "labels never drop below the 11 sp caption floor")
+	_check(Kit.mono_label("x", 8).get_theme_font_size("font_size") >= 11, "mono labels never drop below 11 sp")
+	_check(Kit.section_label("x").get_theme_font_size("font_size") >= 11, "section labels are at least 11 sp")
+	_check(Kit.label("x").get_theme_font_size("font_size") == 12, "body labels use the 12 sp body role")
+	_check(Kit.line_edit().custom_minimum_size.y >= 44.0, "text fields are at least 44 dp tall")
+	_check(Kit.line_edit().get_theme_font_size("font_size") >= 13, "text field values use the 13 sp emphasis role")
+	_check(Kit.theme.get_font_size("font_size", "LineEdit") >= 13, "raw line edits use the 13 sp emphasis role")
+	_check(Kit.text_toggle("x").custom_minimum_size.y >= 44.0, "text toggles are at least 44 dp tall")
+	_check(Kit.icon_button("play", "Play", 24, 12).custom_minimum_size.x >= 44.0, "icon buttons clamp small call sites to a 44 dp target")
+	_check(Kit.icon_button("play", "Play", 24, 12).custom_minimum_size.y >= 44.0, "icon buttons clamp small call sites to a 44 dp target")
+	var probe_field := Kit.line_edit()
+	add_child(probe_field)
+	await get_tree().process_frame
+	_check(probe_field.get_combined_minimum_size().y >= 44.0, "a laid-out text field is at least 44 dp tall")
+	probe_field.queue_free()
+	var probe_num = load("res://src/ui/num_field.gd").new()
+	add_child(probe_num)
+	await get_tree().process_frame
+	_check(probe_num.get_combined_minimum_size().y >= 44.0, "numeric fields are at least 44 dp tall")
+	probe_num.queue_free()
+	_check(Kit.theme.get_color("font_placeholder_color", "LineEdit").get_luminance() >= Kit.TEXT_MUTED.get_luminance() - 0.001, "placeholders use the readable muted tone")
+	_check(_contrast(Kit.TEXT_DIM, Kit.SURFACE_3) >= 4.5, "tertiary text keeps 4.5:1 on raised surfaces")
+
 	print("SMOKE STEP: tokens and icons")
-	_check(Kit.BG.to_html(false).to_upper() == "0B0F14", "BG token is exact")
-	_check(Kit.FOCUS.to_html(false).to_upper() == "4C8DE6", "FOCUS token is exact")
-	_check(Kit.TIME.to_html(false).to_upper() == "D9A565", "TIME token is exact")
+	_check(Kit.BG.to_html(false).to_upper() == "080808", "BG token is exact")
+	_check(Kit.FOCUS.to_html(false).to_upper() == "E6E6E6", "FOCUS token is exact")
+	_check(Kit.TIME.to_html(false).to_upper() == "C8C8C8", "TIME token is exact")
+	for tone in [Kit.FOCUS, Kit.TIME, Kit.WARNING, Kit.SUCCESS]:
+		_check(is_equal_approx(tone.r, tone.g) and is_equal_approx(tone.g, tone.b), "chrome accents stay monochrome")
+	_check(Kit.TEXT.get_luminance() > Kit.BG.get_luminance() + 0.5, "primary text is high contrast")
+	_check(Kit.BORDER.get_luminance() > Kit.SURFACE.get_luminance(), "hairlines are lighter than their surface")
 	var sharp := Kit.flat_style(Kit.SURFACE)
 	_check(sharp.corner_radius_top_left == 0 and sharp.corner_radius_bottom_right == 0, "panels and inputs are square")
 	_check(Kit.icon_button("play", "Play").custom_minimum_size == Vector2(44, 44), "icon buttons have a 44 dp hit target")
@@ -57,6 +87,14 @@ func _ready() -> void:
 		_check(tablet["mode"] == "desktop", "auto resolves a wide tablet to desktop")
 		var wide_phone = LayoutMathScript.resolve(Vector2i(2400, 1080), 420.0, "Android", 1.0, "auto", true)
 		_check(wide_phone["mode"] == "studio", "landscape phone resolves to studio")
+		var short_landscape = LayoutMathScript.resolve(Vector2i(915, 412), 160.0, "Android", 1.0, "auto", true)
+		_check(short_landscape["mode"] == "studio", "short landscape phone keeps the studio workbench")
+		_check(is_equal_approx(float(short_landscape["factor"]), 1.0), "short landscape keeps a 1:1 interface scale")
+		_check(not bool(short_landscape["clamped"]), "short landscape is not scaled down to fit")
+		_check(short_landscape["logical_after"].x >= 914.0 and short_landscape["logical_after"].y >= 411.0, "short landscape keeps its full logical canvas")
+		var narrow_landscape = LayoutMathScript.resolve(Vector2i(800, 360), 160.0, "Android", 1.0, "auto", true)
+		_check(narrow_landscape["mode"] == "studio", "800x360 landscape keeps the studio workbench")
+		_check(is_equal_approx(float(narrow_landscape["factor"]), 1.0), "800x360 landscape keeps touch targets at 1:1")
 		var phone_desktop = LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "desktop", true)
 		_check(phone_desktop["mode"] == "desktop", "desktop is selectable on a phone")
 		_check(phone_desktop["fit"] < 1.0, "desktop on a phone shrinks to fit")
@@ -94,6 +132,34 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 
+	print("SMOKE STEP: project browser")
+	var home = main._home
+	_check(home != null and home.visible, "project browser is the first screen")
+	if home != null:
+		var home_labels := _labels_under(home)
+		var home_texts: Array[String] = []
+		var home_max_size := 0
+		for home_label in home_labels:
+			home_texts.append(home_label.text)
+			home_max_size = maxi(home_max_size, home_label.get_theme_font_size("font_size"))
+		_check(home_texts.has("Projects"), "the browser leads with a Projects heading")
+		_check(not home_texts.has("Motion,\nwithout the noise."), "the marketing hero is gone")
+		_check(home_max_size <= 18, "the browser uses a tool-scale page title, not a display hero")
+		_check(home._layout != null and home._layout.get_combined_minimum_size().x <= 412.0 + 1.0, "the browser fits a 412 dp phone without horizontal overflow")
+		var new_project := _button_with_text(home, "New project")
+		_check(new_project != null, "the browser exposes a New project action")
+		if new_project != null:
+			_check(new_project.get_combined_minimum_size().y >= 48.0, "the browser primary action has a 48 dp target")
+		home._open_new_project_sheet()
+		for _i in 4:
+			await get_tree().process_frame
+		var home_fields := _line_edits_under(home._overlay)
+		_check(not home_fields.is_empty(), "the new project sheet has a name field")
+		for entry in home_fields:
+			_check(entry.get_combined_minimum_size().y >= 44.0, "the new project name field is at least 44 dp tall")
+		home._overlay.close_modal()
+		await get_tree().process_frame
+
 	main._on_new_project_requested("Smoke Test", "study")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -122,6 +188,14 @@ func _ready() -> void:
 	_check(editor.workbench_mode == str(live_layout.get("mode", "")), "editor returns to the live mode")
 	_check(not main.apply_orientation("portrait"), "orientation is disabled when the display server has no feature")
 	_check(doc != null and doc.objects.size() >= 3, "study template has objects")
+	var form: Dictionary = {}
+	for entry in doc.objects:
+		if str(entry.get("name", "")) == "Form":
+			form = entry
+	_check(not form.is_empty(), "study template has a Form object")
+	if not form.is_empty():
+		var form_color := Color.from_string(str(form.get("color", "")), Color.MAGENTA)
+		_check(is_equal_approx(form_color.r, form_color.g) and is_equal_approx(form_color.g, form_color.b), "study template material is monochrome")
 	_check(editor._view != null and editor._view._viewport != null, "preview viewport built")
 	_check(doc.get_channel_keys(str(doc.objects[0]["id"]), "position").size() >= 0, "channels readable")
 
@@ -435,6 +509,9 @@ func _ready() -> void:
 	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
 	_check(absf(editor._dock.get_global_rect().end.y - editor.size.y) <= 1.0, "studio dock reaches the bottom edge")
 	_check(editor._outliner_panel.size.y >= 240.0, "studio scene list gets a usable share of the dock")
+	var outliner = editor._outliner
+	var outliner_overflow: bool = outliner._list.get_combined_minimum_size().y + 16.0 > outliner._scroll.size.y
+	_check(not outliner_overflow or absf(fmod(outliner._scroll.size.y - 6.0, 45.0)) < 0.6, "scene list viewport ends on a whole row")
 	editor.set_workspace_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -442,6 +519,50 @@ func _ready() -> void:
 	_check(editor._status_bar.visible, "desktop status bar is visible")
 	_check(editor._top_bar.size.y >= 35.0 and editor._top_bar.size.y <= 38.0, "desktop menu bar is 36 dp")
 	_check(str(Prefs.get_value("display.layout", "")) == "desktop", "workspace mode persists")
+
+	print("SMOKE STEP: editor type and touch floor")
+	editor.size = Vector2(412.0, 915.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	await get_tree().process_frame
+	var too_small_labels := 0
+	for editor_label in _labels_under(editor):
+		if editor_label.get_theme_font_size("font_size") < 11:
+			too_small_labels += 1
+	_check(too_small_labels == 0, "every editor label is at least 11 sp")
+	var short_fields := 0
+	for field in _line_edits_under(editor):
+		if field.get_combined_minimum_size().y < 44.0:
+			short_fields += 1
+	_check(short_fields == 0, "every editor text field is at least 44 dp tall")
+	var short_targets := 0
+	for target in _buttons_under(editor):
+		if not target.visible or target.has_meta("qa_hit_exempt"):
+			continue
+		if target.get_combined_minimum_size().x < 44.0 or target.get_combined_minimum_size().y < 44.0:
+			short_targets += 1
+			print("SMOKE SHORT: '", (target as Button).text, "' variation=", (target as Button).theme_type_variation, " min=", target.get_combined_minimum_size(), " visible=", target.visible)
+	_check(short_targets == 0, "every visible editor button keeps a 44 dp touch target")
+
+	print("SMOKE STEP: landscape shell")
+	editor.size = Vector2(915.0, 412.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	_check(editor._short, "915x412 resolves as a short landscape shell")
+	_check(not editor._timeline_visible, "short landscape starts with the dope sheet folded")
+	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "folded landscape timeline keeps a 56 dp transport")
+	_check(editor._dock_slot.custom_minimum_size.x >= 240.0 and editor._dock_slot.custom_minimum_size.x <= 300.0, "landscape dock leaves the viewport in charge")
+	editor._timeline.set_sheet_visible(true)
+	editor._timeline.size = Vector2(591.0, 156.0)
+	editor._timeline._refresh_compact()
+	_check(editor._timeline._compact_header.visible, "a narrow landscape sheet exposes graph, loop, snap, delete and fold")
+	_check(editor._timeline.get_combined_minimum_size().x <= 591.0, "the landscape transport fits the center column")
+	editor._timeline.set_sheet_visible(false)
+	editor.size = Vector2(412.0, 915.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	_check(not editor._short, "412x915 resolves as a tall studio shell")
+	_check(editor._timeline_visible, "tall studio opens the dope sheet by default")
 	editor.set_workspace_mode("compact")
 	await get_tree().process_frame
 
@@ -516,6 +637,54 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
+	print("SMOKE STEP: renderer and draft quality")
+	_check(Gfx.renderer_label("forward_plus") == "Forward+", "Forward+ has a display label")
+	_check(Gfx.renderer_label("mobile") == "Mobile", "Mobile has a display label")
+	_check(Gfx.renderer_label("gl_compatibility") == "Compatibility", "Compatibility has a display label")
+	var live_renderer: String = Gfx.renderer_name()
+	editor._open_renderer_sheet()
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "renderer sheet opens")
+	_check(editor._renderer_pending == live_renderer, "renderer sheet starts on the live backend")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+	var draft_view = editor._view
+	var draft_pref: bool = Gfx.draft_editing
+	draft_view.set_draft_quality(true)
+	draft_view.set_interactive(true)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(draft_view.is_draft_active(), "draft quality engages during an edit")
+	_check(draft_view._viewport.msaa_3d == Viewport.MSAA_DISABLED, "draft quality disables MSAA")
+	draft_view.set_interactive(false)
+	draft_view._draft_idle = 10.0
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not draft_view.is_draft_active(), "draft quality releases after idle")
+	_check(draft_view._viewport.msaa_3d == Gfx.MSAA_MODES[Gfx.msaa], "full MSAA returns after the draft pass")
+	_check(draft_view.quick_render_requested.is_connected(editor._quick_render_preview), "quick render HUD is wired to the preview")
+	draft_view.set_draft_quality(draft_pref)
+
+	print("SMOKE STEP: performance readout")
+	var perf_view = editor._view
+	_check(perf_view._fps_chip != null, "FPS chip exists")
+	_check(perf_view._fps_chip.custom_minimum_size.x >= 44.0, "FPS chip has a 44 dp target")
+	perf_view.set_fps_value(60.0, 16.6)
+	_check(perf_view._fps_chip.text.contains("60"), "FPS chip shows the real sample")
+	_check(Perf.sample_updated.is_connected(Callable(editor, "_on_perf_sample")), "perf samples drive the editor")
+	perf_view.performance_requested.emit()
+	await get_tree().process_frame
+	_check(editor._perf_overlay != null and editor._perf_overlay.visible, "FPS chip opens the performance overlay")
+	editor._perf_overlay.set_sample({
+		"fps": 60.0, "frame_ms": 16.6, "draw_calls": 42, "primitives": 1200,
+		"preview_scale": 1.0, "samples": [16.6, 16.6, 16.6],
+	}, 7, 8, Vector2i(960, 540))
+	_check(editor._perf_overlay._fps_label.text.contains("60"), "overlay shows the real FPS")
+	_check(editor._perf_overlay._draw_label.text.contains("42"), "overlay shows draw calls")
+	editor._perf_overlay.close_overlay()
+	await get_tree().process_frame
+	_check(not editor._perf_overlay.visible, "performance overlay closes")
+
 	# Color sheet and material write.
 	var mesh_id: String = doc.selected_id
 	editor._open_color_sheet("color")
@@ -581,6 +750,7 @@ func _ready() -> void:
 	if light_id != "":
 		var light_node: Node3D = doc.nodes.get(light_id)
 		var marker := light_node.get_node_or_null("Marker") as Node3D
+		doc.markers_hidden = false
 		doc.update_marker_scales(marker_cam)
 		_check(marker != null and marker.visible, "light marker visible at range")
 		_check(marker.scale.x < 1.0, "light marker uses screen-space scale")
@@ -591,7 +761,9 @@ func _ready() -> void:
 		marker_cam.position = Vector3(0.0, 2.0, 8.0)
 		doc.update_marker_scales(marker_cam)
 		_check(not marker.visible, "markers hidden for stills")
-		doc.markers_hidden = false
+		# The editor keeps the document meshes hidden; locators are drawn as
+		# screen-space glyphs by EditorView.
+		doc.markers_hidden = true
 	marker_cam.queue_free()
 
 	# Undo / redo.
@@ -686,6 +858,60 @@ func _write_test_text(path: String, text: String) -> void:
 	if file != null:
 		file.store_string(text)
 		file.close()
+
+func _contrast(a: Color, b: Color) -> float:
+	var high := maxf(_relative_luminance(a), _relative_luminance(b))
+	var low := minf(_relative_luminance(a), _relative_luminance(b))
+	return (high + 0.05) / (low + 0.05)
+
+## WCAG 2.x relative luminance. Godot's Color.get_luminance() is the raw
+## weighted sRGB value, not the linearised one the contrast formula requires.
+func _relative_luminance(color: Color) -> float:
+	return 0.2126 * _linear_channel(color.r) + 0.7152 * _linear_channel(color.g) + 0.0722 * _linear_channel(color.b)
+
+func _linear_channel(value: float) -> float:
+	if value <= 0.04045:
+		return value / 12.92
+	return pow((value + 0.055) / 1.055, 2.4)
+
+func _nodes_under(root: Node, result: Array[Node]) -> void:
+	for child in root.get_children():
+		result.append(child)
+		_nodes_under(child, result)
+
+func _labels_under(root: Node) -> Array[Label]:
+	var nodes: Array[Node] = []
+	_nodes_under(root, nodes)
+	var labels: Array[Label] = []
+	for node in nodes:
+		if node is Label:
+			labels.append(node)
+	return labels
+
+func _line_edits_under(root: Node) -> Array[LineEdit]:
+	var nodes: Array[Node] = []
+	_nodes_under(root, nodes)
+	var fields: Array[LineEdit] = []
+	for node in nodes:
+		if node is LineEdit:
+			fields.append(node)
+	return fields
+
+func _buttons_under(root: Node) -> Array[Button]:
+	var nodes: Array[Node] = []
+	_nodes_under(root, nodes)
+	var buttons: Array[Button] = []
+	for node in nodes:
+		if node is Button:
+			buttons.append(node)
+	return buttons
+
+func _button_with_text(root: Node, text_value: String) -> Button:
+	for button in _buttons_under(root):
+		if button.text == text_value:
+			return button
+	return null
+	return null
 
 func _finish() -> void:
 	if _failures.is_empty():

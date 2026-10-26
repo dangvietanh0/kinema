@@ -30,6 +30,7 @@ var _handle_row: MarginContainer
 var _body_scroll: ScrollContainer
 var _body_host: VBoxContainer
 var _footer_margin: MarginContainer
+var _footer_panel: PanelContainer
 var _footer: HBoxContainer
 var _header_margin: MarginContainer
 var _title_label: Label
@@ -64,7 +65,7 @@ func _ready() -> void:
 
 func _build() -> void:
 	_backdrop = ColorRect.new()
-	_backdrop.color = Color(0.015, 0.022, 0.031, 0.66)
+	_backdrop.color = Color(0, 0, 0, 0.66)
 	_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
 	_backdrop.visible = false
@@ -115,7 +116,7 @@ func _build() -> void:
 	var handle := Panel.new()
 	handle.custom_minimum_size = Vector2(32, 4)
 	handle.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var handle_style := Kit.flat_style(Kit.BORDER, 2, Color(0, 0, 0, 0), 0)
+	var handle_style := Kit.flat_style(Kit.BORDER, 0, Color(0, 0, 0, 0), 0)
 	handle.add_theme_stylebox_override("panel", handle_style)
 	handle_center.add_child(handle)
 
@@ -150,6 +151,7 @@ func _build() -> void:
 	_body_scroll.custom_minimum_size = Vector2(0, 0)
 	_body_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_body_scroll.mouse_filter = Control.MOUSE_FILTER_STOP
+	Kit.style_scroll_container(_body_scroll)
 	_panel_content.add_child(_body_scroll)
 
 	_body_host = VBoxContainer.new()
@@ -163,11 +165,18 @@ func _build() -> void:
 	_footer_margin.visible = false
 	_panel_content.add_child(_footer_margin)
 
+	# Actions sit on their own solid strip. The body scrolls behind a fixed
+	# action bar, so a long settings list can never show through the buttons.
+	_footer_panel = PanelContainer.new()
+	_footer_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_footer_panel.add_theme_stylebox_override("panel", _footer_style())
+	_footer_margin.add_child(_footer_panel)
+
 	_footer = HBoxContainer.new()
 	_footer.add_theme_constant_override("separation", 8)
 	_footer.alignment = BoxContainer.ALIGNMENT_END
 	_footer.mouse_filter = Control.MOUSE_FILTER_STOP
-	_footer_margin.add_child(_footer)
+	_footer_panel.add_child(_footer)
 
 	# Toasts stay independent of the modal so saving and small confirmations
 	# can still report a result.
@@ -189,7 +198,7 @@ func _build() -> void:
 	_toast_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_center.add_child(_toast_margin)
 	_toast_panel = PanelContainer.new()
-	_toast_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 0, Kit.BORDER, 1))
+	_toast_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
 	_toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_margin.add_child(_toast_panel)
 	var toast_row := HBoxContainer.new()
@@ -278,6 +287,10 @@ func show_modal(title: String, subtitle: String = "", body: Control = null, acti
 
 func show_sheet(title: String, subtitle: String = "", body: Control = null,
 		actions: Array = [], options: Dictionary = {}) -> void:
+	# A transient message belongs to the surface that produced it. Opening a
+	# sheet clears it so a stale "Project created" toast cannot float above the
+	# new surface and look like part of it.
+	clear_toast()
 	close_modal(true)
 	_modal_serial += 1
 	var serial := _modal_serial
@@ -438,6 +451,15 @@ func clear_toast() -> void:
 # Surface layout
 # -------------------------------------------------------------------------
 
+func _footer_style() -> StyleBoxFlat:
+	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	style.border_width_top = 1
+	style.content_margin_left = 0
+	style.content_margin_right = 0
+	style.content_margin_top = 10
+	style.content_margin_bottom = 0
+	return style
+
 func _apply_variant() -> void:
 	var viewport_size := get_viewport_rect().size
 	var width := clampf(float(_options.get("width", 720.0)), 240.0, maxf(240.0, viewport_size.x - 48.0))
@@ -462,7 +484,7 @@ func _apply_variant() -> void:
 		# The header is a 48 dp row; the drag handle sits above it.
 		_header_margin.custom_minimum_size.y = 48.0
 		_handle_row.visible = bool(_options.get("draggable", true))
-		_foot_padding_top = 12
+		_foot_padding_top = 0
 		_foot_padding_bottom = 12 + int(round(inset))
 		_set_margins(_footer_margin, _foot_padding_top, _foot_padding_bottom, 0, 0)
 		_footer.custom_minimum_size.y = HIT
@@ -484,7 +506,7 @@ func _apply_variant() -> void:
 		_set_margins(_header_margin, 0, 0, 0, 0)
 		_header_margin.custom_minimum_size.y = 0.0
 		_handle_row.visible = false
-		_foot_padding_top = 8
+		_foot_padding_top = 0
 		_foot_padding_bottom = 0
 		_set_margins(_footer_margin, _foot_padding_top, _foot_padding_bottom, 0, 0)
 		_footer.custom_minimum_size.y = 0.0

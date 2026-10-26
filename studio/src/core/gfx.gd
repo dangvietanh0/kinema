@@ -70,6 +70,13 @@ var shadow_splits := 2
 var volumetric_fog := false
 var scale_3d := 1.0
 var max_fps := 60
+# Draft quality keeps the editor responsive while the camera, gizmo or
+# playback is moving. It is a preference, not a preset value: turning it off
+# should not mark the graphics preset as custom.
+var draft_editing := true
+## Last renderer the user asked for. Godot chooses the renderer when the
+## process starts, so this is a request for the next launch, not a live switch.
+var renderer_choice := ""
 
 const MSAA_MODES := [
 	Viewport.MSAA_DISABLED,
@@ -200,6 +207,8 @@ func to_dict() -> Dictionary:
 		"volumetric_fog": volumetric_fog,
 		"scale_3d": scale_3d,
 		"max_fps": max_fps,
+		"draft_editing": draft_editing,
+		"renderer_choice": renderer_choice,
 	}
 
 func load_preferences() -> void:
@@ -231,6 +240,31 @@ func set_option(key: String, value: Variant, save: bool = true) -> void:
 	if save:
 		save_preferences()
 	apply_all()
+
+## Draft quality is an interaction policy, not a render feature. Changing it
+## never moves the graphics preset to Custom.
+func set_draft_editing(enabled: bool) -> void:
+	draft_editing = enabled
+	save_preferences()
+	changed.emit()
+
+const RENDERERS := ["forward_plus", "mobile", "gl_compatibility"]
+
+func renderer_label(value: String) -> String:
+	match value:
+		"forward_plus":
+			return "Forward+"
+		"mobile":
+			return "Mobile"
+		"gl_compatibility":
+			return "Compatibility"
+	return value
+
+func set_renderer_choice(value: String) -> void:
+	if value not in RENDERERS:
+		return
+	renderer_choice = value
+	save_preferences()
 
 func default_environment(env: Environment) -> void:
 	## The studio look: a neutral sky for ambient and reflections, contact
@@ -291,7 +325,7 @@ func default_environment(env: Environment) -> void:
 
 	env.volumetric_fog_enabled = false
 	env.volumetric_fog_density = 0.008
-	env.volumetric_fog_albedo = Color(0.79, 0.83, 0.9)
+	env.volumetric_fog_albedo = Color(0.80, 0.80, 0.80)
 
 	env.fog_enabled = false
 	apply_environment(env)

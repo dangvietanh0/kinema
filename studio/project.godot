@@ -53,7 +53,7 @@ pointing/emulate_touch_from_mouse=false
 [rendering]
 
 renderer/rendering_method="forward_plus"
-renderer/rendering_method.mobile="forward_plus"
+renderer/rendering_method.mobile="mobile"
 rendering_device/driver="vulkan"
 rendering_device/driver.mobile="vulkan"
 rendering_device/fallback_to_opengl3=true

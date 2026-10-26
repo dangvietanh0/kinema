@@ -6,8 +6,14 @@ signal add_requested
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
 
+const ROW_HEIGHT := 44.0
+const ROW_GAP := 1.0
+const LIST_TOP := 6.0
+const LIST_BOTTOM := 10.0
+
 var _list: VBoxContainer
 var _scroll: ScrollContainer
+var _bottom_guard: Control
 var _count: Label
 var _search: LineEdit
 var _empty: VBoxContainer
@@ -61,8 +67,7 @@ func _build() -> void:
 	search_margin.add_theme_constant_override("margin_right", 10)
 	search_margin.add_theme_constant_override("margin_bottom", 8)
 	add_child(search_margin)
-	_search = Kit.line_edit("Search scene", 11)
-	_search.custom_minimum_size.y = 28
+	_search = Kit.line_edit("Search scene", Kit.TYPE_EMPHASIS)
 	_search.clear_button_enabled = true
 	_search.text_changed.connect(_on_search_changed)
 	search_margin.add_child(_search)
@@ -74,14 +79,23 @@ func _build() -> void:
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	Kit.style_scroll_container(_scroll)
 	add_child(_scroll)
+	_scroll.resized.connect(_schedule_fit_rows)
+
+	# The list clips at the viewport edge. Rounding the viewport down to whole
+	# rows keeps the last visible row intact instead of showing a sliver of the
+	# next one against the panel hairline.
+	_bottom_guard = Control.new()
+	_bottom_guard.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_bottom_guard)
 
 	var list_margin := MarginContainer.new()
 	list_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	list_margin.add_theme_constant_override("margin_left", 6)
 	list_margin.add_theme_constant_override("margin_right", 6)
-	list_margin.add_theme_constant_override("margin_top", 6)
-	list_margin.add_theme_constant_override("margin_bottom", 10)
+	list_margin.add_theme_constant_override("margin_top", int(LIST_TOP))
+	list_margin.add_theme_constant_override("margin_bottom", int(LIST_BOTTOM))
 	list_margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.add_child(list_margin)
 
@@ -160,12 +174,34 @@ func _rebuild() -> void:
 		empty_title.text = "No matching objects" if _filter != "" and not doc.objects.is_empty() else "The scene is empty"
 	_refresh_selection()
 	_scroll.scroll_vertical = scroll_pos
+	_schedule_fit_rows()
+
+## The guard is derived from the total space the list owns, so shrinking the
+## scroll viewport does not feed back into a new guard height. It only runs
+## while the list is taller than the viewport; short lists keep every pixel.
+func _schedule_fit_rows() -> void:
+	_fit_rows.call_deferred()
+
+func _fit_rows() -> void:
+	if _scroll == null or _bottom_guard == null or _list == null:
+		return
+	var total := _scroll.size.y + _bottom_guard.size.y
+	var pitch := ROW_HEIGHT + ROW_GAP
+	var content := _list.get_combined_minimum_size().y + LIST_TOP + LIST_BOTTOM
+	var guard := 0.0
+	if total > pitch and content > total:
+		var full_rows := floorf((total - LIST_TOP) / pitch)
+		if full_rows >= 1.0:
+			guard = total - (LIST_TOP + full_rows * pitch)
+			guard = clampf(guard, 0.0, pitch - 1.0)
+	if absf(_bottom_guard.custom_minimum_size.y - guard) > 0.5:
+		_bottom_guard.custom_minimum_size.y = guard
 
 func _make_row(obj: Dictionary) -> Control:
 	var id := str(obj["id"])
 	var selected := id == doc.selected_id
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.y = 30
+	panel.custom_minimum_size.y = ROW_HEIGHT
 	panel.mouse_filter = Control.MOUSE_FILTER_PASS
 	panel.add_theme_stylebox_override("panel", _row_style(selected))
 	if not selected:
@@ -220,14 +256,14 @@ func _make_row(obj: Dictionary) -> Control:
 
 func _row_style(selected: bool, hover: bool = false) -> StyleBoxFlat:
 	if selected:
-		var sb := Kit.flat_style(Kit.SURFACE_3, 4, Color(0, 0, 0, 0), 0)
+		var sb := Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0)
 		sb.border_width_left = 2
 		sb.border_color = Kit.ACCENT
 		sb.content_margin_left = 4
 		sb.content_margin_right = 4
 		return sb
 	var bg := Kit.SURFACE_2 if hover else Color(0, 0, 0, 0)
-	var plain := Kit.flat_style(bg, 4, Color(0, 0, 0, 0), 0)
+	var plain := Kit.flat_style(bg, 0, Color(0, 0, 0, 0), 0)
 	plain.content_margin_left = 4
 	plain.content_margin_right = 4
 	return plain

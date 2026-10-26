@@ -242,12 +242,12 @@ func _normalize_object(raw: Dictionary) -> Dictionary:
 	obj["position"] = _json_to_vec3(raw.get("position", [0, 0, 0]))
 	obj["rotation"] = _json_to_quat(raw.get("rotation", [0, 0, 0, 1]))
 	obj["scale"] = _json_to_vec3(raw.get("scale", [1, 1, 1]))
-	obj["color"] = str(raw.get("color", "#AAB2BF"))
+	obj["color"] = str(raw.get("color", "#A8A8A8"))
 	obj["roughness"] = clampf(float(raw.get("roughness", 0.48)), 0.0, 1.0)
 	obj["metallic"] = clampf(float(raw.get("metallic", 0.0)), 0.0, 1.0)
 	obj["light_type"] = str(raw.get("light_type", "directional"))
 	obj["light_energy"] = float(raw.get("light_energy", 1.2))
-	obj["light_color"] = str(raw.get("light_color", "#FFF0DB"))
+	obj["light_color"] = str(raw.get("light_color", "#F0F0F0"))
 	obj["light_range"] = float(raw.get("light_range", 8.0))
 	obj["camera_fov"] = float(raw.get("camera_fov", 45.0))
 	obj["model"] = str(raw.get("model", ""))
@@ -263,12 +263,12 @@ func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 		"position": Vector3.ZERO,
 		"rotation": Quaternion.IDENTITY,
 		"scale": Vector3.ONE,
-		"color": "#AAB2BF",
+		"color": "#A8A8A8",
 		"roughness": 0.48,
 		"metallic": 0.0,
 		"light_type": "directional",
 		"light_energy": 1.2,
-		"light_color": "#FFF0DB",
+		"light_color": "#F0F0F0",
 		"light_range": 8.0,
 		"camera_fov": 45.0,
 		"model": "",
@@ -283,34 +283,35 @@ func _build_blank() -> void:
 
 func _build_study() -> void:
 	_add_camera_data("Main Camera", Vector3(5.2, 3.5, 6.4), Vector3(0.0, 0.8, 0.0), false)
-	# Three-point studio lighting: a warm key with real soft shadows, a cool
-	# fill to keep the shadow side readable, and a warm rim for separation.
+	# Three-point studio lighting with neutral white lights: a key with real
+	# soft shadows, a fill to keep the shadow side readable, and a rim for
+	# separation. The starter scene is a graphite sculpture, not a colour demo.
 	var key := _add_light_data("Key Light", "directional", Vector3(0.0, 5.0, 0.0), Vector3(-42, -34, 0), false)
-	key["light_energy"] = 1.75
-	key["light_color"] = "#FFF0D8"
+	key["light_energy"] = 1.8
+	key["light_color"] = "#F2F2F2"
 	_spawn_refresh(str(key["id"]))
 	var fill := _add_light_data("Fill Light", "omni", Vector3(3.1, 2.1, 2.7), Vector3.ZERO, false)
-	fill["light_energy"] = 0.55
-	fill["light_color"] = "#C9DCFF"
+	fill["light_energy"] = 0.5
+	fill["light_color"] = "#D0D0D0"
 	fill["light_range"] = 9.0
 	_spawn_refresh(str(fill["id"]))
 	var rim := _add_light_data("Rim Light", "omni", Vector3(-2.4, 2.7, -2.2), Vector3.ZERO, false)
-	rim["light_energy"] = 1.35
-	rim["light_color"] = "#FFD8AA"
+	rim["light_energy"] = 1.2
+	rim["light_color"] = "#E6E6E6"
 	_spawn_refresh(str(rim["id"]))
 	var sphere := _add_primitive_data("Form", "sphere", Vector3(0.0, 1.0, 0.0), false)
-	sphere["color"] = "#C0A27E"
-	sphere["roughness"] = 0.34
+	sphere["color"] = "#B8B8B8"
+	sphere["roughness"] = 0.38
 	_spawn_refresh(str(sphere["id"]))
 	var ring := _add_primitive_data("Orbit", "torus", Vector3(0.0, 1.15, 0.0), false)
-	ring["color"] = "#8C9AAE"
+	ring["color"] = "#D8D8D8"
 	ring["rotation"] = Quaternion(Vector3.RIGHT, deg_to_rad(62.0))
 	ring["scale"] = Vector3(1.5, 1.5, 1.5)
 	_spawn_refresh(str(ring["id"]))
 	var base := _add_primitive_data("Base", "cylinder", Vector3(0.0, 0.14, 0.0), false)
-	base["color"] = "#3D4654"
+	base["color"] = "#2E2E2E"
 	base["scale"] = Vector3(2.05, 0.28, 2.05)
-	base["roughness"] = 0.62
+	base["roughness"] = 0.68
 	_spawn_refresh(str(base["id"]))
 	selected_id = str(ring["id"])
 	_animate_study(str(ring["id"]), str(sphere["id"]))
@@ -440,7 +441,7 @@ func _build_camera_visual(node: Node3D, obj: Dictionary) -> void:
 	camera.near = 0.05
 	camera.far = 500.0
 	node.add_child(camera)
-	_add_marker(node, _make_camera_marker(), Color(0.62, 0.72, 0.86))
+	_add_marker(node, _make_camera_marker(), Color(0.58, 0.58, 0.58))
 
 func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	var light_type := str(obj.get("light_type", "directional"))
@@ -456,11 +457,11 @@ func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 		light = directional
 	light.name = "Light"
 	light.light_energy = float(obj.get("light_energy", 1.2))
-	light.light_color = _hex_color(str(obj.get("light_color", "#FFF0DB")))
+	light.light_color = _hex_color(str(obj.get("light_color", "#F0F0F0")))
 	light.light_specular = 0.55
 	_configure_shadows(light)
 	node.add_child(light)
-	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.92, 0.78, 0.48))
+	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.46, 0.46, 0.46))
 
 func _configure_shadows(light: Light3D) -> void:
 	## Shadow quality is driven by the graphics preferences. Directional lights
@@ -518,7 +519,7 @@ func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 		mesh.size = Vector3(0.6, 0.6, 0.6)
 		board.mesh = mesh
 		var material := StandardMaterial3D.new()
-		material.albedo_color = Color(0.36, 0.13, 0.13)
+		material.albedo_color = Color(0.22, 0.22, 0.22)
 		board.material_override = material
 		node.add_child(board)
 		push_warning("Kinema: could not load imported model '%s'." % rel)
@@ -538,25 +539,35 @@ func _add_marker(node: Node3D, mesh: Mesh, color: Color) -> void:
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	node.add_child(marker)
 
-func _make_camera_marker() -> ArrayMesh:
-	var mesh := ArrayMesh.new()
-	var verts := PackedVector3Array([
-		Vector3(-0.34, -0.23, -0.4), Vector3(0.34, -0.23, -0.4), Vector3(0.0, 0.23, -0.4),
-		Vector3(-0.34, -0.23, -0.4), Vector3(0.0, 0.23, -0.4), Vector3(0.0, 0.0, 0.35),
-		Vector3(0.34, -0.23, -0.4), Vector3(0.0, 0.0, 0.35), Vector3(0.0, 0.23, -0.4),
-		Vector3(-0.34, -0.23, -0.4), Vector3(0.0, 0.0, 0.35), Vector3(0.34, -0.23, -0.4),
-		Vector3(0.0, 0.0, 0.35), Vector3(0.0, 0.23, -0.4), Vector3(-0.34, -0.23, -0.4),
-	])
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+func _make_camera_marker() -> ImmediateMesh:
+	# A camera reads as a frustum, not a filled triangle. Drawing the base
+	# rectangle and the four lines to the apex keeps the silhouette legible at
+	# the small on-screen size the view-distance scaling produces.
+	var mesh := ImmediateMesh.new()
+	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	var back := [
+		Vector3(-0.36, -0.24, -0.42),
+		Vector3(0.36, -0.24, -0.42),
+		Vector3(0.36, 0.24, -0.42),
+		Vector3(-0.36, 0.24, -0.42),
+	]
+	var apex := Vector3(0.0, 0.0, 0.38)
+	for i in range(4):
+		mesh.surface_add_vertex(back[i])
+		mesh.surface_add_vertex(back[(i + 1) % 4])
+		mesh.surface_add_vertex(back[i])
+		mesh.surface_add_vertex(apex)
+	# A short top tick makes the camera orientation readable even when the
+	# frustum is seen nearly edge-on.
+	mesh.surface_add_vertex(back[3])
+	mesh.surface_add_vertex(back[3] + Vector3(0.0, 0.22, 0.0))
+	mesh.surface_end()
 	return mesh
 
 func _make_light_marker(omni: bool) -> ImmediateMesh:
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	var r := 0.25
+	var r := 0.3
 	var segments := 24
 	for i in range(segments):
 		var a := TAU * float(i) / float(segments)
@@ -567,6 +578,13 @@ func _make_light_marker(omni: bool) -> ImmediateMesh:
 		mesh.surface_add_vertex(Vector3(cos(b) * r, 0, sin(b) * r))
 		mesh.surface_add_vertex(Vector3(0, cos(a) * r, sin(a) * r))
 		mesh.surface_add_vertex(Vector3(0, cos(b) * r, sin(b) * r))
+	# A centre cross distinguishes a light from an empty orbit ring.
+	mesh.surface_add_vertex(Vector3(-0.12, 0, 0))
+	mesh.surface_add_vertex(Vector3(0.12, 0, 0))
+	mesh.surface_add_vertex(Vector3(0, -0.12, 0))
+	mesh.surface_add_vertex(Vector3(0, 0.12, 0))
+	mesh.surface_add_vertex(Vector3(0, 0, -0.12))
+	mesh.surface_add_vertex(Vector3(0, 0, 0.12))
 	if not omni:
 		for i in range(8):
 			var a := TAU * float(i) / 8.0
@@ -629,7 +647,7 @@ func _apply_visual_properties(node: Node3D, obj: Dictionary) -> void:
 		var light := node.get_node_or_null("Light") as Light3D
 		if light != null:
 			light.light_energy = float(obj.get("light_energy", 1.2))
-			light.light_color = _hex_color(str(obj.get("light_color", "#FFF0DB")))
+			light.light_color = _hex_color(str(obj.get("light_color", "#F0F0F0")))
 			if light is OmniLight3D:
 				(light as OmniLight3D).omni_range = float(obj.get("light_range", 8.0))
 	elif kind == "camera":
@@ -703,10 +721,10 @@ func _default_scale_for(primitive: String) -> Vector3:
 
 func _default_color_for(primitive: String) -> String:
 	match primitive:
-		"sphere": return "#A9A39A"
-		"torus": return "#8B95A4"
-		"plane": return "#3B4450"
-		_: return "#B3A28B"
+		"sphere": return "#B0B0B0"
+		"torus": return "#C8C8C8"
+		"plane": return "#3A3A3A"
+		_: return "#A8A8A8"
 
 func add_empty(at: Vector3 = Vector3.ZERO) -> String:
 	begin_edit("Add Empty")
@@ -747,7 +765,7 @@ func add_light(kind: String = "directional", at: Vector3 = Vector3(0, 4, 0)) -> 
 	var obj := _new_object_data("light", light_name, at)
 	obj["light_type"] = "omni" if kind == "omni" else "directional"
 	obj["rotation"] = Quaternion(Vector3.RIGHT, deg_to_rad(-40.0)) * Quaternion(Vector3.UP, deg_to_rad(-30.0))
-	obj["light_color"] = "#FFE7C4"
+	obj["light_color"] = "#F0F0F0"
 	obj["light_energy"] = 1.0 if kind == "omni" else 1.25
 	objects.append(obj)
 	_spawn_object(obj)
@@ -763,7 +781,7 @@ func _add_light_data(p_name: String, kind: String, at: Vector3, rotation_euler: 
 	obj["light_type"] = kind
 	obj["rotation"] = Quaternion.from_euler(rotation_euler * (PI / 180.0))
 	obj["light_energy"] = 1.1 if kind == "omni" else 1.35
-	obj["light_color"] = "#FFE8CA" if kind == "omni" else "#FFF2DF"
+	obj["light_color"] = "#E8E8E8" if kind == "omni" else "#F0F0F0"
 	if kind == "omni":
 		obj["light_range"] = 10.0
 	objects.append(obj)
@@ -1476,7 +1494,7 @@ func _as_quat(value: Variant) -> Quaternion:
 	return value if value is Quaternion else _json_to_quat(value)
 
 func _hex_color(value: String) -> Color:
-	return Color.from_string(value, Color(0.667, 0.698, 0.749))
+	return Color.from_string(value, Color(0.66, 0.66, 0.66))
 
 func _load_animation_tracks(anim_data: Dictionary) -> void:
 	animation.length = maxf(0.04, float(anim_data.get("length", duration)))
@@ -1549,7 +1567,14 @@ func update_marker_scales(view: Camera3D) -> void:
 			marker.visible = false
 			continue
 		var dist := cam_pos.distance_to(node.global_position)
-		marker.scale = Vector3.ONE * clampf(dist * 0.045, 0.04, 3.0)
+		# A gizmo is a locator, not a miniature object: keep it large enough to
+		# read as a camera or light instead of a speck, and let the selection
+		# brighten it so the outliner and the viewport agree.
+		marker.scale = Vector3.ONE * clampf(dist * 0.072, 0.05, 3.0)
+		var material := marker.material_override as StandardMaterial3D
+		if material != null:
+			var bright := str(id) == selected_id
+			material.albedo_color = Color(0.86, 0.86, 0.86) if bright else Color(0.5, 0.5, 0.5)
 		marker.visible = dist > 0.6 and not view.is_position_behind(node.global_position)
 
 func get_scene_bounds() -> AABB:
@@ -1589,6 +1614,11 @@ func _node_world_aabb(root: Node3D) -> AABB:
 			continue
 		if node is VisualInstance3D:
 			var vi := node as VisualInstance3D
+			# Hidden marker meshes must not contribute bounds. A camera marker
+			# a metre from the editor camera would otherwise project across the
+			# whole viewport and swallow taps meant for nearby lights.
+			if not vi.visible or vi.name == "Marker":
+				continue
 			var local := vi.get_aabb()
 			var xf := vi.global_transform
 			var world := xf * local

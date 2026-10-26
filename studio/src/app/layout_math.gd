@@ -11,6 +11,11 @@ extends RefCounted
 ## another mode, it just gets smaller.
 
 const COMPACT_MIN := Vector2(320.0, 480.0)
+## Landscape-first minimum. A phone on its side is 360-480 dp tall, so the
+## Studio shell is designed to fit 320 dp of height at a full 1:1 scale. Using
+## the portrait minimum here would shrink every touch target on landscape
+## phones and defeat the density.
+const STUDIO_MIN := Vector2(480.0, 320.0)
 const DESKTOP_MIN := Vector2(960.0, 600.0)
 const COMPACT_MAX_DP := 600.0
 const STUDIO_MAX_DP := 1100.0
@@ -39,8 +44,10 @@ static func resolve(physical: Vector2i, dpi: float, platform: String, user_scale
 			factor *= fit
 	else:
 		# Compact and Studio must never overflow the physical canvas: cap the
-		# factor so the logical canvas keeps the mode's minimum size.
-		var max_factor := minf(size.x / COMPACT_MIN.x, size.y / COMPACT_MIN.y)
+		# factor so the logical canvas keeps the mode's own minimum size. The
+		# two modes have different shapes, so they cannot share one minimum.
+		var minimum := COMPACT_MIN if mode == "compact" else STUDIO_MIN
+		var max_factor := minf(size.x / minimum.x, size.y / minimum.y)
 		if factor > max_factor:
 			factor = maxf(max_factor, 0.0001)
 			clamped = true

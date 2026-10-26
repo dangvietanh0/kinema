@@ -1,13 +1,14 @@
 shader_type sky;
 
-// A quiet studio gradient instead of a photographed sky. The horizon is warm
+// A quiet studio gradient instead of a photographed sky. The horizon is light
 // enough to separate a dark subject from the background, while the upper field
-// stays neutral so material colours read honestly.
+// stays neutral so material colours read honestly. The gradient is achromatic:
+// the viewport should read as a graphite stage, not a tinted room.
 
-uniform vec3 zenith_color : source_color = vec3(0.085, 0.100, 0.125);
-uniform vec3 horizon_color : source_color = vec3(0.190, 0.205, 0.230);
-uniform vec3 ground_color : source_color = vec3(0.030, 0.036, 0.045);
-uniform vec3 glow_color : source_color = vec3(0.260, 0.275, 0.305);
+uniform vec3 zenith_color : source_color = vec3(0.075, 0.075, 0.075);
+uniform vec3 horizon_color : source_color = vec3(0.180, 0.180, 0.180);
+uniform vec3 ground_color : source_color = vec3(0.025, 0.025, 0.025);
+uniform vec3 glow_color : source_color = vec3(0.240, 0.240, 0.240);
 uniform float glow_strength = 0.35;
 
 void sky() {

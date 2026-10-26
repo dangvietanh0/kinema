@@ -44,11 +44,11 @@ func _build() -> void:
 func _add_action(parent: Control, action: String, label: String, icon_name: String, focus: bool) -> void:
 	var button := Kit.text_button(label, icon_name, false, true)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	button.custom_minimum_size = Vector2(0, 44)
+	button.custom_minimum_size = Vector2(44, 44)
 	button.add_theme_font_size_override("font_size", 11)
 	if focus:
-		button.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
-		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("font_color", Kit.TEXT)
+		button.add_theme_color_override("icon_normal_color", Kit.TEXT)
 	button.pressed.connect(func() -> void: action_requested.emit(action))
 	parent.add_child(button)
 	_buttons[action] = button
@@ -73,7 +73,7 @@ func set_active(action: String, active: bool) -> void:
 	_active[action] = active
 	Kit.set_icon_active(button, active)
 	if active:
-		button.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("font_color", Kit.TEXT)
 	else:
 		button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 
