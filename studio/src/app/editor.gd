@@ -893,6 +893,8 @@ func _apply_shell() -> void:
 	_wide = not tabs_only
 	var was_short := _short
 	_short = size.y < SHORT_MAX_HEIGHT
+	_viewport_host.custom_minimum_size.y = 96.0 if _short else 120.0
+	_timeline.set_short_layout(_short)
 	# Rotation between portrait and landscape changes the default. A manual
 	# fold/open choice is respected until the next mode switch.
 	if _short != was_short and not _timeline_user_override:
@@ -1079,12 +1081,7 @@ func _sync_timeline_visibility() -> void:
 			extra = minf(extra, 40.0)
 		_timeline_panel.custom_minimum_size.y += extra
 
-func _on_timeline_mode_changed(mode: String) -> void:
-	# A graph that is folded away cannot be edited. Asking for graph mode while
-	# the sheet is closed reveals it; folding it again still returns the old
-	# transport-only height.
-	if mode == "graph" and not _timeline_visible:
-		_timeline_visible = true
+func _on_timeline_mode_changed(_mode: String) -> void:
 	_sync_timeline_visibility()
 
 func _toggle_drawer(tab: String) -> void:

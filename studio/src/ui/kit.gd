@@ -213,6 +213,12 @@ func _build_theme() -> void:
 	theme.set_color("font_accelerator_color", "PopupMenu", TEXT_DIM)
 	theme.set_font("font", "PopupMenu", font_regular)
 	theme.set_font_size("font_size", "PopupMenu", 12)
+	# Native menu rows still have to clear the 44 dp touch floor. Godot builds
+	# a row as max(font_height, icon_height) + v_separation; IBM Plex Sans at
+	# 12 sp is 17 px, so 28 gives a 45 dp row.
+	theme.set_constant("v_separation", "PopupMenu", 28)
+	theme.set_constant("item_start_padding", "PopupMenu", 12)
+	theme.set_constant("item_end_padding", "PopupMenu", 12)
 
 	# Tooltip.
 	theme.set_stylebox("panel", "TooltipPanel", flat_style(SURFACE_2, 0, BORDER))

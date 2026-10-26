@@ -642,6 +642,17 @@ func _ready() -> void:
 	editor._timeline_visible = false
 	editor._sync_timeline_visibility()
 
+	print("SMOKE STEP: graph fold contract")
+	editor._timeline.set_mode("graph")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not editor._timeline_visible, "graph mode does not reopen a folded sheet")
+	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "folded graph keeps the transport-only height")
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	editor._timeline.set_mode("dope")
+	await get_tree().process_frame
+
 	print("SMOKE STEP: collapsible panels")
 	editor.size = Vector2(412.0, 915.0)
 	editor.set_workspace_mode("studio")
@@ -669,6 +680,8 @@ func _ready() -> void:
 	var timeline = editor._timeline
 	_check(timeline != null, "timeline exists")
 	if timeline != null:
+		editor._timeline_visible = true
+		editor._sync_timeline_visibility()
 		doc.set_selection(key_id)
 		var graph_keys: Array = doc.get_channel_keys(key_id, "position")
 		_check(graph_keys.size() >= 3, "graph fixture has at least three position keys")
@@ -689,6 +702,10 @@ func _ready() -> void:
 
 		timeline.set_mode("graph")
 		_check(timeline._mode == "graph", "graph mode activates")
+		_check(
+			Kit.font_regular.get_height(Kit.TYPE_BODY) + int(Kit.theme.get_constant("v_separation", "PopupMenu")) >= 44,
+			"easing menu rows meet the 44 dp touch floor"
+		)
 		var graph_speed: float = timeline._channel_speed(key_id, "position", 0.5)
 		_check(graph_speed > 0.01, "graph samples real channel speed")
 		var presets_raw = timeline.get("GRAPH_PRESETS")
@@ -713,9 +730,16 @@ func _ready() -> void:
 			if tabs.size() == 3:
 				_check((tabs[0]["rect"] as Rect2).size.y >= 44.0, "graph channel tabs keep 44 dp targets")
 
-		timeline.set_channel("rotation")
-		_check(timeline._selected_channel == "rotation", "graph switches channels directly")
-		timeline.set_channel("position")
+		_check(timeline.has_method("set_channel"), "graph switches channels directly")
+		if timeline.has_method("set_channel"):
+			timeline.select_segment_at_time(0.5)
+			_check(timeline._segments.size() > 0, "graph caches real segment hit rects")
+			timeline.set_channel("rotation")
+			_check(timeline._selected_channel == "rotation", "graph switches channels directly")
+			_check(timeline._segments.is_empty(), "channel switch clears stale segment hit rects")
+			timeline.set_channel("position")
+			await get_tree().process_frame
+			await get_tree().process_frame
 
 		_check(timeline.has_method("select_segment_at_time"), "graph supports segment selection")
 		if timeline.has_method("select_segment_at_time"):
@@ -740,12 +764,15 @@ func _ready() -> void:
 			doc.set_key_transition(key_id, "position", 0, 0.5)
 			timeline.select_segment_at_time(0.5)
 			_check(timeline.copy_ease(), "graph copies the selected easing")
+			_check(timeline._selected_index == 0 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "copy preserves the segment selection")
 			doc.set_key_transition(key_id, "position", 1, 1.0)
 			timeline.select_segment_at_time(1.5)
 			_check(timeline.paste_ease(), "graph pastes easing onto another segment")
 			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 1), 0.5), "paste writes the copied transition")
+			_check(timeline._selected_index == 1 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "paste preserves the segment selection")
 			_check(timeline.invert_ease(), "graph inverts the selected easing")
 			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 1), 2.0), "invert maps 0.5 to 2.0")
+			_check(timeline._selected_index == 1 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "invert preserves the segment selection")
 
 		if timeline.has_method("apply_ease_to_channel"):
 			timeline.select_segment_at_time(0.5)
@@ -755,7 +782,46 @@ func _ready() -> void:
 				if not is_equal_approx(doc.get_key_transition(key_id, "position", ki), 0.5):
 					applied = false
 			_check(applied, "apply-to-channel writes every segment")
+			_check(timeline._selected_index == 0 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "apply preserves the segment selection")
 			doc.set_channel_transition(key_id, "position", 1.0)
+
+		timeline.select_segment_at_time(0.5)
+		timeline._apply_ease_preset(4)
+		_check(timeline._selected_index == 0 and timeline._selected_data_id == key_id, "preset preserves the segment selection")
+		doc.set_channel_transition(key_id, "position", 1.0)
+
+		print("SMOKE STEP: short landscape graph")
+		editor.size = Vector2(915.0, 412.0)
+		editor.set_workspace_mode("studio")
+		editor._apply_shell()
+		editor._timeline_visible = true
+		editor._sync_timeline_visibility()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
+		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
+		_check(editor._timeline_panel.size.y <= 212.0, "915x412 graph sheet stays within the short budget")
+		_check(
+			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
+			"915x412 graph does not overflow the center column"
+		)
+		editor.size = Vector2(800.0, 360.0)
+		editor._apply_shell()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
+		_check(editor._timeline_panel.size.y <= 212.0, "800x360 graph sheet stays within the short budget")
+		_check(
+			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
+			"800x360 graph does not overflow the center column"
+		)
+		editor.size = Vector2(412.0, 915.0)
+		editor.set_workspace_mode("compact")
+		editor._apply_shell()
+		editor._timeline_visible = true
+		editor._sync_timeline_visibility()
+		await get_tree().process_frame
+		await get_tree().process_frame
 
 		timeline.set_mode("dope")
 		await get_tree().process_frame

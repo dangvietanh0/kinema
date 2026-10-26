@@ -75,6 +75,7 @@ var _ease_start_y := 0.0
 var _ease_start_value := 1.0
 var _sync_flags := false
 var _mode := "dope"
+var _short_layout := false
 var _graph_max_speed := 0.0001
 var _graph_baseline := 0.0
 var _graph_top := 0.0
@@ -445,12 +446,27 @@ func _refresh_compact() -> void:
 	if _sheet != null:
 		_sheet.queue_redraw()
 
+func set_short_layout(value: bool) -> void:
+	if _short_layout == value:
+		return
+	_short_layout = value
+	# The short graph budget is transport 52 + header 48 + sheet 112. The 1 dp
+	# separator would push that over 212, so it collapses on short screens.
+	if _sheet_rule != null:
+		_sheet_rule.custom_minimum_size.y = 0.0 if _short_layout else 1.0
+	_apply_sheet_height()
+
+func _apply_sheet_height() -> void:
+	if _sheet == null:
+		return
+	var graph_min := 112.0 if _short_layout else 160.0
+	_sheet.custom_minimum_size.y = graph_min if _mode == "graph" else 96.0
+
 func set_mode(mode: String) -> void:
 	var next := "graph" if mode == "graph" else "dope"
 	var changed := next != _mode
 	_mode = next
-	if _sheet != null:
-		_sheet.custom_minimum_size.y = 160.0 if _mode == "graph" else 96.0
+	_apply_sheet_height()
 	if _mode_button != null:
 		_sync_flags = true
 		_mode_button.set_pressed_no_signal(_mode == "graph")
@@ -930,6 +946,13 @@ func set_channel(channel: String) -> void:
 	_selected_channel = channel
 	_selected_index = -1
 	_selected_data_id = ""
+	# The hit rects describe the previous channel until the next draw. A tap
+	# between the switch and that draw must not select a stale segment or key.
+	_segments.clear()
+	_ease_hits.clear()
+	_channel_hits.clear()
+	_key_hits.clear()
+	_graph_max_speed = 0.0
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
@@ -1041,17 +1064,6 @@ func _channel_speed(id: String, channel: String, time: float) -> float:
 	var va := a as Vector3
 	var vb := b as Vector3
 	return (vb - va).length() / span
-
-func _ease_at(pos: Vector2) -> int:
-	var best := -1
-	var best_dist := 15.0
-	for i in range(_ease_hits.size()):
-		var hit: Dictionary = _ease_hits[i]
-		var d: float = (hit["pos"] as Vector2).distance_to(pos)
-		if d < best_dist:
-			best_dist = d
-			best = i
-	return best
 
 func _open_ease_menu(anchor: Button = null) -> void:
 	if doc == null:
