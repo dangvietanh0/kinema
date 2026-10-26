@@ -74,6 +74,11 @@ var _graph_top := 0.0
 var _sheet_rule: ColorRect
 var _sheet_open := true
 var _chrome_mode := "studio"
+## Width the editor has actually reserved for the sheet, before the transport's
+## own minimum size is applied. A container reports its forced size, so using
+## that to decide the overflow layout made the transport's minimum width widen
+## the center column and hide its own narrow state.
+var _available_width := -1.0
 var _transport_buttons: Array[Button] = []
 
 var _label_width := 104.0
@@ -347,6 +352,13 @@ func sheet_visible() -> bool:
 	return _sheet_open
 
 
+## The editor reserves width for the center column; the sheet must not infer
+## its own available width from a size that its own minimum has already forced.
+func set_available_width(value: float) -> void:
+	_available_width = value
+	_refresh_compact()
+
+
 ## Touch mode grows every transport control to a 44 dp target. The same target
 ## is kept in Studio and Desktop: a phone can host any of the three modes and a
 ## transport is the most-used control in the app.
@@ -377,8 +389,12 @@ func _refresh_compact() -> void:
 	# phone. The same overflow header keeps graph, loop, snap, delete and fold
 	# reachable instead of silently dropping them from the transport. The
 	# threshold is measured against the transport's real 44 dp controls, not
-	# the old 28 dp icons.
-	var narrow := size.x < 640.0
+	# the old 28 dp icons. Prefer the width the editor reserved: this Control's
+	# own size may already be widened by the transport minimum.
+	var measured := size.x
+	if _available_width > 0.0:
+		measured = minf(measured, _available_width)
+	var narrow := measured < 640.0
 	var narrow_chrome := touch or narrow
 	var show_header := _sheet_open and narrow_chrome
 	_start_button.visible = not narrow_chrome

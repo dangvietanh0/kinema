@@ -31,6 +31,7 @@ const ACTION_RENDER_STILL := "render_still"
 const ACTION_RENDER_SEQUENCE := "render_sequence"
 const ACTION_RESET_LAYOUT := "reset_layout"
 const ACTION_TIMELINE := "timeline"
+const ACTION_PANELS := "panels"
 const ACTION_ABOUT := "about"
 const ACTION_SHORTCUTS := "shortcuts"
 
@@ -101,6 +102,7 @@ var _back_button: Button
 var _menu_button: Button
 var _settings_button: Button
 var _render_button: Button
+var _panels_button: Button
 var _fit_label: Label
 var _menu_bar: HBoxContainer
 var _overflow: PopupMenu
@@ -234,6 +236,15 @@ func _build() -> void:
 	_settings_button.pressed.connect(func() -> void: action_requested.emit(ACTION_SETTINGS))
 	_row.add_child(_settings_button)
 
+	# Studio on a narrow portrait screen cannot afford a 280 dp dock beside the
+	# viewport. The dock becomes an overlay drawer there and this button is the
+	# explicit way to open it. It stays hidden on wide Studio and in Compact,
+	# where the bottom bar already owns Scene and Properties.
+	_panels_button = Kit.icon_button("panel-right", "Show scene and properties")
+	_panels_button.pressed.connect(func() -> void: action_requested.emit(ACTION_PANELS))
+	_panels_button.visible = false
+	_row.add_child(_panels_button)
+
 	_menu_button = Kit.icon_button("ellipsis-vertical", "More actions")
 	_menu_button.pressed.connect(_open_overflow)
 	_row.add_child(_menu_button)
@@ -265,6 +276,23 @@ func set_fit(percent: float, small: bool) -> void:
 		return
 	_fit_label.text = "Fit %d%%" % int(round(percent))
 	_fit_label.add_theme_color_override("font_color", Kit.TEXT if small else Kit.TEXT_DIM)
+
+
+## The editor owns the dock policy, so it decides when the toggle is relevant.
+func set_panels_button_visible(on: bool) -> void:
+	if _panels_button != null:
+		_panels_button.visible = on and _mode == "studio"
+
+
+func set_panels_open(open: bool) -> void:
+	if _panels_button == null:
+		return
+	_panels_button.tooltip_text = "Hide scene and properties" if open else "Show scene and properties"
+	_panels_button.add_theme_color_override(
+		"icon_normal_color", Kit.FOCUS_BRIGHT if open else Kit.TEXT_MUTED
+	)
+	_panels_button.add_theme_color_override("icon_hover_color", Kit.TEXT)
+	_panels_button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
 
 
 func set_history(can_undo: bool, can_redo: bool) -> void:
@@ -318,10 +346,12 @@ func _apply_mode() -> void:
 	_settings_button.visible = _mode != "compact"
 	if _render_button != null:
 		_render_button.visible = _mode != "compact"
+	# Visibility is editor-driven: only a narrow Studio needs the dock toggle.
+	_panels_button.visible = false
 	# Desktop is a mouse surface: the 36 dp bar may use 36 dp targets there.
 	# Every touch arrangement keeps 44 dp, which is why the list below is
 	# resized by mode rather than fixed at construction time.
-	for button in [_back_button, _undo_button, _redo_button, _render_button, _settings_button, _menu_button]:
+	for button in [_back_button, _undo_button, _redo_button, _render_button, _settings_button, _panels_button, _menu_button]:
 		if button == null:
 			continue
 		if desktop:

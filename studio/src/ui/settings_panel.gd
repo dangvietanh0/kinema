@@ -39,6 +39,7 @@ const APP_VERSION := "0.1.0"
 var editor: Node = null
 var active := "general"
 var _wide := false
+var _short := false
 var _compact_detail := false
 var _nav_buttons: Dictionary = {}
 var _ui_scale_control: OptionButton
@@ -51,6 +52,10 @@ var _renderer_restart: Button
 func setup(editor_ref: Node) -> void:
 	editor = editor_ref
 	_wide = editor != null and editor.size.x >= 700.0
+	# A short landscape window cannot show eight 44 dp navigation rows beside
+	# the page without scrolling the navigation itself. Use a two-column grid
+	# there so every category stays on screen and keeps its touch target.
+	_short = editor != null and editor.size.y < 560.0
 
 
 func categories() -> Array[String]:
@@ -137,12 +142,18 @@ func _build_wide() -> void:
 	add_child(root)
 
 	var nav := VBoxContainer.new()
-	nav.custom_minimum_size.x = 200.0
+	nav.custom_minimum_size.x = 240.0 if _short else 200.0
 	nav.add_theme_constant_override("separation", 2)
 	root.add_child(nav)
 	nav.add_child(Kit.section_label("Settings"))
+	var nav_list: Container = GridContainer.new() if _short else VBoxContainer.new()
+	if nav_list is GridContainer:
+		(nav_list as GridContainer).columns = 2
+	nav_list.add_theme_constant_override("h_separation", 2)
+	nav_list.add_theme_constant_override("v_separation", 2)
+	nav.add_child(nav_list)
 	for category in CATEGORIES:
-		nav.add_child(_nav_button(category))
+		nav_list.add_child(_nav_button(category))
 	nav.add_child(Kit.gap(0, 8))
 	var close_hint := Kit.label("Changes are stored on this device.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	close_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -421,8 +432,8 @@ func _nearest_scale(value: float) -> float:
 
 
 func _resolved_mode() -> String:
-	if editor != null and editor.has_method("workbench_mode"):
-		return str(editor.call("workbench_mode")).capitalize()
+	if editor != null and editor.has_method("workspace_mode"):
+		return str(editor.call("workspace_mode")).capitalize()
 	return "Studio"
 
 

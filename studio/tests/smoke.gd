@@ -503,6 +503,10 @@ func _ready() -> void:
 	editor.get_viewport().push_input(outside_drawer)
 	await get_tree().process_frame
 	_check(not editor._drawer_open, "a tap outside the drawer closes it")
+	# The window is still a portrait phone here, where Studio now uses an
+	# overlay dock. Prove the side-by-side dock on a wide workbench.
+	editor.size = Vector2(1280.0, 800.0)
+	editor._apply_shell()
 	editor.set_workspace_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -550,12 +554,14 @@ func _ready() -> void:
 	editor.size = Vector2(915.0, 412.0)
 	editor.set_workspace_mode("studio")
 	editor._apply_shell()
+	await get_tree().process_frame
+	await get_tree().process_frame
 	_check(editor._short, "915x412 resolves as a short landscape shell")
 	_check(not editor._timeline_visible, "short landscape starts with the dope sheet folded")
 	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "folded landscape timeline keeps a 56 dp transport")
 	_check(editor._dock_slot.custom_minimum_size.x >= 240.0 and editor._dock_slot.custom_minimum_size.x <= 300.0, "landscape dock leaves the viewport in charge")
 	editor._timeline.set_sheet_visible(true)
-	editor._timeline.size = Vector2(591.0, 156.0)
+	await get_tree().process_frame
 	editor._timeline._refresh_compact()
 	_check(editor._timeline._compact_header.visible, "a narrow landscape sheet exposes graph, loop, snap, delete and fold")
 	_check(editor._timeline.get_combined_minimum_size().x <= 591.0, "the landscape transport fits the center column")
@@ -565,7 +571,30 @@ func _ready() -> void:
 	editor._apply_shell()
 	_check(not editor._short, "412x915 resolves as a tall studio shell")
 	_check(editor._timeline_visible, "tall studio opens the dope sheet by default")
+
+	print("SMOKE STEP: narrow studio drawer")
+	editor._apply_shell()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not editor._dock_slot.visible, "narrow studio gives the viewport the full width")
+	_check(not editor._dock.visible, "narrow studio dock starts closed")
+	_check(editor._top_bar._panels_button.visible, "narrow studio exposes a panel toggle")
+	_check(editor._view.size.x >= 340.0, "narrow studio viewport keeps a usable width")
+	var view_rect: Rect2 = editor._view.get_global_rect()
+	var hud_rect: Rect2 = editor._view._quick_render_button.get_global_rect()
+	_check(view_rect.encloses(hud_rect), "narrow studio HUD stays inside the viewport")
+	editor._toggle_drawer("scene")
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._drawer_open and editor._dock.visible, "narrow studio drawer opens")
+	_check(editor._drawer_scrim.visible, "narrow studio drawer has a scrim")
+	_check(editor._dock_close_button.visible, "narrow studio drawer can be dismissed")
+	editor._close_drawer()
+	await get_tree().process_frame
+	_check(not editor._dock.visible and not editor._dock_slot.visible, "closing the drawer returns the full width")
 	editor.set_workspace_mode("compact")
+	await get_tree().process_frame
+	_check(not editor._top_bar._panels_button.visible, "compact uses the bottom bar for panels")
 	await get_tree().process_frame
 
 	print("SMOKE STEP: timeline fold control")
@@ -702,6 +731,7 @@ func _ready() -> void:
 	editor._open_settings("display")
 	await get_tree().process_frame
 	await get_tree().process_frame
+	_check(editor._settings_panel._resolved_mode() == "Compact", "settings reports the resolved workspace")
 	editor.apply_fit_info(43.0, false, false)
 	await get_tree().process_frame
 	_check(editor._settings_panel._ui_scale_control.disabled, "UI scale is disabled when Desktop fit is active")
@@ -717,6 +747,10 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor._workspace_sheet != null, "workspace sheet opens")
+	_check(editor._workspace_sheet._mode_buttons["compact"].button_pressed, "workspace shows the saved arrangement preference")
+	_check(editor._workspace_sheet._resolved_mode() == "compact", "workspace reports the resolved mode")
+	_check(editor._workspace_sheet._orientation_stacked, "workspace stacks orientation on a narrow sheet")
+	_check(editor._workspace_sheet._orientation_track != null, "workspace exposes a real orientation control")
 	editor.apply_fit_info(43.0, false, false)
 	await get_tree().process_frame
 	_check(editor._workspace_sheet._scale_control.disabled, "workspace UI scale locks when fit is active")
@@ -725,6 +759,20 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(not editor._workspace_sheet._scale_control.disabled, "workspace UI scale unlocks at 100 percent")
 	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	editor.size = Vector2(1440.0, 900.0)
+	editor._apply_shell()
+	editor._open_workspace_sheet()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not editor._workspace_sheet._orientation_stacked, "wide workspace keeps orientation inline")
+	_check(editor._workspace_sheet._orientation_track.custom_minimum_size.x >= 280.0, "wide orientation strip keeps a real target width")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+	editor.size = Vector2(412.0, 915.0)
+	editor.set_workspace_mode("compact")
+	await get_tree().process_frame
 	await get_tree().process_frame
 
 	print("SMOKE STEP: renderer and draft quality")

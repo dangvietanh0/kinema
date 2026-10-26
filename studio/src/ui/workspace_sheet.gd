@@ -30,6 +30,11 @@ var _fit_label: Label
 var _warning: Label
 var _studio_shortcut: Button
 var _mode_buttons: Dictionary = {}
+var _orientation_track: PanelContainer
+## A narrow sheet stacks the orientation label above a full-width segmented
+## control. Side by side, three options plus a label were crushed into a strip
+## of loose words on a phone and looked cramped even on a 560 dp sheet.
+var _orientation_stacked := false
 
 
 func setup(editor_ref: Node) -> void:
@@ -72,8 +77,8 @@ func refresh_fit(percent: float, enabled: bool, is_clamped: bool) -> void:
 
 
 func _resolved_mode() -> String:
-	if editor != null and editor.has_method("workbench_mode"):
-		return str(editor.call("workbench_mode"))
+	if editor != null and editor.has_method("workspace_mode"):
+		return str(editor.call("workspace_mode"))
 	return resolved_mode
 
 
@@ -86,6 +91,8 @@ func _rebuild() -> void:
 	_fit_label = null
 	_warning = null
 	_studio_shortcut = null
+	_orientation_track = null
+	_orientation_stacked = editor == null or editor.size.x < 700.0
 	add_theme_constant_override("separation", 12)
 
 	add_child(Kit.section_label("Arrangement"))
@@ -155,13 +162,8 @@ func _rebuild() -> void:
 	add_child(Kit.vsep())
 	add_child(Kit.section_label("Orientation"))
 	var orientation_supported := DisplayServer.has_feature(DisplayServer.FEATURE_ORIENTATION)
-	var orientation_row := HBoxContainer.new()
-	orientation_row.add_theme_constant_override("separation", 8)
-	add_child(orientation_row)
 	var orientation_labels := VBoxContainer.new()
-	orientation_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	orientation_labels.add_theme_constant_override("separation", 1)
-	orientation_row.add_child(orientation_labels)
 	orientation_labels.add_child(Kit.label("Screen orientation", Kit.TYPE_BODY, Kit.TEXT))
 	var orientation_hint := Kit.label(
 		"" if orientation_supported else "Not supported on this platform",
@@ -170,12 +172,27 @@ func _rebuild() -> void:
 	)
 	orientation_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	orientation_labels.add_child(orientation_hint)
+
 	var orientation_track := PanelContainer.new()
+	_orientation_track = orientation_track
 	orientation_track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
-	orientation_row.add_child(orientation_track)
 	var orientation_strip := HBoxContainer.new()
 	orientation_strip.add_theme_constant_override("separation", 2)
 	orientation_track.add_child(orientation_strip)
+
+	if _orientation_stacked:
+		add_child(orientation_labels)
+		add_child(Kit.gap(0, 4))
+		add_child(orientation_track)
+	else:
+		var orientation_row := HBoxContainer.new()
+		orientation_row.add_theme_constant_override("separation", 8)
+		add_child(orientation_row)
+		orientation_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		orientation_row.add_child(orientation_labels)
+		orientation_track.custom_minimum_size.x = 280.0
+		orientation_row.add_child(orientation_track)
+
 	var orientation_group := ButtonGroup.new()
 	orientation_group.allow_unpress = false
 	var orientation_current := str(Prefs.get_value("display.orientation", "auto"))
@@ -189,6 +206,8 @@ func _rebuild() -> void:
 		var button := Kit.text_toggle(str(data.get("label", value)), "", true)
 		_style_segment(button)
 		button.button_group = orientation_group
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.custom_minimum_size.y = 44.0
 		button.button_pressed = value == orientation_current
 		button.disabled = not orientation_supported
 		button.toggled.connect(func(on: bool) -> void:

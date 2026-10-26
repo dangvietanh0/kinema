@@ -884,8 +884,12 @@ func _apply_shell() -> void:
 	if _render_mode:
 		return
 	var compact := workbench_mode == "compact"
-	var tabs_only := compact or size.y < SHORT_MAX_HEIGHT
-	_wide = not compact
+	# Studio is landscape-first. On a narrow portrait screen a side dock would
+	# leave a 150 dp viewport, so the same dock becomes an overlay drawer while
+	# the arrangement still reports Studio. The mode never falls back.
+	var dock_overlay := _dock_overlay_mode()
+	var tabs_only := dock_overlay or size.y < SHORT_MAX_HEIGHT
+	_wide = not tabs_only
 	var was_short := _short
 	_short = size.y < SHORT_MAX_HEIGHT
 	# Rotation between portrait and landscape changes the default. A manual
@@ -908,7 +912,7 @@ func _apply_shell() -> void:
 		_rail.reparent(want_parent, false)
 		want_parent.move_child(_rail, 0)
 
-	if compact:
+	if dock_overlay:
 		_dock.visible = _drawer_open
 		_drawer_scrim.visible = _drawer_open
 	else:
@@ -917,9 +921,12 @@ func _apply_shell() -> void:
 		_drawer_scrim.visible = false
 		_dock.modulate.a = 1.0
 	_dock_close_row.visible = tabs_only
-	# Studio on a short landscape screen keeps the dock open, so a close button
-	# there would be inert. Only the compact drawer can be dismissed.
-	_dock_close_button.visible = compact
+	# A wide Studio keeps the dock open, so a close button there would be
+	# inert. Every drawer arrangement can dismiss its dock.
+	_dock_close_button.visible = dock_overlay
+	if _top_bar != null:
+		_top_bar.set_panels_button_visible(dock_overlay and not compact)
+		_top_bar.set_panels_open(_drawer_open)
 	_outliner_panel.visible = not tabs_only or _compact_tab == "scene"
 	_inspector_panel.visible = not tabs_only or _compact_tab == "inspector"
 	var outliner_collapsed: bool = _outliner != null and _outliner.collapsed
@@ -954,15 +961,23 @@ func _apply_shell() -> void:
 		_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	var dock_width := 0.0
-	if compact:
+	if dock_overlay:
 		dock_width = clampf(size.x * 0.92, 280.0, 420.0)
 	else:
 		var ratio := 0.26 if workbench_mode == "desktop" else 0.28
 		var min_width := 320.0 if workbench_mode == "desktop" else 280.0
 		var max_width := 380.0 if workbench_mode == "desktop" else 340.0
 		dock_width = clampf(size.x * ratio, min_width, max_width)
-	_dock_slot.visible = not compact
-	_dock_slot.custom_minimum_size.x = dock_width if not compact else 0.0
+	_dock_slot.visible = not dock_overlay
+	_dock_slot.custom_minimum_size.x = dock_width if not dock_overlay else 0.0
+	# The timeline decides between its full transport and the overflow header.
+	# Give it the width the shell can actually reserve, not the width its own
+	# minimum would force on the center column.
+	var rail_reserve := 0.0
+	if not compact:
+		rail_reserve = float(_rail.call("rail_width"))
+	var dock_reserve := dock_width if not dock_overlay else 0.0
+	_timeline.set_available_width(size.x - rail_reserve - dock_reserve)
 	var bottom_inset := 0.0
 	if _status_bar.visible:
 		bottom_inset += _status_bar.custom_minimum_size.y
@@ -1059,7 +1074,7 @@ func _sync_timeline_visibility() -> void:
 				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
 
 func _toggle_drawer(tab: String) -> void:
-	if not _compact_shell():
+	if not _dock_overlay_mode():
 		return
 	if _drawer_open and _compact_tab == tab:
 		_close_drawer()
@@ -1068,7 +1083,7 @@ func _toggle_drawer(tab: String) -> void:
 	_open_drawer()
 
 func _open_drawer() -> void:
-	if not _compact_shell():
+	if not _dock_overlay_mode():
 		return
 	_drawer_open = true
 	_overlay.clear_toast()
@@ -1084,7 +1099,7 @@ func _open_drawer() -> void:
 	_update_bottom_bar()
 
 func _close_drawer() -> void:
-	if not _compact_shell():
+	if not _dock_overlay_mode():
 		return
 	_drawer_open = false
 	_drawer_scrim.visible = false
@@ -1092,13 +1107,20 @@ func _close_drawer() -> void:
 	_dock.modulate.a = 1.0
 	_update_bottom_bar()
 
+func _dock_overlay_mode() -> bool:
+	# Compact is always a drawer. Studio keeps its dock only when there is
+	# enough width for a real viewport beside it; portrait phones get the same
+	# overlay while staying in Studio. Desktop always shrinks to fit, so its
+	# logical canvas is never this narrow.
+	return workbench_mode == "compact" or (workbench_mode == "studio" and size.x < WIDE_MIN_WIDTH)
+
 func _compact_shell() -> bool:
 	return workbench_mode == "compact"
 
 
 func _set_compact_tab(tab: String) -> void:
 	_compact_tab = tab if tab in ["scene", "inspector"] else "scene"
-	if (_compact_shell() or _short) and _dock != null:
+	if (_dock_overlay_mode() or _short) and _dock != null:
 		_outliner_panel.visible = _compact_tab == "scene"
 		_inspector_panel.visible = _compact_tab == "inspector"
 	_update_drawer_tabs()
@@ -1107,8 +1129,11 @@ func _set_compact_tab(tab: String) -> void:
 func _update_drawer_tabs() -> void:
 	if _drawer_scene_tab == null:
 		return
-	_drawer_scene_tab.set_pressed_no_signal(not _wide and _compact_tab == "scene")
-	_drawer_props_tab.set_pressed_no_signal(not _wide and _compact_tab == "inspector")
+	var tabbed := _dock_overlay_mode() or _short
+	_drawer_scene_tab.set_pressed_no_signal(tabbed and _compact_tab == "scene")
+	_drawer_props_tab.set_pressed_no_signal(tabbed and _compact_tab == "inspector")
+	if _top_bar != null:
+		_top_bar.set_panels_open(_drawer_open)
 
 func _update_bottom_bar() -> void:
 	if _bottom_bar == null:
@@ -1148,6 +1173,8 @@ func _on_chrome_action(action: String) -> void:
 			_open_render_sheet()
 		TopBarScript.ACTION_SETTINGS:
 			_open_settings()
+		TopBarScript.ACTION_PANELS:
+			_toggle_drawer(_compact_tab)
 		TopBarScript.ACTION_TIMELINE:
 			_toggle_timeline()
 		TopBarScript.ACTION_PERFORMANCE:
@@ -2185,7 +2212,7 @@ func _open_workspace_sheet() -> void:
 	)
 	_workspace_sheet = sheet
 	sheet.open(
-		workbench_mode,
+		str(Prefs.get_value("display.layout", "auto")),
 		_fit_percent,
 		_fit_user_scale_enabled,
 		_fit_clamped
