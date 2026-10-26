@@ -18,6 +18,7 @@ var _preview_label: Label
 var _renderer_label: Label
 var _context_label: Label
 var _samples: Array = []
+var _frame_graph := false
 
 
 func _ready() -> void:
@@ -80,6 +81,7 @@ func _build() -> void:
 	_graph.custom_minimum_size.y = 30.0
 	_graph.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_graph.draw.connect(_draw_graph)
+	_graph.visible = _frame_graph
 	column.add_child(_graph)
 
 	_draw_label = Kit.mono_label("— draw · — prim", 11, Kit.TEXT_MUTED)
@@ -90,6 +92,13 @@ func _build() -> void:
 	column.add_child(_renderer_label)
 	_context_label = Kit.mono_label("—", 11, Kit.TEXT_DIM)
 	column.add_child(_context_label)
+
+
+func set_frame_graph(enabled: bool) -> void:
+	_frame_graph = enabled
+	if _graph != null:
+		_graph.visible = enabled
+		_graph.queue_redraw()
 
 
 func open() -> void:

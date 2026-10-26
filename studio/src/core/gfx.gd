@@ -76,7 +76,15 @@ var max_fps := 60
 var draft_editing := true
 ## Last renderer the user asked for. Godot chooses the renderer when the
 ## process starts, so this is a request for the next launch, not a live switch.
+var renderer_preference := ""
+## A requested renderer that has not been confirmed by the running engine yet.
+var renderer_pending := ""
+var renderer_attempt_at := 0.0
+var renderer_attempts := 0
+var last_renderer_error := ""
+## Legacy mirror for callers written before the preference split.
 var renderer_choice := ""
+var _restart_request := PackedStringArray()
 
 const MSAA_MODES := [
 	Viewport.MSAA_DISABLED,
@@ -94,6 +102,9 @@ const TONEMAPS := [
 
 func _ready() -> void:
 	load_preferences()
+	if renderer_preference == "":
+		renderer_preference = renderer_default_for_platform(OS.get_name())
+	renderer_choice = renderer_preference
 	apply_globals()
 
 # -------------------------------------------------------------------------
@@ -118,6 +129,131 @@ func is_forward() -> bool:
 
 func supports_environment_extras() -> bool:
 	return is_forward()
+
+# -------------------------------------------------------------------------
+# Renderer selection
+# -------------------------------------------------------------------------
+## Godot selects a rendering method at process start. These helpers keep the
+## request, the pending state and the running backend honest; nothing here
+## pretends a live renderer switch is possible.
+
+func actual_method() -> String:
+	return renderer_name()
+
+func renderer_default_for_platform(platform: String) -> String:
+	return "mobile" if platform == "Android" or platform == "iOS" else "forward_plus"
+
+func build_restart_args(preference: String) -> PackedStringArray:
+	if preference == "auto" or preference == "" or preference not in RENDERERS:
+		return PackedStringArray()
+	var driver := "opengl3" if preference == "gl_compatibility" else "vulkan"
+	return PackedStringArray(["--rendering-method", preference, "--rendering-driver", driver])
+
+## Pure capability matrix. A method only claims a feature the engine can
+## actually provide with that backend.
+func capabilities_for(method: String) -> Dictionary:
+	var forward := method == "forward_plus"
+	var compatibility := method == "gl_compatibility"
+	return {
+		"ssao": not compatibility,
+		"ssao_quality": not compatibility,
+		"ssil": forward,
+		"ssr": forward,
+		"taa": forward,
+		"volumetric_fog": forward,
+		"glow": true,
+	}
+
+func prepare_renderer_switch(preference: String) -> Dictionary:
+	var target := preference if preference in RENDERERS else renderer_default_for_platform(OS.get_name())
+	renderer_preference = target
+	renderer_choice = target
+	renderer_pending = ""
+	renderer_attempts = 0
+	renderer_attempt_at = 0.0
+	if target == actual_method():
+		_restart_request = PackedStringArray()
+		save_preferences()
+		return {
+			"restart_required": false,
+			"preference": target,
+			"args": PackedStringArray(),
+			"actual": actual_method(),
+		}
+	renderer_pending = target
+	renderer_attempt_at = Time.get_unix_time_from_system()
+	var args := build_restart_args(target)
+	_restart_request = args
+	save_preferences()
+	return {
+		"restart_required": true,
+		"preference": target,
+		"args": args,
+		"actual": actual_method(),
+	}
+
+## Pure startup resolution. A request is retried at most twice; after that the
+## platform default wins and the UI reports why. `attempts` is the number of
+## restarts already issued for this pending request.
+func resolve_startup_renderer(preference: String, pending: String, actual: String,
+		attempts: int, platform: String) -> Dictionary:
+	if pending == "":
+		return {"action": "none", "preference": preference, "pending": "", "args": PackedStringArray()}
+	if pending == actual:
+		return {"action": "none", "preference": pending, "pending": "", "args": PackedStringArray()}
+	if attempts < 2:
+		return {
+			"action": "restart",
+			"preference": pending,
+			"pending": pending,
+			"args": build_restart_args(pending),
+		}
+	var fallback := renderer_default_for_platform(platform)
+	return {
+		"action": "fallback",
+		"preference": fallback,
+		"pending": "",
+		"args": build_restart_args(fallback) if fallback != actual else PackedStringArray(),
+	}
+
+func ensure_renderer() -> Dictionary:
+	if renderer_pending == "":
+		return {"action": "none", "preference": renderer_preference, "pending": "", "args": PackedStringArray()}
+	var now := Time.get_unix_time_from_system()
+	# A stale pending request is not retried forever. If the first attempt is
+	# older than the verification window, treat it as failed.
+	if renderer_attempt_at > 0.0 and now - renderer_attempt_at > 60.0:
+		renderer_attempts = 2
+	var result := resolve_startup_renderer(
+		renderer_preference, renderer_pending, actual_method(), renderer_attempts, OS.get_name()
+	)
+	match str(result.get("action", "none")):
+		"none":
+			renderer_pending = ""
+			renderer_attempts = 0
+			renderer_attempt_at = 0.0
+			_restart_request = PackedStringArray()
+			last_renderer_error = ""
+		"restart":
+			renderer_attempts += 1
+			renderer_attempt_at = now
+			_restart_request = result.get("args", PackedStringArray())
+			last_renderer_error = ""
+		"fallback":
+			renderer_preference = str(result.get("preference", renderer_default_for_platform(OS.get_name())))
+			renderer_choice = renderer_preference
+			renderer_pending = ""
+			renderer_attempts = 0
+			renderer_attempt_at = 0.0
+			_restart_request = PackedStringArray()
+			last_renderer_error = "The selected renderer was not accepted after two restarts. The platform default is active."
+	save_preferences()
+	return result
+
+func consume_restart_request() -> PackedStringArray:
+	var args := _restart_request
+	_restart_request = PackedStringArray()
+	return args
 
 # -------------------------------------------------------------------------
 # Apply
@@ -208,7 +344,11 @@ func to_dict() -> Dictionary:
 		"scale_3d": scale_3d,
 		"max_fps": max_fps,
 		"draft_editing": draft_editing,
-		"renderer_choice": renderer_choice,
+		"renderer_preference": renderer_preference,
+		"renderer_pending": renderer_pending,
+		"renderer_attempt_at": renderer_attempt_at,
+		"renderer_attempts": renderer_attempts,
+		"renderer_choice": renderer_preference,
 	}
 
 func load_preferences() -> void:
@@ -226,6 +366,11 @@ func load_preferences() -> void:
 		if raw.has(key):
 			set(key, raw[key])
 	preset = str(raw.get("preset", preset))
+	if raw.has("renderer_preference"):
+		renderer_preference = str(raw["renderer_preference"])
+	elif raw.has("renderer_choice"):
+		renderer_preference = str(raw["renderer_choice"])
+	renderer_choice = renderer_preference
 
 func save_preferences() -> void:
 	var file := FileAccess.open(PATH, FileAccess.WRITE)
@@ -263,8 +408,12 @@ func renderer_label(value: String) -> String:
 func set_renderer_choice(value: String) -> void:
 	if value not in RENDERERS:
 		return
+	renderer_preference = value
 	renderer_choice = value
 	save_preferences()
+
+func set_renderer_preference(value: String) -> void:
+	set_renderer_choice(value)
 
 func default_environment(env: Environment) -> void:
 	## The studio look: a neutral sky for ambient and reflections, contact

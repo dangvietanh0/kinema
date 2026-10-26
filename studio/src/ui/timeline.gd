@@ -44,6 +44,7 @@ var _start_button: Button
 var _end_button: Button
 var _mode_button: Button
 var _ease_button: Button
+var _fold_button: Button
 
 var _transport_panel: PanelContainer
 var _transport_style: StyleBoxFlat
@@ -113,7 +114,6 @@ func _build_transport() -> void:
 	_transport_panel = panel
 	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
 	style.border_width_top = 1
-	style.border_width_bottom = 1
 	style.content_margin_left = 6
 	style.content_margin_right = 6
 	style.content_margin_top = 4
@@ -221,6 +221,14 @@ func _build_transport() -> void:
 	_ease_button.pressed.connect(_open_ease_menu)
 	row.add_child(_ease_button)
 
+	# The sheet can fold without leaving the workbench: the transport stays,
+	# and this control flips between fold and open. Compact uses the bottom
+	# action bar as its explicit toggle instead.
+	_fold_button = Kit.icon_button("chevron-down", "Fold the timeline", 44, 18)
+	_fold_button.pressed.connect(func() -> void: close_requested.emit())
+	row.add_child(_fold_button)
+	_transport_buttons.append(_fold_button)
+
 
 ## The phone sheet header. Compact transport carries only the actions a thumb
 ## needs while scrubbing; graph, loop, snap, delete and fold live here, where
@@ -231,7 +239,6 @@ func _build_compact_header() -> void:
 	_compact_header.custom_minimum_size.y = 48
 	_compact_header.visible = false
 	var style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_bottom = 1
 	style.content_margin_left = 6
 	style.content_margin_right = 6
 	style.content_margin_top = 2
@@ -330,6 +337,9 @@ func set_sheet_visible(open: bool) -> void:
 	_sheet_rule.visible = open
 	if _sheet != null:
 		_sheet.visible = open
+	if _fold_button != null:
+		Kit.set_icon(_fold_button, "chevron-down" if open else "chevron-up")
+		_fold_button.tooltip_text = "Fold the timeline" if open else "Open the timeline"
 	_refresh_compact()
 
 
@@ -377,6 +387,8 @@ func _refresh_compact() -> void:
 	_mode_button.visible = not narrow_chrome
 	_loop_button.visible = not narrow_chrome
 	_delete_button.visible = not narrow_chrome
+	if _fold_button != null:
+		_fold_button.visible = not touch
 	_frame_label.visible = not narrow_chrome and size.x >= 420.0
 	_time_box.custom_minimum_size.x = 58 if touch else 76
 	_transport_style.content_margin_left = 4 if touch else 6

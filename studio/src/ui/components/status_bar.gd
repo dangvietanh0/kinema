@@ -74,7 +74,10 @@ func _build() -> void:
 	_saved_label = Kit.mono_label("—", 10, Kit.TEXT_DIM)
 	_right.add_child(_saved_label)
 	_right.add_child(_dot())
-	_fit_label = Kit.mono_label("—", 10, Kit.TEXT_DIM)
+	_fit_label = Kit.mono_label("fit —", 11, Kit.TEXT_DIM)
+	_fit_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	_fit_label.tooltip_text = "Interface fit · choose a workspace"
+	Kit.bind_tap(_fit_label, func() -> void: action_requested.emit("workspace"))
 	_right.add_child(_fit_label)
 
 

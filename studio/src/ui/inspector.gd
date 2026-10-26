@@ -7,6 +7,7 @@ extends VBoxContainer
 
 signal add_requested
 signal color_requested(property: String)
+signal collapse_toggled(collapsed: bool)
 
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
@@ -19,6 +20,9 @@ var _scroll: ScrollContainer
 var _content: VBoxContainer
 var _badge: Label
 var _name_edit: LineEdit
+var _header_margin: MarginContainer
+var _rule: ColorRect
+var _collapse_button: Button
 var _built_for := ""
 var _updating := false
 var _fields: Dictionary = {"position": [], "rotation": [], "scale": []}
@@ -28,6 +32,8 @@ var _color_button: Button
 var _key_buttons: Dictionary = {}
 var _swatch_value := Color(0.6, 0.6, 0.6)
 var _field_drag := false
+## The header stays; the fields fold away so the scene list can use the dock.
+var collapsed := false
 ## Section build counter for diagnostics and the smoke suite.
 var section_build_count := 0
 
@@ -50,6 +56,7 @@ func _build_shell() -> void:
 	if _content != null:
 		return
 	var header_margin := MarginContainer.new()
+	_header_margin = header_margin
 	header_margin.add_theme_constant_override("margin_left", 12)
 	header_margin.add_theme_constant_override("margin_right", 12)
 	header_margin.add_theme_constant_override("margin_top", 10)
@@ -67,8 +74,13 @@ func _build_shell() -> void:
 	_badge = Kit.mono_label("", 9, Kit.TEXT_DIM)
 	_badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header.add_child(_badge)
+	_collapse_button = Kit.icon_button("chevron-up", "Collapse object properties", 44, 18)
+	_collapse_button.pressed.connect(func() -> void: set_collapsed(not collapsed, true))
+	header.add_child(_collapse_button)
 
-	add_child(Kit.vsep())
+	var rule := Kit.vsep()
+	_rule = rule
+	add_child(rule)
 
 	_scroll = ScrollContainer.new()
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -90,6 +102,22 @@ func _build_shell() -> void:
 	_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_content.add_theme_constant_override("separation", 10)
 	margin.add_child(_content)
+
+func set_collapsed(value: bool, emit_signal: bool = false) -> void:
+	collapsed = value
+	if _rule != null:
+		_rule.visible = not value
+	if _scroll != null:
+		_scroll.visible = not value
+	if _header_margin != null:
+		_header_margin.add_theme_constant_override("margin_top", 0 if value else 10)
+		_header_margin.add_theme_constant_override("margin_bottom", 0 if value else 6)
+	if _collapse_button != null:
+		Kit.set_icon(_collapse_button, "chevron-down" if value else "chevron-up")
+		_collapse_button.tooltip_text = "Expand object properties" if value else "Collapse object properties"
+	if emit_signal:
+		collapse_toggled.emit(collapsed)
+
 
 func _on_selection_changed(_id: String) -> void:
 	_rebuild()

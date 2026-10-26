@@ -2,6 +2,7 @@ extends VBoxContainer
 ## Flat scene outliner with search, visibility toggles and animation markers.
 
 signal add_requested
+signal collapse_toggled(collapsed: bool)
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -16,9 +17,16 @@ var _scroll: ScrollContainer
 var _bottom_guard: Control
 var _count: Label
 var _search: LineEdit
+var _search_margin: MarginContainer
+var _rule: ColorRect
+var _header_margin: MarginContainer
+var _collapse_button: Button
 var _empty: VBoxContainer
 var _rows: Dictionary = {}
 var _filter := ""
+## Collapsing keeps the section header and its controls, and gives the rest of
+## the dock back to the other panel. The editor owns persistence.
+var collapsed := false
 ## Rebuild counter for diagnostics and the smoke suite.
 var rebuild_count := 0
 
@@ -40,6 +48,7 @@ func _build() -> void:
 	if _list != null:
 		return
 	var header_margin := MarginContainer.new()
+	_header_margin = header_margin
 	header_margin.add_theme_constant_override("margin_left", 12)
 	header_margin.add_theme_constant_override("margin_right", 8)
 	header_margin.add_theme_constant_override("margin_top", 10)
@@ -61,8 +70,12 @@ func _build() -> void:
 	var add := Kit.icon_button("plus", "Add object", 26, 14)
 	add.pressed.connect(func() -> void: add_requested.emit())
 	header.add_child(add)
+	_collapse_button = Kit.icon_button("chevron-up", "Collapse the scene list", 44, 18)
+	_collapse_button.pressed.connect(func() -> void: set_collapsed(not collapsed, true))
+	header.add_child(_collapse_button)
 
 	var search_margin := MarginContainer.new()
+	_search_margin = search_margin
 	search_margin.add_theme_constant_override("margin_left", 10)
 	search_margin.add_theme_constant_override("margin_right", 10)
 	search_margin.add_theme_constant_override("margin_bottom", 8)
@@ -73,6 +86,7 @@ func _build() -> void:
 	search_margin.add_child(_search)
 
 	var rule := Kit.vsep()
+	_rule = rule
 	add_child(rule)
 
 	_scroll = ScrollContainer.new()
@@ -118,6 +132,26 @@ func _build() -> void:
 	var empty_sub := Kit.label("Use the + button to add an object.", 10, Kit.TEXT_DIM)
 	empty_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_empty.add_child(empty_sub)
+
+func set_collapsed(value: bool, emit_signal: bool = false) -> void:
+	collapsed = value
+	if _search_margin != null:
+		_search_margin.visible = not value
+	if _rule != null:
+		_rule.visible = not value
+	if _scroll != null:
+		_scroll.visible = not value
+	if _bottom_guard != null:
+		_bottom_guard.visible = not value
+	if _header_margin != null:
+		_header_margin.add_theme_constant_override("margin_top", 0 if value else 10)
+		_header_margin.add_theme_constant_override("margin_bottom", 0 if value else 6)
+	if _collapse_button != null:
+		Kit.set_icon(_collapse_button, "chevron-down" if value else "chevron-up")
+		_collapse_button.tooltip_text = "Expand the scene list" if value else "Collapse the scene list"
+	if emit_signal:
+		collapse_toggled.emit(collapsed)
+
 
 func _on_search_changed(text_value: String) -> void:
 	_filter = text_value.strip_edges().to_lower()

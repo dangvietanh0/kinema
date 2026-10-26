@@ -199,13 +199,14 @@ func _ready() -> void:
 	_check(editor._view != null and editor._view._viewport != null, "preview viewport built")
 	_check(doc.get_channel_keys(str(doc.objects[0]["id"]), "position").size() >= 0, "channels readable")
 
-	# Settings sheet exercises NumberField construction and the apply callback.
-	editor._open_settings()
+	# Project timing lives in Project settings; the device Settings screen is a
+	# separate surface with eight categories.
+	editor._open_project_settings()
 	await get_tree().process_frame
-	_check(editor._settings_duration_field != null, "settings duration field built")
-	_check(editor._settings_fps_field != null, "settings fps field built")
+	_check(editor._settings_duration_field != null, "project settings duration field built")
+	_check(editor._settings_fps_field != null, "project settings fps field built")
 	if editor._settings_duration_field != null:
-		_check(is_equal_approx(editor._settings_duration_field.value, doc.duration), "settings field reads duration")
+		_check(is_equal_approx(editor._settings_duration_field.value, doc.duration), "project settings field reads duration")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
@@ -481,6 +482,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._bottom_bar.is_active("timeline"), "timeline action reports active while the sheet is open")
 	_check(editor._timeline._compact_header.visible, "compact sheet header appears with the timeline")
+	_check(not editor._timeline._fold_button.visible, "compact folds from the action bar, not the transport")
 	editor._toggle_timeline()
 	await get_tree().process_frame
 	_check(not editor._bottom_bar.is_active("timeline"), "timeline action clears when the sheet folds")
@@ -566,6 +568,44 @@ func _ready() -> void:
 	editor.set_workspace_mode("compact")
 	await get_tree().process_frame
 
+	print("SMOKE STEP: timeline fold control")
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	_check(editor._timeline._fold_button != null, "timeline exposes a fold control")
+	if editor._timeline._fold_button != null:
+		_check(editor._timeline._fold_button.custom_minimum_size.y >= 44.0, "timeline fold control keeps a 44 dp target")
+	editor._on_timeline_close_requested()
+	await get_tree().process_frame
+	_check(not editor._timeline_visible, "timeline fold control folds the sheet")
+	editor._on_timeline_close_requested()
+	await get_tree().process_frame
+	_check(editor._timeline_visible, "timeline fold control reopens the sheet")
+	editor._timeline_visible = false
+	editor._sync_timeline_visibility()
+
+	print("SMOKE STEP: collapsible panels")
+	editor.size = Vector2(412.0, 915.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	await get_tree().process_frame
+	editor._set_section_collapsed("outliner", true)
+	await get_tree().process_frame
+	_check(editor._outliner.collapsed, "outliner collapses")
+	_check(not editor._outliner._scroll.visible, "collapsed outliner hides its list")
+	_check(editor._outliner_panel.custom_minimum_size.y <= 48.0, "collapsed outliner keeps a 44 dp header")
+	_check("outliner" in Prefs.get_value("editor.collapsed_sections", []), "outliner collapse persists")
+	editor._set_section_collapsed("inspector", true)
+	await get_tree().process_frame
+	_check(editor._inspector.collapsed, "inspector collapses")
+	_check(not editor._inspector._scroll.visible, "collapsed inspector hides its fields")
+	_check(editor._inspector_panel.custom_minimum_size.y <= 48.0, "collapsed inspector keeps a 44 dp header")
+	editor._set_section_collapsed("outliner", false)
+	editor._set_section_collapsed("inspector", false)
+	await get_tree().process_frame
+	_check(not editor._outliner.collapsed and not editor._inspector.collapsed, "panels expand again")
+	editor.set_workspace_mode("compact")
+	await get_tree().process_frame
+
 	print("SMOKE STEP: graph editor")
 	var timeline = editor._timeline
 	_check(timeline != null, "timeline exists")
@@ -614,18 +654,40 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
-	print("SMOKE STEP: graphics preset state")
-	editor._open_graphics_settings()
+	print("SMOKE STEP: renderer and settings")
+	_check(Gfx.renderer_default_for_platform("Android") == "mobile", "Android default renderer is mobile")
+	_check(Gfx.renderer_default_for_platform("Linux") == "forward_plus", "desktop default renderer is forward plus")
+	_check(Gfx.build_restart_args("mobile") == PackedStringArray(["--rendering-method", "mobile", "--rendering-driver", "vulkan"]), "mobile restart args are real")
+	_check(Gfx.build_restart_args("gl_compatibility") == PackedStringArray(["--rendering-method", "gl_compatibility", "--rendering-driver", "opengl3"]), "compatibility restart args are real")
+	_check(Gfx.capabilities_for("mobile")["taa"] == false, "Mobile does not claim TAA")
+	_check(Gfx.capabilities_for("forward_plus")["taa"] == true, "Forward+ reports TAA")
+	var restart_state: Dictionary = Gfx.resolve_startup_renderer("mobile", "mobile", "forward_plus", 0, "Linux")
+	_check(restart_state["action"] == "restart", "pending renderer requests one restart")
+	_check(restart_state["args"].size() == 4, "pending renderer has restart args")
+	var fallback_state: Dictionary = Gfx.resolve_startup_renderer("mobile", "mobile", "forward_plus", 2, "Linux")
+	_check(fallback_state["action"] == "fallback", "renderer retry is bounded")
+	_check(fallback_state["preference"] == "forward_plus", "renderer fallback uses platform default")
+	_check(str(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile")) == "mobile", "project.godot defaults Android to Mobile")
+
+	editor._open_settings("graphics")
 	await get_tree().process_frame
-	_check(editor._preset_buttons.size() == 3, "graphics preset chips exist")
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "settings opens")
+	_check(editor._settings_panel.categories() == ["general", "editor", "display", "graphics", "performance", "render", "import", "about"], "settings categories are complete")
+	_check(editor._preset_buttons.size() == 5, "graphics has preset controls plus custom and reset")
 	var original_preset: String = Gfx.preset
 	Gfx.preset = "custom"
 	editor._sync_preset_buttons()
 	var any_preset_lit := false
+	var custom_lit := false
 	for button in editor._preset_buttons:
-		if button.button_pressed:
+		var preset_name := str(button.get_meta("preset", ""))
+		if preset_name in ["performance", "balanced", "quality"] and button.button_pressed:
 			any_preset_lit = true
+		if preset_name == "custom":
+			custom_lit = button.button_pressed and button.disabled
 	_check(not any_preset_lit, "custom settings clear the preset selection")
+	_check(custom_lit, "custom settings light the disabled Custom status")
 	Gfx.preset = "balanced"
 	editor._sync_preset_buttons()
 	var balanced_lit := false
@@ -634,6 +696,34 @@ func _ready() -> void:
 			balanced_lit = true
 	_check(balanced_lit, "balanced preset reselects its chip")
 	Gfx.preset = original_preset
+	editor._settings_panel.set_option("editor.show_fps", false)
+	_check(bool(Prefs.get_value("editor.show_fps", true)) == false, "settings write Prefs")
+	editor._settings_panel.set_option("editor.show_fps", true)
+	editor._open_settings("display")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	editor.apply_fit_info(43.0, false, false)
+	await get_tree().process_frame
+	_check(editor._settings_panel._ui_scale_control.disabled, "UI scale is disabled when Desktop fit is active")
+	_check(editor._settings_panel._fit_label.text.contains("43"), "settings shows the fit percentage")
+	editor.apply_fit_info(100.0, true, false)
+	await get_tree().process_frame
+	_check(not editor._settings_panel._ui_scale_control.disabled, "UI scale works at 100 percent fit")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	print("SMOKE STEP: workspace fit refresh")
+	editor._open_workspace_sheet()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._workspace_sheet != null, "workspace sheet opens")
+	editor.apply_fit_info(43.0, false, false)
+	await get_tree().process_frame
+	_check(editor._workspace_sheet._scale_control.disabled, "workspace UI scale locks when fit is active")
+	_check(editor._workspace_sheet._fit_label.text.contains("43"), "workspace reports the live fit percentage")
+	editor.apply_fit_info(100.0, true, false)
+	await get_tree().process_frame
+	_check(not editor._workspace_sheet._scale_control.disabled, "workspace UI scale unlocks at 100 percent")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
@@ -662,8 +752,50 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(not draft_view.is_draft_active(), "draft quality releases after idle")
 	_check(draft_view._viewport.msaa_3d == Gfx.MSAA_MODES[Gfx.msaa], "full MSAA returns after the draft pass")
-	_check(draft_view.quick_render_requested.is_connected(editor._quick_render_preview), "quick render HUD is wired to the preview")
+	_check(draft_view.quick_render_requested.is_connected(editor._enter_render_mode), "quick render HUD is wired to the live render mode")
 	draft_view.set_draft_quality(draft_pref)
+
+	print("SMOKE STEP: real-time render mode")
+	var render_view = editor._view
+	_check(render_view._quick_render_button != null, "quick render HUD control exists")
+	_check(render_view._quick_render_button.custom_minimum_size == Vector2(44, 44), "quick render HUD control is a 44 dp square")
+	_check(render_view._fps_chip.custom_minimum_size.y >= 44.0, "FPS chip keeps a 44 dp height")
+	_check(render_view._focus_button.custom_minimum_size.y >= 44.0, "focus HUD control keeps a 44 dp height")
+	_check(render_view._grid_button.custom_minimum_size.y >= 44.0, "grid HUD control keeps a 44 dp height")
+	var render_was_playing: bool = doc.is_playing
+	doc.pause()
+	doc.seek(1.0)
+	editor._enter_render_mode()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._render_mode, "quick render enters a real-time render mode")
+	_check(render_view.render_mode, "viewport enters render mode")
+	_check(not editor._top_bar.visible, "render mode hides the top bar")
+	_check(not editor._timeline_panel.visible, "render mode hides the timeline")
+	_check(not render_view._hud_root.visible, "render mode hides the editing HUD")
+	_check(editor._render_hud.visible, "render transport is visible")
+	_check(doc.is_playing, "render mode plays the document in real time")
+	_check(not render_view.is_draft_active(), "render mode uses full quality")
+	_check(editor._render_play_button.custom_minimum_size.y >= 44.0, "render transport keeps 44 dp controls")
+	editor._toggle_render_playback()
+	await get_tree().process_frame
+	_check(not doc.is_playing, "render transport pauses playback")
+	editor._toggle_render_playback()
+	await get_tree().process_frame
+	_check(doc.is_playing, "render transport resumes playback")
+	editor._restart_render_playback()
+	await get_tree().process_frame
+	_check(doc.current_time < 0.5, "render transport restarts at the first frame")
+	editor._exit_render_mode()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not editor._render_mode, "render mode exits")
+	_check(not render_view.render_mode, "viewport returns to editing")
+	_check(editor._top_bar.visible, "editing chrome returns")
+	_check(not editor._render_hud.visible, "render transport hides")
+	_check(is_equal_approx(doc.current_time, 1.0), "exiting restores the playhead")
+	_check(doc.is_playing == render_was_playing, "exiting restores the prior playback state")
+	doc.pause()
 
 	print("SMOKE STEP: performance readout")
 	var perf_view = editor._view

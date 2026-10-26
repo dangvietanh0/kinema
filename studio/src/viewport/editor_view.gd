@@ -33,8 +33,17 @@ var _status_label: Label
 var _view_chip: Button
 var _grid_button: Button
 var _fps_chip: Button
+var _focus_button: Button
+var _quick_render_button: Button
 var _hud_root: Control
 var _preset := "Persp"
+## Real-time render preview. The editor chrome disappears, the document plays
+## at full quality, and only the render transport stays on screen.
+var render_mode := false
+var _render_grid_was_on := true
+var _render_draft_was_on := true
+var _render_hud_was_on := true
+var _render_markers_were_hidden := true
 
 var _touches: Dictionary = {}
 var _mode := "idle"  # idle | orbit | gizmo | multi | pan
@@ -49,6 +58,12 @@ var _gizmo_screen_dir := Vector2.RIGHT
 var _gizmo_world_len := 1.0
 var _gizmo_drag := Vector2.ZERO
 var _gizmo_handles: Array = []
+## Workbench preferences that affect direct manipulation. Defaults match the
+## historical behaviour; Settings writes the real values.
+var gizmo_scale := 1.0
+var translate_snap := 0.25
+var rotate_snap := 15.0
+var scale_snap := 0.25
 var _hud_text := ""
 var _multi_mid := Vector2.ZERO
 var _multi_dist := 1.0
@@ -271,16 +286,18 @@ func _build_hud() -> void:
 	_fps_chip.pressed.connect(func() -> void: performance_requested.emit())
 	top_right.add_child(_fps_chip)
 
-	var quick := Kit.text_button("Render", "camera", false, true)
-	quick.tooltip_text = "Quick render at full quality"
-	quick.pressed.connect(func() -> void: quick_render_requested.emit())
-	_override_hud_button(quick)
-	top_right.add_child(quick)
+	# Render is an icon-only 44 dp square, so the HUD row has one height and
+	# one target size. A labelled button made the right cluster wider than the
+	# viewport on a phone and read as a call to action rather than a tool.
+	_quick_render_button = Kit.icon_button("camera", "Quick render at full quality", 44, 20)
+	_override_hud_button(_quick_render_button)
+	_quick_render_button.pressed.connect(func() -> void: quick_render_requested.emit())
+	top_right.add_child(_quick_render_button)
 
-	var focus := Kit.icon_button("focus", "Frame selection (F)", 30, 15)
-	_override_hud_button(focus)
-	focus.pressed.connect(focus_selection)
-	top_right.add_child(focus)
+	_focus_button = Kit.icon_button("focus", "Frame selection (F)", 44, 20)
+	_override_hud_button(_focus_button)
+	_focus_button.pressed.connect(focus_selection)
+	top_right.add_child(_focus_button)
 
 	_grid_button = Kit.icon_button("grid-3x3", "Toggle grid", 30, 15)
 	_override_hud_button(_grid_button)
@@ -343,6 +360,60 @@ func set_tool(new_tool: String) -> void:
 	tool = new_tool
 	queue_redraw()
 
+
+func set_gizmo_scale(value: float) -> void:
+	gizmo_scale = clampf(value, 0.5, 2.0)
+	queue_redraw()
+
+
+func set_snap_values(translate: float, rotate: float, scale: float) -> void:
+	translate_snap = clampf(translate, 0.001, 100.0)
+	rotate_snap = clampf(rotate, 0.1, 180.0)
+	scale_snap = clampf(scale, 0.001, 10.0)
+
+## Enter or leave the live render preview. Editing overlays, locators and the
+## grid are hidden; the quality pass is forced back to the user's full
+## settings. The document transport is owned by the editor.
+func set_render_mode(enabled: bool) -> void:
+	if render_mode == enabled:
+		return
+	render_mode = enabled
+	if enabled:
+		_render_grid_was_on = _grid_button != null and _grid_button.button_pressed
+		_render_draft_was_on = _draft_enabled
+		_render_hud_was_on = _hud_root != null and _hud_root.visible
+		_render_markers_were_hidden = doc == null or doc.markers_hidden
+		if _grid_button != null:
+			_grid_button.set_pressed_no_signal(false)
+		_set_grid_strength(0.0)
+		set_hud_visible(false)
+		set_draft_quality(false)
+		if doc != null:
+			doc.markers_hidden = true
+			doc.update_marker_scales(_camera)
+		_touches.clear()
+		_mode = "idle"
+		_gizmo_axis = ""
+		_hud_text = ""
+		if _viewport != null:
+			_viewport.render_target_update_mode = (
+				SubViewport.UPDATE_ALWAYS if doc != null and doc.is_playing
+				else SubViewport.UPDATE_ONCE
+			)
+	else:
+		if _grid_button != null:
+			_grid_button.set_pressed_no_signal(_render_grid_was_on)
+		_set_grid_strength(1.0 if _render_grid_was_on else 0.0)
+		set_hud_visible(_render_hud_was_on)
+		set_draft_quality(_render_draft_was_on)
+		if doc != null:
+			doc.markers_hidden = _render_markers_were_hidden
+			doc.update_marker_scales(_camera)
+		if _viewport != null and not _interactive and not _playback_active:
+			_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	_repaint()
+	queue_redraw()
+
 func _on_resized() -> void:
 	_apply_viewport_size()
 	_repaint()
@@ -359,7 +430,8 @@ func _apply_viewport_size() -> void:
 	var visible := get_viewport().get_visible_rect().size
 	if win != null and visible.x > 1.0 and visible.y > 1.0:
 		pixel_scale = clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
-	var target := Vector2(size.x, size.y) * pixel_scale * _preview_scale
+	var quality_scale := 1.0 if render_mode else _preview_scale
+	var target := Vector2(size.x, size.y) * pixel_scale * quality_scale
 	var cap := float(_preview_cap)
 	if _draft_active:
 		target *= DRAFT_SCALE
@@ -433,6 +505,13 @@ func _on_playback_changed(_time: float, _playing: bool) -> void:
 		_begin_draft()
 	else:
 		_draft_idle = 0.0
+	# Render mode is a real-time preview: while the document plays it must
+	# render every frame, not one frame per edit. Draft quality is disabled
+	# for the duration, so playback here is the full-quality image.
+	if render_mode and _viewport != null:
+		_viewport.render_target_update_mode = (
+			SubViewport.UPDATE_ALWAYS if _playing else SubViewport.UPDATE_ONCE
+		)
 	_repaint()
 
 ## Inspector edits and keying can change the scene many times per second while
@@ -701,6 +780,10 @@ func _tween_view(new_target: Vector3, new_distance: float) -> void:
 # -------------------------------------------------------------------------
 
 func _gui_input(event: InputEvent) -> void:
+	if render_mode:
+		# The render preview is a viewing surface, not an editing one. The
+		# transport is a sibling control, so its taps still arrive normally.
+		return
 	if Kit.is_emulated_mouse(event):
 		return
 	if event is InputEventScreenTouch:
@@ -853,7 +936,7 @@ func _update_multi_gesture() -> void:
 # -------------------------------------------------------------------------
 
 func _pick(point: Vector2) -> void:
-	if doc == null:
+	if doc == null or render_mode:
 		return
 	var best_id := ""
 	var best_depth := INF
@@ -917,7 +1000,7 @@ func _to_ui(viewport_pos: Vector2) -> Vector2:
 	return viewport_pos * ratio
 
 func _hit_gizmo(point: Vector2) -> String:
-	if tool == "select" or doc == null or doc.selected_id == "":
+	if render_mode or tool == "select" or doc == null or doc.selected_id == "":
 		return ""
 	for handle in _gizmo_handles:
 		var handle_pos: Vector2 = handle["pos"]
@@ -969,7 +1052,11 @@ func _apply_gizmo_drag(relative: Vector2) -> void:
 			delta = axis_vec * _gizmo_drag.dot(direction) * units
 		var next := _gizmo_start_pos + delta
 		if doc.snap:
-			next = Vector3(snappedf(next.x, 0.1), snappedf(next.y, 0.1), snappedf(next.z, 0.1))
+			next = Vector3(
+				snappedf(next.x, translate_snap),
+				snappedf(next.y, translate_snap),
+				snappedf(next.z, translate_snap)
+			)
 		doc.set_object_transform(doc.selected_id, next, _gizmo_start_rot, _gizmo_start_scale)
 		_hud_text = "MOVE  %s  %.3f, %.3f, %.3f" % [_gizmo_axis.to_upper(), next.x, next.y, next.z]
 	elif tool == "rotate":
@@ -981,7 +1068,7 @@ func _apply_gizmo_drag(relative: Vector2) -> void:
 			var perp := Vector2(-direction.y, direction.x)
 			angle = _gizmo_drag.dot(perp) * 0.009
 			if doc.snap:
-				angle = snappedf(angle, deg_to_rad(5.0))
+				angle = snappedf(angle, deg_to_rad(rotate_snap))
 		var next_rot := Quaternion(axis_vec, angle) * _gizmo_start_rot
 		doc.set_object_transform(doc.selected_id, _gizmo_start_pos, next_rot, _gizmo_start_scale)
 		_hud_text = "ROTATE  %s  %.1f°" % [_gizmo_axis.to_upper(), angle * 180.0 / PI]
@@ -992,7 +1079,7 @@ func _apply_gizmo_drag(relative: Vector2) -> void:
 		else:
 			factor = maxf(0.05, 1.0 + _gizmo_drag.dot(direction) * 0.007)
 		if doc.snap:
-			factor = snappedf(factor, 0.05)
+			factor = snappedf(factor, scale_snap)
 		var next_scale := _gizmo_start_scale
 		if _gizmo_axis == "x":
 			next_scale.x = _gizmo_start_scale.x * factor
@@ -1035,6 +1122,10 @@ func _pixel_length_for_axis(axis: Vector3) -> float:
 
 func _draw() -> void:
 	if _camera == null or doc == null:
+		return
+	if render_mode:
+		# Render mode is the clean frame. Locators, selection, gizmo, compass
+		# and transient HUD text would all leak editing chrome into the shot.
 		return
 	_draw_object_markers()
 	_draw_selection()
@@ -1120,7 +1211,8 @@ func _draw_gizmo() -> void:
 	if _camera.is_position_behind(origin):
 		return
 	var p0 := _to_ui(_camera.unproject_position(origin))
-	var world_len := maxf(0.35, distance * 0.1)
+	var world_len := maxf(0.35, distance * 0.1) * gizmo_scale
+	var arm := 48.0 * gizmo_scale
 	var axes := [
 		["x", Vector3.RIGHT, Kit.AXIS_X],
 		["y", Vector3.UP, Kit.AXIS_Y],
@@ -1139,15 +1231,15 @@ func _draw_gizmo() -> void:
 		if raw.length() < 5.0:
 			continue
 		var dir := raw.normalized()
-		var end := p0 + dir * 48.0
+		var end := p0 + dir * arm
 		var is_active := _gizmo_axis == axis_name
 		var line_color := active_color if is_active else color
-		draw_line(p0, end, Color(0.01, 0.01, 0.01, 0.7), 5.0, true)
-		draw_line(p0, end, line_color, 2.4 if is_active else 1.8, true)
-		draw_circle(end, 7.0, Color(0.06, 0.06, 0.06, 0.95))
-		draw_arc(end, 6.0, 0.0, TAU, 20, line_color, 1.6, true)
+		draw_line(p0, end, Color(0.01, 0.01, 0.01, 0.7), 5.0 * gizmo_scale, true)
+		draw_line(p0, end, line_color, (2.4 if is_active else 1.8) * gizmo_scale, true)
+		draw_circle(end, 7.0 * gizmo_scale, Color(0.06, 0.06, 0.06, 0.95))
+		draw_arc(end, 6.0 * gizmo_scale, 0.0, TAU, 20, line_color, 1.6, true)
 		if is_active:
-			draw_circle(end, 2.6, line_color)
+			draw_circle(end, 2.6 * gizmo_scale, line_color)
 		_gizmo_handles.append({"axis": axis_name, "pos": end})
 		if _gizmo_axis == axis_name:
 			_gizmo_screen_dir = dir

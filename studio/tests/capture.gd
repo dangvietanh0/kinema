@@ -84,7 +84,9 @@ func _ready() -> void:
 		"render":
 			main._editor._open_render_sheet()
 		"quick-render":
-			main._editor._quick_render_preview()
+			main._editor._enter_render_mode()
+		"workspace":
+			main._editor._open_workspace_sheet()
 		"draft":
 			main._editor._view.set_interactive(true)
 	if action != "":

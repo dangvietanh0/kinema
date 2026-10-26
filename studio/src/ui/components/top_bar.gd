@@ -221,7 +221,9 @@ func _build() -> void:
 
 	_fit_label = Kit.mono_label("", 10, Kit.TEXT_DIM)
 	_fit_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_fit_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fit_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	Kit.bind_tap(_fit_label, func() -> void: layout_requested.emit())
+	_fit_label.tooltip_text = "Interface fit · choose a workspace"
 	_row.add_child(_fit_label)
 
 	_render_button = Kit.icon_button("clapperboard", "Render and export")

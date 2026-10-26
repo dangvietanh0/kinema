@@ -55,6 +55,28 @@ func _ready() -> void:
 
 	resized.connect(_update_safe_area)
 	get_viewport().size_changed.connect(_update_safe_area)
+	call_deferred("_apply_startup_display")
+	call_deferred("_ensure_startup_renderer")
+
+func _apply_startup_display() -> void:
+	var orientation := str(Prefs.get_value("display.orientation", "auto"))
+	if orientation != "auto":
+		apply_orientation(orientation)
+	if bool(Prefs.get_value("display.keep_screen_on", true)):
+		DisplayServer.screen_set_keep_on(true)
+
+## A pending renderer is verified once, before the user starts working. The
+## restart happens only outside headless tests and only through Godot's own
+## restart-on-exit path.
+func _ensure_startup_renderer() -> void:
+	var result: Dictionary = Gfx.ensure_renderer()
+	if str(result.get("action", "none")) != "restart":
+		return
+	var args := Gfx.consume_restart_request()
+	if args.is_empty() or DisplayServer.get_name() == "headless":
+		return
+	OS.set_restart_on_exit(true, args)
+	get_tree().quit()
 
 # -------------------------------------------------------------------------
 # Display scale
