@@ -168,30 +168,48 @@ func _gui_input(event: InputEvent) -> void:
 	if not _enabled or rig_system == null or _rig_id == "":
 		return
 	if event is InputEventMouseButton:
+		if Kit.is_emulated_mouse(event):
+			return
 		var button := event as InputEventMouseButton
-		if button.button_index == MOUSE_BUTTON_LEFT:
-			if button.pressed:
-				var chain_id := _chain_at(button.position)
-				if chain_id != "":
-					_drag_target = chain_id
-					accept_event()
-					return
-				var bone := bone_at(button.position)
-				if bone != "":
-					_begin_drag(bone, button.position)
-					accept_event()
-				return
-			if _dragging or _drag_target != "":
-				_end_drag()
-				accept_event()
+		if button.button_index != MOUSE_BUTTON_LEFT:
+			return
+		if button.pressed:
+			_press_at(button.position)
+			accept_event()
+		elif _dragging or _drag_target != "":
+			_end_drag()
+			accept_event()
 	elif event is InputEventMouseMotion:
-		var motion := event as InputEventMouseMotion
-		if _drag_target != "":
-			_move_target(motion.position)
+		if Kit.is_emulated_mouse(event):
+			return
+		_drag_at((event as InputEventMouseMotion).position)
+	elif event is InputEventScreenTouch:
+		var touch := event as InputEventScreenTouch
+		if touch.pressed:
+			_press_at(touch.position)
 			accept_event()
-		elif _dragging:
-			_rotate_drag(motion.position)
+		elif _dragging or _drag_target != "":
+			_end_drag()
 			accept_event()
+	elif event is InputEventScreenDrag:
+		_drag_at((event as InputEventScreenDrag).position)
+
+
+func _press_at(screen: Vector2) -> void:
+	var chain_id := _chain_at(screen)
+	if chain_id != "":
+		_drag_target = chain_id
+		return
+	var bone := bone_at(screen)
+	if bone != "":
+		_begin_drag(bone, screen)
+
+
+func _drag_at(screen: Vector2) -> void:
+	if _drag_target != "":
+		_move_target(screen)
+	elif _dragging:
+		_rotate_drag(screen)
 
 
 func _begin_drag(bone: String, screen: Vector2) -> void:
