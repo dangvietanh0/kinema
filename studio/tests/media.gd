@@ -9,6 +9,7 @@ extends Node
 const DocumentScript = preload("res://src/core/document.gd")
 const AudioLibrary = preload("res://src/core/audio_library.gd")
 const VideoReference = preload("res://src/core/video_reference.gd")
+const GifEncoder = preload("res://src/core/gif_encoder.gd")
 
 const PROJECT_DIR := "user://media_ws_b_project"
 const FIXTURE_DIR := "user://media_ws_b_fixtures"
@@ -44,6 +45,7 @@ func _ready() -> void:
 
 	await _test_audio()
 	await _test_video()
+	await _test_gif()
 
 	var status := "PASS" if _failures.is_empty() else "FAIL"
 	print("MEDIA RESULT: %s (%d OK, %d FAIL)" % [status, _oks, _failures.size()])
@@ -239,6 +241,123 @@ class FakeDoc:
 	var animation_system = FakeAnimation.new()
 	func sequence_time() -> float:
 		return current_time
+
+
+# -------------------------------------------------------------------------
+# GIF encoder
+# -------------------------------------------------------------------------
+
+func _test_gif() -> void:
+	print("MEDIA STEP: GIF encoder")
+	var frames: Array = []
+	for index in range(3):
+		var image := Image.create(16, 16, false, Image.FORMAT_RGBA8)
+		image.fill(Color(0.1 + index * 0.3, 0.2, 0.3, 1.0))
+		if index == 2:
+			image.set_pixel(0, 0, Color(0, 0, 0, 0))
+		frames.append(image)
+	_check(GifEncoder.can_encode(12), "GIF accepts 12 fps")
+	_check(GifEncoder.can_encode(24), "GIF accepts 24 fps")
+	_check(GifEncoder.can_encode(30), "GIF accepts 30 fps")
+	_check(not GifEncoder.can_encode(60), "GIF rejects 60 fps")
+	_check(GifEncoder.unsupported_reason(60) == "GIF timing is centisecond-based; 60 fps cannot be represented", "GIF 60 fps refusal uses the exact reason")
+	_check(GifEncoder.encode(frames, 60, true).is_empty(), "GIF 60 fps encodes no file")
+	_check(GifEncoder.widths() == [320, 480, 640, 720], "GIF width presets are exact")
+	_check(GifEncoder.height_for_width(320) == 180, "GIF 320 keeps 16:9")
+	_check(GifEncoder.height_for_width(720) == 406, "GIF odd heights round to an even number")
+
+	var bytes: PackedByteArray = GifEncoder.encode(frames, 24, true)
+	_check(bytes.size() > 0, "GIF encode returns bytes")
+	_check(bytes.slice(0, 6).get_string_from_ascii() == "GIF89a", "GIF header is GIF89a")
+	_check(bytes.decode_u16(6) == 16 and bytes.decode_u16(8) == 16, "GIF logical screen size matches the frames")
+	_check(_index_of(bytes, "NETSCAPE2.0".to_ascii_buffer()) >= 0, "GIF has the NETSCAPE loop extension")
+	_check(bytes[bytes.size() - 1] == 0x3B, "GIF ends with the trailer byte")
+	var parsed := _parse_gif(bytes)
+	_check(int(parsed.get("frames", 0)) == 3, "GIF contains three image frames")
+	var delays: Array = parsed.get("delays", [])
+	_check(delays == [4, 4, 5], "GIF delays use the centisecond accumulator")
+
+	var long_frames: Array = []
+	for index in range(30):
+		var image := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+		image.fill(Color(float(index) / 30.0, 0.4, 0.4, 1.0))
+		long_frames.append(image)
+	var long_bytes: PackedByteArray = GifEncoder.encode(long_frames, 24, true)
+	var long_delays: Array = _parse_gif(long_bytes).get("delays", [])
+	var total := 0
+	for delay in long_delays:
+		total += int(delay)
+	var average := float(total) / maxf(1.0, float(long_delays.size()))
+	var nominal := 100.0 / 24.0
+	_check(absf(average - nominal) <= nominal * 0.005, "GIF average delay is within 0.5% of nominal over a full second")
+
+
+func _parse_gif(bytes: PackedByteArray) -> Dictionary:
+	var frames := 0
+	var delays: Array = []
+	var index := 13
+	if bytes.size() < 14:
+		return {"frames": 0, "delays": delays}
+	var packed := bytes[10]
+	if packed & 0x80:
+		index += 3 * (1 << ((packed & 0x07) + 1))
+	while index < bytes.size():
+		var marker := bytes[index]
+		if marker == 0x3B:
+			break
+		if marker == 0x21:
+			index += 1
+			if index >= bytes.size():
+				break
+			var label := bytes[index]
+			index += 1
+			if label == 0xF9:
+				var size := bytes[index]
+				index += 1
+				if size >= 4:
+					delays.append(bytes.decode_u16(index + 1))
+				index += size
+				index += 1
+			else:
+				index = _skip_sub_blocks(bytes, index)
+		elif marker == 0x2C:
+			frames += 1
+			index += 1
+			if index + 9 > bytes.size():
+				break
+			var image_packed := bytes[index + 8]
+			index += 9
+			if image_packed & 0x80:
+				index += 3 * (1 << ((image_packed & 0x07) + 1))
+			index += 1
+			index = _skip_sub_blocks(bytes, index)
+		else:
+			break
+	return {"frames": frames, "delays": delays}
+
+
+func _skip_sub_blocks(bytes: PackedByteArray, index: int) -> int:
+	while index < bytes.size():
+		var size := bytes[index]
+		index += 1
+		if size == 0:
+			break
+		index += size
+	return index
+
+
+func _index_of(haystack: PackedByteArray, needle: PackedByteArray) -> int:
+	if needle.is_empty() or haystack.size() < needle.size():
+		return -1
+	for index in range(haystack.size() - needle.size() + 1):
+		var matched := true
+		for offset in range(needle.size()):
+			if haystack[index + offset] != needle[offset]:
+				matched = false
+				break
+		if matched:
+			return index
+	return -1
 
 
 # -------------------------------------------------------------------------
