@@ -7,6 +7,7 @@ extends RefCounted
 ## `RefCounted`, so resetting a project cannot leave orphan players behind.
 
 const AudioLibrary = preload("res://src/core/audio_library.gd")
+const VideoReference = preload("res://src/core/video_reference.gd")
 
 const AUDIO_DEFAULTS := {
 	"start": 0.0,
@@ -23,6 +24,7 @@ var _project_dir := ""
 var _audio: Array[Dictionary] = []
 var _video_refs: Array[Dictionary] = []
 var _players: Dictionary = {}
+var _frame_cache: Dictionary = {}
 var _next_audio := 1
 var _next_video := 1
 var _sequence_time := 0.0
@@ -37,6 +39,7 @@ func reset() -> void:
 	_stop_all_players(true)
 	_audio.clear()
 	_video_refs.clear()
+	_frame_cache.clear()
 	_project_dir = ""
 	_next_audio = 1
 	_next_video = 1
@@ -58,6 +61,7 @@ func load_data(data: Dictionary, project_dir: String) -> void:
 	_stop_all_players(true)
 	_audio.clear()
 	_video_refs.clear()
+	_frame_cache.clear()
 	_next_audio = 1
 	_next_video = 1
 	var media: Dictionary = data.get("media", {}) if data is Dictionary else {}
@@ -297,31 +301,167 @@ func _pause_all_players() -> void:
 
 
 # -------------------------------------------------------------------------
-# Video references (implemented in the video half below)
+# Video references
 # -------------------------------------------------------------------------
 
-func import_video_reference(_uri: String) -> Dictionary:
-	return {"ok": false, "error": "Video reference import is not implemented yet."}
+func import_video_reference(uri: String) -> Dictionary:
+	var kind := VideoReference.source_kind(uri)
+	if kind == "unsupported":
+		return {"ok": false, "error": "Unsupported video reference format. Use MP4, M4V, MOV or OGV."}
+	if not FileAccess.file_exists(uri):
+		return {"ok": false, "error": "Video file not found: %s" % uri}
+	if kind == "ogv":
+		return _import_ogv(uri)
+	if OS.get_name() != "android":
+		return {"ok": false, "error": "Video frame extraction uses the Android MediaCodec backend. Build the Android APK to import MP4/MOV references."}
+	var backend_script = load("res://src/core/android_video.gd")
+	if backend_script == null:
+		return {"ok": false, "error": "The Android video backend is not staged in this build."}
+	var backend = backend_script.new()
+	if not bool(backend.available()):
+		return {"ok": false, "error": str(backend.reason())}
+	var id := "vid_%d" % _next_video
+	_next_video += 1
+	var rel_dir := "video_refs".path_join(id)
+	var out_dir := _root().path_join(rel_dir)
+	var extracted: Dictionary = backend.extract_frames(uri, out_dir, 12, 1280)
+	if not bool(extracted.get("ok", false)):
+		VideoReference._remove_tree(out_dir)
+		return {"ok": false, "error": str(extracted.get("error", "Frame extraction failed."))}
+	var ref := VideoReference.default_ref(id, uri.get_file().get_basename(), rel_dir,
+		float(extracted.get("fps", 12)), float(extracted.get("duration", 0.0)),
+		int(extracted.get("width", 0)), int(extracted.get("height", 0)))
+	ref["kind"] = "video"
+	ref["file"] = uri
+	_video_refs.append(ref)
+	_emit_changed()
+	return {"ok": true, "ref": ref.duplicate(true), "error": ""}
+
+
+func _import_ogv(uri: String) -> Dictionary:
+	var id := "vid_%d" % _next_video
+	_next_video += 1
+	var rel_dir := "video_refs".path_join(id)
+	var dir := _root().path_join(rel_dir)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var target := dir.path_join("source.ogv")
+	var bytes := FileAccess.get_file_as_bytes(uri)
+	if bytes.is_empty():
+		VideoReference._remove_tree(dir)
+		return {"ok": false, "error": "Could not read OGV file: %s" % uri}
+	var file := FileAccess.open(target, FileAccess.WRITE)
+	if file == null:
+		VideoReference._remove_tree(dir)
+		return {"ok": false, "error": "Could not copy the OGV file into the project."}
+	file.store_buffer(bytes)
+	file.close()
+	var ref := VideoReference.default_ref(id, uri.get_file().get_basename(), rel_dir, 0.0, 0.0, 0, 0)
+	ref["kind"] = "ogv"
+	ref["file"] = rel_dir.path_join("source.ogv")
+	_video_refs.append(ref)
+	_emit_changed()
+	return {"ok": true, "ref": ref.duplicate(true), "error": "", "note": "OGV plays through VideoStreamPlayer; it has no frame proxy."}
 
 
 func video_references() -> Array:
 	return _video_refs.duplicate(true)
 
 
-func update_video_reference(_id: String, _patch: Dictionary) -> void:
-	pass
+func update_video_reference(id: String, patch: Dictionary) -> void:
+	var index := _video_index(id)
+	if index < 0:
+		return
+	var ref: Dictionary = _video_refs[index]
+	for key in patch.keys():
+		if key in ["name", "start", "opacity", "fit", "offset", "scale", "flip_h", "visible"]:
+			ref[key] = patch[key]
+	_video_refs[index] = VideoReference.normalize(ref)
+	_frame_cache.erase(id)
+	_emit_changed()
 
 
-func delete_video_reference(_id: String) -> void:
-	pass
+func delete_video_reference(id: String) -> void:
+	var index := _video_index(id)
+	if index < 0:
+		return
+	var ref: Dictionary = _video_refs[index]
+	VideoReference.delete_dir(_root(), ref)
+	_video_refs.remove_at(index)
+	_frame_cache.erase(id)
+	_emit_changed()
 
 
-func frame_for_time(_id: String, _time: float) -> Image:
-	return null
+func delete_confirm_text(id: String) -> String:
+	var index := _video_index(id)
+	if index < 0:
+		return ""
+	var ref: Dictionary = _video_refs[index]
+	return "Delete “%s” and its frame folder? The proxy files are removed and this cannot be undone." % str(ref.get("name", "reference"))
+
+
+func frame_for_time(id: String, time: float) -> Image:
+	var index := _video_index(id)
+	if index < 0:
+		return null
+	var ref: Dictionary = _video_refs[index]
+	if str(ref.get("kind", "")) == "ogv":
+		return null
+	var count := VideoReference.frame_count(_root(), ref)
+	var frame_index := VideoReference.frame_index(time, float(ref.get("fps", 12.0)), count)
+	if frame_index < 0:
+		return null
+	var cache: Dictionary = _frame_cache.get(id, {})
+	if cache.has(frame_index):
+		return cache[frame_index]
+	var image := VideoReference.frame_image(_root(), ref, frame_index)
+	if image != null:
+		cache[frame_index] = image
+		_frame_cache[id] = cache
+	return image
+
+
+func video_frame_index(id: String, time: float) -> int:
+	var index := _video_index(id)
+	if index < 0:
+		return -1
+	var ref: Dictionary = _video_refs[index]
+	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), VideoReference.frame_count(_root(), ref))
+
+
+## Clip mode is preview only: use the active strip's start plus the clip-local
+## time. No strip means frame zero and no audio playback.
+func preview_frame_index(id: String) -> int:
+	if _document == null:
+		return 0
+	var strip: Dictionary = {}
+	if _document.animation_system != null and _document.animation_system.has_method("strip_at"):
+		strip = _document.animation_system.strip_at(float(_document.sequence_time()))
+	var time := VideoReference.clip_preview_time(strip, float(_document.current_time))
+	var index := _video_index(id)
+	if index < 0:
+		return 0
+	var ref: Dictionary = _video_refs[index]
+	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), VideoReference.frame_count(_root(), ref))
+
+
+func video_reference(id: String) -> Dictionary:
+	var index := _video_index(id)
+	if index < 0:
+		return {}
+	return _video_refs[index].duplicate(true)
 
 
 func _normalize_video(raw: Dictionary) -> Dictionary:
-	return raw.duplicate(true)
+	var ref := VideoReference.normalize(raw)
+	_next_video = maxi(_next_video, _id_serial(str(ref.get("id", ""))) + 1)
+	return ref
+
+
+func _video_index(id: String) -> int:
+	for index in range(_video_refs.size()):
+		if str(_video_refs[index].get("id", "")) == id:
+			return index
+	return -1
 
 
 func _root() -> String:
