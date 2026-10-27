@@ -324,7 +324,7 @@ func import_video_reference(uri: String) -> Dictionary:
 	_next_video += 1
 	var rel_dir := "video_refs".path_join(id)
 	var out_dir := _root().path_join(rel_dir)
-	var extracted: Dictionary = backend.extract_frames(uri, out_dir, 12, 1280)
+	var extracted: Dictionary = await backend.extract_frames(uri, out_dir, 12, 1280)
 	if not bool(extracted.get("ok", false)):
 		VideoReference._remove_tree(out_dir)
 		return {"ok": false, "error": str(extracted.get("error", "Frame extraction failed."))}

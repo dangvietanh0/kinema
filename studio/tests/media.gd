@@ -12,6 +12,7 @@ const VideoReference = preload("res://src/core/video_reference.gd")
 const GifEncoder = preload("res://src/core/gif_encoder.gd")
 const SequenceRenderer = preload("res://src/core/sequence_renderer.gd")
 const CameraExport = preload("res://src/core/camera_export.gd")
+const AndroidVideo = preload("res://src/core/android_video.gd")
 
 const PROJECT_DIR := "user://media_ws_b_project"
 const FIXTURE_DIR := "user://media_ws_b_fixtures"
@@ -49,6 +50,7 @@ func _ready() -> void:
 	await _test_video()
 	await _test_gif()
 	await _test_render_and_camera()
+	await _test_android_backend()
 
 	var status := "PASS" if _failures.is_empty() else "FAIL"
 	print("MEDIA RESULT: %s (%d OK, %d FAIL)" % [status, _oks, _failures.size()])
@@ -473,6 +475,78 @@ class CancelSpy:
 	func should_cancel() -> bool:
 		calls += 1
 		return calls >= 2
+
+
+# -------------------------------------------------------------------------
+# Android MP4 backend
+# -------------------------------------------------------------------------
+
+func _test_android_backend() -> void:
+	print("MEDIA STEP: Android MP4 backend")
+	var backend = AndroidVideo.new()
+	_check(not backend.available(), "MP4 backend is unavailable on Linux")
+	_check(backend.reason() == AndroidVideo.REASON, "MP4 refusal uses the exact reason")
+	_check(backend.reason() == "MP4 encoding uses the Android MediaCodec backend. Build the Android APK to export MP4.", "MP4 reason text is exact")
+	var capabilities: Dictionary = backend.capabilities()
+	_check(not bool(capabilities.get("supported", true)), "capabilities report unsupported on Linux")
+	_check(str(capabilities.get("reason", "")) == AndroidVideo.REASON, "capabilities carry the same reason")
+
+	var manifest: Dictionary = backend.build_manifest({
+		"width": 1920,
+		"height": 1080,
+		"fps": 24,
+		"start": 0.0,
+		"end": 6.0,
+		"bitrate": 12000000,
+		"frame_dir": "/tmp/frames",
+		"frame_pattern": "frame_%04d.png",
+		"audio": [
+			{"file": "/tmp/a.wav", "start": 0.0, "trim_start": 0.0, "trim_end": 4.0, "volume": 0.8, "fade_in": 0.1, "fade_out": 0.2},
+			{"file": "/tmp/b.wav", "start": 1.0, "trim_start": 0.5, "trim_end": 3.0, "volume": 1.0, "fade_in": 0.0, "fade_out": 0.0},
+		],
+	})
+	_check(int(manifest.get("frameCount", 0)) == 144, "manifest frame count is range x fps")
+	_check(str(manifest.get("framePattern", "")) == "frame_%04d.png", "manifest keeps the frame pattern")
+	_check(Array(manifest.get("audio", [])).size() == 2, "manifest keeps both audio entries")
+	var audio_entry: Dictionary = Array(manifest.get("audio", []))[0]
+	_check(audio_entry.has("trimStart") and audio_entry.has("fadeIn"), "manifest uses the Java camelCase keys")
+	var json: String = backend.manifest_json({
+		"width": 1280, "height": 720, "fps": 30, "start": 0.0, "end": 1.0,
+		"frame_dir": "/tmp/frames", "audio": [],
+	})
+	_check(JSON.parse_string(json) is Dictionary, "manifest JSON parses")
+
+	var encoded: Dictionary = backend.encode(manifest, "/tmp/out.mp4")
+	_check(not bool(encoded.get("ok", true)), "encode refuses on Linux")
+	_check(str(encoded.get("error", "")) == AndroidVideo.REASON, "encode refusal uses the exact reason")
+	var polled: Dictionary = backend.poll()
+	_check(str(polled.get("state", "")) == "unavailable", "poll reports unavailable on Linux")
+	_check(str(polled.get("error", "")) == AndroidVideo.REASON, "poll carries the exact reason")
+	_check(not bool(backend.probe("/tmp/out.mp4").get("ok", true)), "probe refuses on Linux")
+	backend.cancel()
+	var extraction: Dictionary = await backend.extract_frames("/tmp/in.mp4", "/tmp/out", 12, 1280)
+	_check(not bool(extraction.get("ok", true)), "frame extraction refuses on Linux")
+
+	var root := ProjectSettings.globalize_path("res://").simplify_path().get_base_dir()
+	var stage := FileAccess.get_file_as_string(root.path_join("scripts/stage-android.sh"))
+	_check(stage.contains("studio/android/app/java"), "stage script copies the Java media sources")
+	_check(stage.contains("src/main/java"), "stage script targets the Android app java folder")
+	var java_dir := root.path_join("studio/android/app/java/studio/kinema/media")
+	var encoder_source := FileAccess.get_file_as_string(java_dir.path_join("KinemaVideoEncoder.java"))
+	var frames_source := FileAccess.get_file_as_string(java_dir.path_join("KinemaVideoFrames.java"))
+	for method in [
+		"public static void encode(",
+		"public static int progress()",
+		"public static boolean done()",
+		"public static String error()",
+		"public static void cancel()",
+		"public static String capabilities()",
+		"public static String probe(",
+	]:
+		_check(encoder_source.contains(method), "KinemaVideoEncoder declares " + method)
+	_check(frames_source.contains("public static String extract("), "KinemaVideoFrames declares extract")
+	_check(frames_source.contains("MediaMetadataRetriever"), "KinemaVideoFrames uses MediaMetadataRetriever")
+	_check(frames_source.contains("reference.json"), "KinemaVideoFrames writes reference.json")
 
 
 # -------------------------------------------------------------------------
