@@ -108,6 +108,15 @@ var _menu_bar: HBoxContainer
 var _overflow: PopupMenu
 var _can_undo := false
 var _can_redo := false
+## Width the editor actually reserved for the header. The bar's own size may
+## already be widened by its minimum, so the arrangement is decided from this.
+var _available_width := -1.0
+
+## The full studio strip needs 399 dp: back, title, history, render, settings,
+## the dock toggle and the overflow, all at 44 dp. On a narrower canvas the
+## render and settings buttons join the overflow menu instead of hanging off
+## the edge.
+const STUDIO_FULL_WIDTH := 400.0
 
 
 func _ready() -> void:
@@ -255,6 +264,15 @@ func set_mode(mode: String) -> void:
 	_apply_mode()
 
 
+## The editor reserves the canvas width for the header; the bar must not infer
+## its own available width from a size its own minimum has already forced.
+func set_available_width(value: float) -> void:
+	if is_equal_approx(_available_width, value):
+		return
+	_available_width = value
+	_apply_mode()
+
+
 func mode() -> String:
 	return _mode
 
@@ -341,11 +359,17 @@ func _apply_mode() -> void:
 	_center_title_host.visible = desktop
 	# Compact is a phone header, not a toolbar: back, title/dirty and one
 	# overflow. Undo, redo, save, render and settings live in that menu.
+	# A narrow Studio canvas keeps history and the dock toggle but sends render
+	# and settings to the overflow too, so the strip never exceeds the canvas.
+	var measured := size.x
+	if _available_width > 0.0:
+		measured = minf(measured, _available_width)
+	var narrow_studio := _mode == "studio" and measured > 0.0 and measured < STUDIO_FULL_WIDTH
 	_undo_button.visible = _mode != "compact"
 	_redo_button.visible = _mode != "compact"
-	_settings_button.visible = _mode != "compact"
+	_settings_button.visible = _mode != "compact" and not narrow_studio
 	if _render_button != null:
-		_render_button.visible = _mode != "compact"
+		_render_button.visible = _mode != "compact" and not narrow_studio
 	# Visibility is editor-driven: only a narrow Studio needs the dock toggle.
 	_panels_button.visible = false
 	# Desktop is a mouse surface: the 36 dp bar may use 36 dp targets there.
@@ -357,6 +381,9 @@ func _apply_mode() -> void:
 		if desktop:
 			button.custom_minimum_size = Vector2(36, 36)
 			button.add_theme_constant_override("icon_max_width", 18)
+			# Desktop is a mouse surface: the 36 dp bar is exempt from the
+			# 44 dp touch-floor sweep, exactly like the menu-bar labels.
+			button.set_meta("qa_hit_exempt", true)
 		else:
 			button.custom_minimum_size = Vector2(44, 44)
 			button.add_theme_constant_override("icon_max_width", icon_size)

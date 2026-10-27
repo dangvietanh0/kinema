@@ -155,6 +155,7 @@ func _ready() -> void:
 		_check(new_project != null, "the browser exposes a New project action")
 		if new_project != null:
 			_check(new_project.get_combined_minimum_size().y >= 44.0, "the browser primary action has a 44 dp target")
+			_check(absf(new_project.size.y - 44.0) < 0.5, "the browser New project action is exactly 44 dp tall")
 		home._open_new_project_sheet()
 		for _i in 4:
 			await get_tree().process_frame
@@ -162,6 +163,26 @@ func _ready() -> void:
 		_check(not home_fields.is_empty(), "the new project sheet has a name field")
 		for entry in home_fields:
 			_check(entry.get_combined_minimum_size().y >= 44.0, "the new project name field is at least 44 dp tall")
+		var cancel_action := _button_with_text(home._overlay, "Cancel")
+		var create_action := _button_with_text(home._overlay, "Create project")
+		_check(cancel_action != null, "the new project sheet exposes a secondary action")
+		if cancel_action != null:
+			_check(cancel_action.size.x >= 80.0, "secondary footer actions keep an 80 dp landscape width")
+			_check(absf(cancel_action.size.y - 44.0) < 0.5, "secondary footer actions are exactly 44 dp tall")
+		_check(create_action != null, "the new project sheet exposes its primary action")
+		if create_action != null:
+			_check(create_action.size.x >= 96.0, "the primary footer action keeps a 96 dp landscape width")
+			_check(absf(create_action.size.y - 44.0) < 0.5, "the primary footer action is exactly 44 dp tall")
+		home._overlay.close_modal()
+		await get_tree().process_frame
+		home._show_about()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var home_about := ""
+		for label in _labels_under(home._overlay):
+			home_about += label.text + "\n"
+		_check(not home_about.contains("Geist"), "Home About names the real UI font")
+		_check(home_about.contains("IBM Plex Sans") and home_about.contains("IBM Plex Mono"), "Home About names IBM Plex Sans and Mono")
 		home._overlay.close_modal()
 		await get_tree().process_frame
 
@@ -565,7 +586,8 @@ func _ready() -> void:
 	var done_button := _button_with_text(editor._overlay, "Done")
 	_check(done_button != null, "sheet footer exposes Done")
 	if done_button != null:
-		_check(done_button.size.x >= 96.0 and done_button.size.y >= 44.0, "Done keeps a 96x44 minimum")
+		_check(done_button.size.x >= 96.0, "Done keeps a 96 dp landscape width")
+		_check(absf(done_button.size.y - 44.0) < 0.5, "Done is exactly 44 dp tall")
 		_check(done_button.size.x > done_button.size.y, "Done renders as a landscape action")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
@@ -856,15 +878,24 @@ func _ready() -> void:
 	DirAccess.remove_absolute(sequence_zip)
 
 	print("SMOKE STEP: render sheet")
+	# The compact sheet always has room to scroll; the desktop modal is the
+	# surface that used to cap its primary action below the fold.
+	var previous_layout: String = editor._overlay._layout_mode
+	editor._overlay.set_layout_mode("desktop")
 	editor._open_render_sheet()
-	await get_tree().process_frame
-	await get_tree().process_frame
+	for _i in 4:
+		await get_tree().process_frame
 	_check(editor._overlay.has_modal(), "render sheet opens")
 	_check(editor._render_sequence_button != null, "render sheet has sequence action")
 	_check(editor._render_progress != null, "render sheet has progress readout")
+	if editor._render_sequence_button != null:
+		var scroll_rect: Rect2 = editor._overlay._body_scroll.get_global_rect()
+		var action_rect: Rect2 = editor._render_sequence_button.get_global_rect()
+		_check(action_rect.end.y <= scroll_rect.end.y + 0.5, "render sequence action is above the fold in the desktop modal")
 	_check(editor._sequence_frame_count() == 144, "sequence frame count follows duration and fps")
 	_check(not editor._render_busy, "render sheet is idle on open")
 	editor._overlay.close_modal()
+	editor._overlay.set_layout_mode(previous_layout)
 	await get_tree().process_frame
 
 	print("SMOKE STEP: renderer and settings")

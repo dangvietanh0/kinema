@@ -98,6 +98,12 @@ func _on_resized() -> void:
 	else:
 		_apply_page_margins()
 
+## The browser is a list on phones and a table with metadata columns once the
+## width can afford them. Public so the layout matrix can assert the breakpoint
+## without depending on the live window.
+func layout_for_width(width: float) -> String:
+	return "table" if width >= WIDE_MIN_WIDTH else "list"
+
 func _apply_page_margins() -> void:
 	if _outer == null:
 		return

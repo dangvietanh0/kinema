@@ -8,6 +8,10 @@ extends Control
 ## output path and an action. The harness opens the study template, waits for
 ## the shell to settle, and writes the framebuffer as a PNG.
 ##
+## Actions: home, home-new, timeline, drawer-scene, drawer-props, add-sheet,
+## settings, performance, renderer, graphics, render, quick-render, workspace,
+## draft, graph.
+##
 ## Screenshots are evidence, so the harness must not photograph its own
 ## history: Home is seeded with representative recent projects, the editor uses
 ## a real project name, transient toasts are cleared before the shutter, and the
@@ -89,6 +93,25 @@ func _ready() -> void:
 			main._editor._open_workspace_sheet()
 		"draft":
 			main._editor._view.set_interactive(true)
+		"graph":
+			if not main._editor._timeline_visible:
+				main._editor._toggle_timeline()
+			var timeline = main._editor._timeline
+			var graph_doc = main._editor.doc
+			timeline.set_mode("graph")
+			timeline.set_channel("position")
+			# The study selects the orbiting torus, whose keys are on rotation;
+			# photograph a channel that actually carries keys so the segment
+			# highlight and the speed stats are real.
+			if graph_doc.get_channel_keys(graph_doc.selected_id, "position").size() < 2:
+				for channel in ["rotation", "scale"]:
+					if graph_doc.get_channel_keys(graph_doc.selected_id, channel).size() >= 2:
+						timeline.set_channel(channel)
+						break
+			# The playhead can sit before the first key on a fresh study; fall
+			# back to the middle of the range so a segment is always selected.
+			if not timeline.select_segment_at_time(graph_doc.current_time):
+				timeline.select_segment_at_time(graph_doc.duration * 0.5)
 	if action != "":
 		for _i in 15:
 			await get_tree().process_frame

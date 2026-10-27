@@ -424,6 +424,10 @@ func _refresh_compact() -> void:
 	var narrow := measured < 640.0
 	var narrow_chrome := touch or narrow
 	var show_header := _sheet_open and narrow_chrome
+	# A narrow canvas cannot hold every transport control at 44 dp, so the
+	# folded and open states trade AUTO and the fold control rather than
+	# pushing the center column past the canvas edge.
+	var narrow_sheet_folded := narrow and not touch and not _sheet_open
 	_start_button.visible = not narrow_chrome
 	_end_button.visible = not narrow_chrome
 	_snap_button.visible = not narrow_chrome
@@ -431,11 +435,19 @@ func _refresh_compact() -> void:
 	_loop_button.visible = not narrow_chrome
 	_delete_button.visible = not narrow_chrome
 	if _fold_button != null:
-		_fold_button.visible = not touch
+		# The header owns folding while the sheet is open; once it is folded
+		# the transport's control is the way back. Touch uses the compact
+		# bottom bar instead, so it never needs the transport control.
+		_fold_button.visible = not touch and (not narrow or not _sheet_open)
+	if _auto_button != null:
+		# A folded narrow sheet swaps AUTO for the fold control: both cannot
+		# hold a 44 dp target on a 320-360 dp canvas. AUTO returns as soon as
+		# the sheet opens again.
+		_auto_button.visible = not narrow_sheet_folded
 	_frame_label.visible = not narrow_chrome and size.x >= 420.0
-	_time_box.custom_minimum_size.x = 58 if touch else 76
-	_transport_style.content_margin_left = 4 if touch else 6
-	_transport_style.content_margin_right = 4 if touch else 6
+	_time_box.custom_minimum_size.x = 58 if narrow_chrome else 76
+	_transport_style.content_margin_left = 4 if narrow_chrome else 6
+	_transport_style.content_margin_right = 4 if narrow_chrome else 6
 	if _compact_header != null:
 		_compact_header.visible = show_header
 	if _compact_ease_button != null:

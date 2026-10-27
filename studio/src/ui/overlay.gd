@@ -12,7 +12,10 @@ signal modal_closed
 
 const HIT := 44.0
 const SHEET_RATIO := 0.86
-const MODAL_MAX_HEIGHT := 640.0
+## Long surfaces (render, media export) must not push their primary action
+## below the fold while a tall window still has unused vertical space. The cap
+## is clamped to the viewport height minus the sheet margins.
+const MODAL_MAX_HEIGHT := 760.0
 const DRAG_DISMISS := 72.0
 
 var _layout_mode := "studio"

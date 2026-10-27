@@ -900,6 +900,7 @@ func _apply_shell() -> void:
 	if _short != was_short and not _timeline_user_override:
 		_timeline_visible = _default_timeline_visible(workbench_mode)
 	_top_bar.set_mode(workbench_mode)
+	_top_bar.set_available_width(size.x)
 	_rail.set_mode(workbench_mode)
 	_rail.set_available_height(size.y)
 	_bottom_bar.set_mode(workbench_mode)
@@ -971,6 +972,10 @@ func _apply_shell() -> void:
 		var min_width := 320.0 if workbench_mode == "desktop" else 280.0
 		var max_width := 380.0 if workbench_mode == "desktop" else 340.0
 		dock_width = clampf(size.x * ratio, min_width, max_width)
+		# The dock reserves at least its own content minimum. The inspector's
+		# transform fields have a real floor; a dock narrower than that would
+		# grow past the right edge instead of shrinking the viewport.
+		dock_width = maxf(dock_width, _dock.get_combined_minimum_size().x)
 	_dock_slot.visible = not dock_overlay
 	_dock_slot.custom_minimum_size.x = dock_width if not dock_overlay else 0.0
 	# The timeline decides between its full transport and the overflow header.
