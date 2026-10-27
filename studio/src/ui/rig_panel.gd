@@ -64,6 +64,7 @@ func _ready() -> void:
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation", 0)
 	_build_shell()
+	visibility_changed.connect(_on_visibility_changed)
 	set_process(true)
 
 
@@ -664,6 +665,10 @@ func _on_ik_changed() -> void:
 
 func _on_rigs_changed() -> void:
 	refresh()
+
+
+func _on_visibility_changed() -> void:
+	rig_mode_changed.emit(is_visible_in_tree())
 
 
 func _on_rig_selection_changed(rig_id: String, _bone: String) -> void:
