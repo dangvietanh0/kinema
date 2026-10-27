@@ -1,0 +1,309 @@
+extends VBoxContainer
+## Media export sheet: PNG sequence, GIF and Android MP4.
+##
+## The sheet never fakes a format. MP4 is disabled with the exact backend
+## reason on non-Android, GIF disables 60 fps because a centisecond delay cannot
+## represent it, and progress uses the real phases the renderer/backend report.
+
+signal export_requested(options: Dictionary)
+signal cancel_requested
+signal close_requested
+
+const AndroidVideo = preload("res://src/core/android_video.gd")
+const CameraExport = preload("res://src/core/camera_export.gd")
+
+const FORMATS := ["png", "gif", "mp4"]
+const RESOLUTIONS := [
+	{"label": "1280 × 720", "size": Vector2i(1280, 720)},
+	{"label": "1920 × 1080", "size": Vector2i(1920, 1080)},
+	{"label": "2560 × 1440", "size": Vector2i(2560, 1440)},
+]
+const FPS_OPTIONS := [12, 24, 30, 60]
+const GIF_FPS := [12, 24, 30]
+const BITRATE_MBPS := [4, 8, 12, 20]
+const GIF_60_REASON := "GIF timing is centisecond-based; 60 fps cannot be represented"
+
+var _doc = null
+var _view = null
+var _format := "png"
+var _fps := 24
+var _size := Vector2i(1920, 1080)
+var _bitrate := 12
+var _camera_id := ""
+var _include_audio := true
+var _start := 0.0
+var _end := 4.0
+var _progress_label: Label
+var _status_label: Label
+var _result_label: Label
+var _export_button: Button
+var _cancel_button: Button
+
+
+func setup(doc, view = null) -> void:
+	_doc = doc
+	_view = view
+	if _doc != null and _doc.has_method("sequence_duration"):
+		_end = maxf(0.04, float(_doc.sequence_duration()))
+	_rebuild()
+
+
+func format_ids() -> Array:
+	return FORMATS.duplicate()
+
+
+func resolution_sizes() -> Array:
+	var sizes: Array = []
+	for entry in RESOLUTIONS:
+		sizes.append(entry["size"])
+	return sizes
+
+
+func gif_fps_options() -> Array:
+	return GIF_FPS.duplicate()
+
+
+func gif_disabled_reason(fps: int) -> String:
+	return GIF_60_REASON if fps == 60 else ""
+
+
+func mp4_reason() -> String:
+	return AndroidVideo.REASON
+
+
+func bitrate_options() -> Array:
+	return BITRATE_MBPS.duplicate()
+
+
+func progress_text(kind: String, done: int, total: int) -> String:
+	match kind:
+		"frames":
+			return "Frame %d/%d" % [done, total]
+		"encoding":
+			return "Encoding video"
+		"verifying":
+			return "Verifying"
+		"done":
+			return "Done"
+		"cancelled":
+			return "Cancelled"
+		"error":
+			return "Export failed"
+	return "Ready"
+
+
+func set_progress(kind: String, done: int = 0, total: int = 0) -> void:
+	if _progress_label != null:
+		_progress_label.text = progress_text(kind, done, total)
+	if _status_label != null:
+		_status_label.text = "Exporting" if kind in ["frames", "encoding", "verifying"] else progress_text(kind, done, total)
+
+
+func set_result(path: String, size_bytes: int, duration: float, tracks: String) -> void:
+	if _result_label == null:
+		return
+	_result_label.text = "%s · %.1f MB · %.2f s · %s" % [path, float(size_bytes) / (1024.0 * 1024.0), duration, tracks]
+	_result_label.visible = true
+
+
+func build_options() -> Dictionary:
+	return {
+		"format": _format,
+		"width": _size.x,
+		"height": _size.y,
+		"fps": _fps,
+		"start": _start,
+		"end": _end,
+		"bitrate": _bitrate * 1000000,
+		"camera_id": _camera_id,
+		"include_audio": _include_audio,
+		"output_path": _output_path(),
+	}
+
+
+func _rebuild() -> void:
+	for child in get_children():
+		remove_child(child)
+		child.queue_free()
+	_progress_label = null
+	_status_label = null
+	_result_label = null
+	_export_button = null
+	_cancel_button = null
+	add_theme_constant_override("separation", 8)
+	add_child(Kit.section_label("Media export"))
+
+	var formats := HBoxContainer.new()
+	formats.add_theme_constant_override("separation", 2)
+	add_child(formats)
+	var group := ButtonGroup.new()
+	group.allow_unpress = false
+	for id in FORMATS:
+		var button := Kit.text_toggle(id.to_upper(), "", true)
+		button.button_group = group
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.button_pressed = id == _format
+		if id == "mp4" and not AndroidVideo.new().available():
+			button.disabled = true
+			button.tooltip_text = AndroidVideo.REASON
+		button.toggled.connect(func(on: bool) -> void:
+			if on:
+				_format = id
+				if _format == "gif" and _fps == 60:
+					_fps = 30
+				_rebuild()
+		)
+		formats.add_child(button)
+
+	add_child(_labeled_option("Resolution", _resolution_option()))
+	add_child(_labeled_option("FPS", _fps_option()))
+	add_child(_labeled_option("Bitrate", _bitrate_option()))
+	add_child(_range_row())
+	add_child(_labeled_option("Camera", _camera_option()))
+	var audio := Kit.text_toggle("Include audio mix")
+	audio.button_pressed = _include_audio
+	audio.toggled.connect(func(on: bool) -> void: _include_audio = on)
+	add_child(audio)
+	add_child(_labeled_field("Output", _output_path()))
+
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 8)
+	add_child(actions)
+	_export_button = Kit.text_button("Export", "download", true)
+	_export_button.pressed.connect(_on_export)
+	actions.add_child(_export_button)
+	_cancel_button = Kit.text_button("Cancel", "", false, true)
+	_cancel_button.custom_minimum_size.x = 80
+	_cancel_button.pressed.connect(func() -> void: cancel_requested.emit())
+	actions.add_child(_cancel_button)
+
+	_progress_label = Kit.mono_label(progress_text("ready", 0, 0), Kit.TYPE_MONO, Kit.TEXT_MUTED)
+	add_child(_progress_label)
+	_status_label = Kit.label("", Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+	add_child(_status_label)
+	_result_label = Kit.label("", Kit.TYPE_CAPTION, Kit.TEXT)
+	_result_label.visible = false
+	add_child(_result_label)
+
+
+func _resolution_option() -> OptionButton:
+	var option := OptionButton.new()
+	option.custom_minimum_size.y = 44
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var selected := 0
+	for index in range(RESOLUTIONS.size()):
+		var entry: Dictionary = RESOLUTIONS[index]
+		option.add_item(str(entry["label"]))
+		if entry["size"] == _size:
+			selected = index
+	option.selected = selected
+	option.item_selected.connect(func(index: int) -> void:
+		_size = RESOLUTIONS[index]["size"]
+	)
+	return option
+
+
+func _fps_option() -> OptionButton:
+	var option := OptionButton.new()
+	option.custom_minimum_size.y = 44
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for fps in FPS_OPTIONS:
+		option.add_item("%d fps" % fps)
+		if fps == _fps:
+			option.selected = option.item_count - 1
+		if _format == "gif" and fps == 60:
+			option.set_item_disabled(option.item_count - 1, true)
+	option.tooltip_text = GIF_60_REASON if _format == "gif" else ""
+	option.item_selected.connect(func(index: int) -> void:
+		_fps = int(FPS_OPTIONS[index])
+	)
+	return option
+
+
+func _bitrate_option() -> OptionButton:
+	var option := OptionButton.new()
+	option.custom_minimum_size.y = 44
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for mbps in BITRATE_MBPS:
+		option.add_item("%d Mbps" % mbps)
+		if mbps == _bitrate:
+			option.selected = option.item_count - 1
+	option.item_selected.connect(func(index: int) -> void:
+		_bitrate = int(BITRATE_MBPS[index])
+	)
+	return option
+
+
+func _camera_option() -> OptionButton:
+	var option := OptionButton.new()
+	option.custom_minimum_size.y = 44
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	option.add_item("Editor camera")
+	option.set_item_metadata(0, "")
+	var exporter = CameraExport.new()
+	exporter.setup(_doc)
+	for entry in exporter.camera_names():
+		var data: Dictionary = entry
+		option.add_item(str(data.get("name", "Camera")))
+		option.set_item_metadata(option.item_count - 1, str(data.get("id", "")))
+	option.item_selected.connect(func(index: int) -> void:
+		_camera_id = str(option.get_item_metadata(index))
+	)
+	return option
+
+
+func _range_row() -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.custom_minimum_size.y = 44
+	row.add_theme_constant_override("separation", 8)
+	row.add_child(Kit.label("Range", Kit.TYPE_BODY, Kit.TEXT_MUTED))
+	var start := Kit.line_edit("Start")
+	start.text = "%.2f" % _start
+	start.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	start.text_submitted.connect(func(text: String) -> void: _start = maxf(0.0, text.to_float()))
+	row.add_child(start)
+	var end := Kit.line_edit("End")
+	end.text = "%.2f" % _end
+	end.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	end.text_submitted.connect(func(text: String) -> void: _end = maxf(_start, text.to_float()))
+	row.add_child(end)
+	return row
+
+
+func _labeled_field(label_text: String, value: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.custom_minimum_size.y = 44
+	row.add_theme_constant_override("separation", 8)
+	var label := Kit.label(label_text, Kit.TYPE_BODY, Kit.TEXT_MUTED)
+	label.custom_minimum_size.x = 96
+	row.add_child(label)
+	var field := Kit.line_edit("Output path")
+	field.text = value
+	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(field)
+	return row
+
+
+func _labeled_option(label_text: String, option: OptionButton) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.custom_minimum_size.y = 44
+	row.add_theme_constant_override("separation", 8)
+	var label := Kit.label(label_text, Kit.TYPE_BODY, Kit.TEXT_MUTED)
+	label.custom_minimum_size.x = 96
+	row.add_child(label)
+	row.add_child(option)
+	return row
+
+
+func _output_path() -> String:
+	var extension := "png" if _format == "png" else ("gif" if _format == "gif" else "mp4")
+	return "user://exports/kinema_export." + extension
+
+
+func _on_export() -> void:
+	if _format == "mp4" and not AndroidVideo.new().available():
+		set_progress("error")
+		if _status_label != null:
+			_status_label.text = AndroidVideo.REASON
+		return
+	export_requested.emit(build_options())

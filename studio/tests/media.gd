@@ -13,6 +13,11 @@ const GifEncoder = preload("res://src/core/gif_encoder.gd")
 const SequenceRenderer = preload("res://src/core/sequence_renderer.gd")
 const CameraExport = preload("res://src/core/camera_export.gd")
 const AndroidVideo = preload("res://src/core/android_video.gd")
+const MediaLanes = preload("res://src/ui/media_lanes.gd")
+const AudioSheet = preload("res://src/ui/audio_sheet.gd")
+const VideoReferencePanel = preload("res://src/ui/video_reference_panel.gd")
+const MediaExportSheet = preload("res://src/ui/media_export_sheet.gd")
+const MediaImportSheet = preload("res://src/ui/media_import_sheet.gd")
 
 const PROJECT_DIR := "user://media_ws_b_project"
 const FIXTURE_DIR := "user://media_ws_b_fixtures"
@@ -51,6 +56,7 @@ func _ready() -> void:
 	await _test_gif()
 	await _test_render_and_camera()
 	await _test_android_backend()
+	await _test_ui()
 
 	var status := "PASS" if _failures.is_empty() else "FAIL"
 	print("MEDIA RESULT: %s (%d OK, %d FAIL)" % [status, _oks, _failures.size()])
@@ -547,6 +553,118 @@ func _test_android_backend() -> void:
 	_check(frames_source.contains("public static String extract("), "KinemaVideoFrames declares extract")
 	_check(frames_source.contains("MediaMetadataRetriever"), "KinemaVideoFrames uses MediaMetadataRetriever")
 	_check(frames_source.contains("reference.json"), "KinemaVideoFrames writes reference.json")
+
+
+# -------------------------------------------------------------------------
+# UI
+# -------------------------------------------------------------------------
+
+func _test_ui() -> void:
+	print("MEDIA STEP: media lanes and sheets")
+	_doc.media_system.reset()
+	var lanes = MediaLanes.new()
+	lanes.setup(_doc)
+	add_child(lanes)
+	lanes.refresh()
+	await get_tree().process_frame
+	_check(lanes.audio_row_height() == 48.0, "audio lane rows are 48 dp")
+	_check(lanes.video_row_height() == 40.0, "video lane rows are 40 dp")
+	_check(lanes.audio_row_count() == 0 and lanes.video_row_count() == 0, "empty media lanes have no rows")
+	_check(lanes.empty_audio_text().contains("No audio tracks"), "audio empty state names the missing tracks")
+	_check(lanes.empty_video_text().contains("No video reference"), "video empty state names the missing reference")
+	_check(lanes.is_collapsed() == false, "media lanes start expanded")
+	lanes.set_collapsed(true)
+	_check(lanes.is_collapsed(), "media lanes collapse")
+	lanes.set_collapsed(false)
+
+	var ids := _prepare_ui_media()
+	lanes.refresh()
+	await get_tree().process_frame
+	_check(lanes.audio_row_count() == 1, "audio lane shows the track row")
+	_check(lanes.video_row_count() == 1, "video lane shows the reference row")
+	_check(_all_controls_44(lanes), "media lane controls keep the 44 dp floor")
+
+	var audio_sheet = AudioSheet.new()
+	audio_sheet.setup(_doc.media_system)
+	audio_sheet.open(str(ids.get("track_id", "")))
+	add_child(audio_sheet)
+	await get_tree().process_frame
+	_check(audio_sheet.track_id() == str(ids.get("track_id", "")), "audio sheet opens the requested track")
+	_check(audio_sheet.waveform_status().begins_with("Waveform"), "WAV audio sheet shows a real waveform")
+	_check(audio_sheet.has_delete_confirm(), "audio sheet has a delete action")
+	_check(_all_controls_44(audio_sheet), "audio sheet controls keep the 44 dp floor")
+
+	var video_panel = VideoReferencePanel.new()
+	video_panel.setup(_doc.media_system)
+	video_panel.open(str(ids.get("ref_id", "")))
+	add_child(video_panel)
+	await get_tree().process_frame
+	_check(video_panel.reference_id() == str(ids.get("ref_id", "")), "video panel opens the requested reference")
+	_check(video_panel.delete_warning().contains("cannot be undone"), "video panel warns that deletion cannot be undone")
+	_check(video_panel.frame_text().contains("fps"), "video panel reports the frame proxy rate")
+	_check(_all_controls_44(video_panel), "video panel controls keep the 44 dp floor")
+
+	var export_sheet = MediaExportSheet.new()
+	export_sheet.setup(_doc, null)
+	add_child(export_sheet)
+	await get_tree().process_frame
+	_check(export_sheet.resolution_sizes() == [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440)], "export sheet offers the three exact sizes")
+	_check(export_sheet.gif_fps_options() == [12, 24, 30], "GIF fps options are 12/24/30")
+	_check(export_sheet.gif_disabled_reason(60) == "GIF timing is centisecond-based; 60 fps cannot be represented", "export sheet explains the disabled GIF 60 fps")
+	_check(export_sheet.mp4_reason() == AndroidVideo.REASON, "export sheet explains the unavailable MP4 backend")
+	_check(export_sheet.progress_text("frames", 42, 144) == "Frame 42/144", "export progress shows frame n/N")
+	_check(export_sheet.progress_text("encoding", 0, 0) == "Encoding video", "export progress shows the encoding phase")
+	_check(export_sheet.progress_text("verifying", 0, 0) == "Verifying", "export progress shows the verifying phase")
+	_check(export_sheet.format_ids() == ["png", "gif", "mp4"], "export sheet offers PNG, GIF and MP4")
+	_check(_all_controls_44(export_sheet), "export sheet controls keep the 44 dp floor")
+
+	var import_sheet = MediaImportSheet.new()
+	import_sheet.setup(_doc)
+	add_child(import_sheet)
+	await get_tree().process_frame
+	_check(import_sheet.proxy_fps_options() == [12, 24], "import proxy fps options are 12/24")
+	_check(import_sheet.max_width_options().has(1280), "import proxy offers a 1280 max width")
+	_check(import_sheet.unsupported_reason("mp4").contains("Android"), "import sheet explains MP4 extraction is Android-only")
+	_check(import_sheet.unsupported_reason("ogv").contains("VideoStreamPlayer"), "import sheet explains the OGV direct-play path")
+	_check(_all_controls_44(import_sheet), "import sheet controls keep the 44 dp floor")
+
+
+func _prepare_ui_media() -> Dictionary:
+	var source := FIXTURE_DIR.path_join("ui_track.wav")
+	_write_wav(source, 44100, 1, 1.0, 330.0)
+	var imported: Dictionary = _doc.media_system.import_audio(source)
+	var track_id: String = _doc.media_system.add_audio_track(str(imported.get("rel_path", "")), 0.0)
+	var track: Dictionary = _doc.media_system.audio_tracks()[0]
+	var ref_dir := PROJECT_DIR.path_join("video_refs").path_join("ui_ref")
+	var frames_dir := ref_dir.path_join("frames")
+	DirAccess.make_dir_recursive_absolute(frames_dir)
+	var names: Array = []
+	for index in range(2):
+		var name := "frame_%06d.jpg" % (index + 1)
+		_make_jpeg(frames_dir.path_join(name), Color(0.2 + index * 0.2, 0.3, 0.3))
+		names.append(name)
+	_write_json(ref_dir.path_join("reference.json"), {
+		"version": 1, "fps": 12, "duration": 1.0, "width": 16, "height": 16, "frames": names,
+	})
+	var ref := {
+		"id": "ui_ref", "name": "UI Reference", "dir": "video_refs/ui_ref",
+		"fps": 12, "duration": 1.0, "width": 16, "height": 16,
+	}
+	_doc.media_system.load_data({"media": {"audio": [track], "video_refs": [ref]}}, PROJECT_DIR)
+	return {"track_id": track_id, "ref_id": "ui_ref"}
+
+
+func _all_controls_44(node: Node) -> bool:
+	var ok := true
+	for child in node.get_children():
+		if child is Button or child is LineEdit or child is OptionButton or child is HSlider:
+			var control: Control = child
+			if control.get_combined_minimum_size().y < 43.5:
+				printerr("MEDIA: control below 44 dp: %s (%s) %.1f" % [child.name, child.get_class(), control.get_combined_minimum_size().y])
+				ok = false
+		if not _all_controls_44(child):
+			ok = false
+	return ok
 
 
 # -------------------------------------------------------------------------

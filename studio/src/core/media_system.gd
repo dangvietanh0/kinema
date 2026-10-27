@@ -157,6 +157,17 @@ func audio_tracks() -> Array:
 	return _audio.duplicate(true)
 
 
+func audio_track(id: String) -> Dictionary:
+	var index := _audio_index(id)
+	if index < 0:
+		return {}
+	return _audio[index].duplicate(true)
+
+
+func project_dir() -> String:
+	return _root()
+
+
 ## Sequence-time position inside the source file. `sequence_time - start +
 ## trim_start` is the single formula used by playback, the UI and the mixdown.
 func audio_offset(track: Dictionary, sequence_time: float) -> float:
