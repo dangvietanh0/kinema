@@ -10,6 +10,8 @@ const DocumentScript = preload("res://src/core/document.gd")
 const AudioLibrary = preload("res://src/core/audio_library.gd")
 const VideoReference = preload("res://src/core/video_reference.gd")
 const GifEncoder = preload("res://src/core/gif_encoder.gd")
+const SequenceRenderer = preload("res://src/core/sequence_renderer.gd")
+const CameraExport = preload("res://src/core/camera_export.gd")
 
 const PROJECT_DIR := "user://media_ws_b_project"
 const FIXTURE_DIR := "user://media_ws_b_fixtures"
@@ -46,6 +48,7 @@ func _ready() -> void:
 	await _test_audio()
 	await _test_video()
 	await _test_gif()
+	await _test_render_and_camera()
 
 	var status := "PASS" if _failures.is_empty() else "FAIL"
 	print("MEDIA RESULT: %s (%d OK, %d FAIL)" % [status, _oks, _failures.size()])
@@ -361,8 +364,127 @@ func _index_of(haystack: PackedByteArray, needle: PackedByteArray) -> int:
 
 
 # -------------------------------------------------------------------------
+# Sequence renderer and camera export
+# -------------------------------------------------------------------------
+
+func _test_render_and_camera() -> void:
+	print("MEDIA STEP: sequence renderer and camera export")
+	var view := FakeView.new()
+	add_child(view)
+	var renderer = SequenceRenderer.new()
+	renderer.setup(_doc, view)
+	var out_dir := FIXTURE_DIR.path_join("render_64")
+	var result: Dictionary = await renderer.render({
+		"width": 64,
+		"height": 64,
+		"fps": 24,
+		"start": 0.0,
+		"end": 0.125,
+		"frame_count": 3,
+		"output_dir": out_dir,
+	})
+	_check(bool(result.get("ok", false)), "sequence renderer completes")
+	_check(int(result.get("frame_count", 0)) == 3, "sequence renderer reports three frames")
+	_check(not bool(result.get("cancelled", true)), "sequence renderer is not cancelled")
+	var files := _files(out_dir)
+	_check(files.size() == 3, "sequence renderer writes three PNG files")
+	_check(files.has("frame_0001.png") and files.has("frame_0003.png"), "sequence renderer numbers frames from one")
+	var first := Image.new()
+	var load_err := first.load(out_dir.path_join("frame_0001.png"))
+	_check(load_err == OK, "rendered PNG opens")
+	_check(first.get_width() == 64 and first.get_height() == 64, "rendered PNG has the exact requested size")
+	_check(view.sizes.size() == 3 and view.sizes[0] == Vector2i(64, 64), "renderer passes the exact size to capture_with_camera")
+
+	var cancel_dir := FIXTURE_DIR.path_join("render_cancelled")
+	var spy := CancelSpy.new()
+	var cancelled: Dictionary = await renderer.render({
+		"width": 64,
+		"height": 64,
+		"fps": 24,
+		"start": 0.0,
+		"end": 0.5,
+		"frame_count": 8,
+		"output_dir": cancel_dir,
+	}, Callable(), spy.should_cancel)
+	_check(not bool(cancelled.get("ok", true)), "cancelled render reports failure")
+	_check(bool(cancelled.get("cancelled", false)), "cancelled render reports cancellation")
+	_check(not DirAccess.dir_exists_absolute(cancel_dir), "cancelled render leaves no final output")
+
+	for size in [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440)]:
+		view.sizes.clear()
+		var exact_dir := FIXTURE_DIR.path_join("exact_%dx%d" % [size.x, size.y])
+		var exact: Dictionary = await renderer.render({
+			"width": size.x,
+			"height": size.y,
+			"fps": 12,
+			"start": 0.0,
+			"end": 1.0 / 12.0,
+			"frame_count": 1,
+			"output_dir": exact_dir,
+		})
+		_check(bool(exact.get("ok", false)), "exact-size render completes for %dx%d" % [size.x, size.y])
+		_check(view.sizes.size() == 1 and view.sizes[0] == size, "capture spy receives the exact %dx%d size" % [size.x, size.y])
+		var image := Image.new()
+		image.load(exact_dir.path_join("frame_0001.png"))
+		_check(image.get_width() == size.x and image.get_height() == size.y, "PNG is exactly %dx%d with no crop or letterbox" % [size.x, size.y])
+
+	var camera_id: String = _doc.add_camera(Vector3(1.0, 2.0, 3.0))
+	_doc.set_object_transform(camera_id, Vector3(1.0, 2.0, 3.0), Quaternion(Vector3.UP, 0.5), Vector3.ONE, false)
+	_doc.set_camera_fov(camera_id, 46.0)
+	var exporter = CameraExport.new()
+	exporter.setup(_doc)
+	var camera_path := FIXTURE_DIR.path_join("camera.json")
+	var exported: Dictionary = exporter.export(camera_path, camera_id, 24, 1.0)
+	_check(bool(exported.get("ok", false)), "camera track exports")
+	_check(FileAccess.file_exists(camera_path), "camera JSON exists")
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(camera_path))
+	_check(parsed is Dictionary, "camera JSON parses")
+	var track: Dictionary = parsed
+	_check(int(track.get("version", 0)) == 1, "camera JSON version is one")
+	_check(int(track.get("fps", 0)) == 24, "camera JSON fps matches")
+	_check(_near(float(track.get("duration", 0.0)), 1.0), "camera JSON duration matches")
+	_check(_near(float(track.get("fov", 0.0)), 46.0), "camera JSON keeps the static fov")
+	var frames: Array = track.get("frames", [])
+	_check(frames.size() == 24, "camera JSON frame count matches fps x duration")
+	var first_frame: Dictionary = frames[0]
+	_check(Array(first_frame.get("position", [])).size() == 3, "camera frame has a position")
+	_check(Array(first_frame.get("rotation", [])).size() == 4, "camera frame has a quaternion rotation")
+	var position: Array = first_frame.get("position", [])
+	_check(_near(float(position[0]), 1.0) and _near(float(position[1]), 2.0) and _near(float(position[2]), 3.0), "camera position roundtrips")
+	var rotation: Array = first_frame.get("rotation", [])
+	var quat := Quaternion(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3]))
+	var expected := Quaternion(Vector3.UP, 0.5)
+	_check(absf(quat.dot(expected)) > 0.999, "camera rotation roundtrips")
+
+
+class FakeView:
+	extends Node
+	var sizes: Array[Vector2i] = []
+
+	func capture_with_camera(size: Vector2i, _msaa: int, _xform: Transform3D, _fov: float, _transparent_bg := false) -> Image:
+		sizes.append(size)
+		var image := Image.create(size.x, size.y, false, Image.FORMAT_RGBA8)
+		image.fill(Color(0.2, 0.2, 0.2, 1.0))
+		return image
+
+
+class CancelSpy:
+	var calls := 0
+	func should_cancel() -> bool:
+		calls += 1
+		return calls >= 2
+
+
+# -------------------------------------------------------------------------
 # Fixtures
 # -------------------------------------------------------------------------
+
+func _files(directory: String) -> PackedStringArray:
+	if not DirAccess.dir_exists_absolute(directory):
+		return PackedStringArray()
+	var files := DirAccess.get_files_at(directory)
+	files.sort()
+	return files
 
 func _write_wav(path: String, sample_rate: int, channels: int, seconds: float, frequency: float) -> void:
 	var frames := int(round(sample_rate * seconds))
