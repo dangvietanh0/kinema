@@ -36,7 +36,7 @@ func _ready() -> void:
 	if grouped:
 		add_theme_stylebox_override("panel", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
 	else:
-		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.BORDER_SOFT, 1))
 
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)
@@ -44,7 +44,7 @@ func _ready() -> void:
 	add_child(row)
 
 	var badge_panel := PanelContainer.new()
-	var badge_style := Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0)
+	var badge_style := Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
 	badge_style.border_width_right = 1
 	badge_style.border_color = Kit.BORDER_SOFT
 	badge_style.content_margin_left = 0

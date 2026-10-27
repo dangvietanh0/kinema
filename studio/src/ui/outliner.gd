@@ -290,9 +290,12 @@ func _make_row(obj: Dictionary) -> Control:
 
 func _row_style(selected: bool, hover: bool = false) -> StyleBoxFlat:
 	if selected:
-		var sb := Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0)
+		# The selected row is a full ACTIVE fill with a single bright edge. The
+		# fill carries the selection; the 1 px edge keeps it findable when the
+		# row is partly scrolled under the dock header.
+		var sb := Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 		sb.border_width_left = 1
-		sb.border_color = Kit.ACCENT
+		sb.border_color = Kit.FOCUS_BRIGHT
 		sb.content_margin_left = 4
 		sb.content_margin_right = 4
 		return sb

@@ -99,7 +99,7 @@ func _build() -> void:
 
 	_panel = PanelContainer.new()
 	_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_panel_style = Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER, 1)
+	_panel_style = Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Kit.BORDER, 1)
 	_panel.add_theme_stylebox_override("panel", _panel_style)
 	_sheet_margin.add_child(_panel)
 
@@ -119,7 +119,7 @@ func _build() -> void:
 	var handle := Panel.new()
 	handle.custom_minimum_size = Vector2(32, 4)
 	handle.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var handle_style := Kit.flat_style(Kit.BORDER, 0, Color(0, 0, 0, 0), 0)
+	var handle_style := Kit.flat_style(Kit.BORDER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
 	handle.add_theme_stylebox_override("panel", handle_style)
 	handle_center.add_child(handle)
 
@@ -201,7 +201,7 @@ func _build() -> void:
 	_toast_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_center.add_child(_toast_margin)
 	_toast_panel = PanelContainer.new()
-	_toast_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	_toast_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_FLOAT, Kit.BORDER_SOFT, 1))
 	_toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_margin.add_child(_toast_panel)
 	var toast_row := HBoxContainer.new()
@@ -501,7 +501,7 @@ func _apply_variant() -> void:
 		_sheet_margin.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		_panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		_panel.custom_minimum_size.x = width
-		_panel_style.set_corner_radius_all(0)
+		_panel_style.set_corner_radius_all(Kit.R_FLOAT)
 		_panel_style.set_border_width_all(1)
 		_panel_style.border_color = Kit.BORDER
 		_panel_style.content_margin_left = 20

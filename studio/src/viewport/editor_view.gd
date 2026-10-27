@@ -13,6 +13,10 @@ const DRAFT_IDLE_DELAY := 0.45
 
 signal quick_render_requested
 signal performance_requested
+## The viewport header owns the visible camera/grid controls; the view reports
+## its state so the two never disagree.
+signal view_changed(label: String)
+signal grid_changed(enabled: bool)
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -29,13 +33,16 @@ var _camera: Camera3D
 var _env_node: WorldEnvironment
 var _grid_root: Node3D
 var _grid_mesh: MeshInstance3D
-var _view_chip: Button
-var _grid_button: Button
 var _fps_chip: Button
-var _focus_button: Button
 var _quick_render_button: Button
+## The viewport header owns the visible grid and frame controls. These two
+## references keep the frozen shell test (and any older call site) able to
+## inspect the real buttons without a second, invisible copy in the HUD.
+var _grid_button: Button = null
+var _focus_button: Button = null
 var _hud_root: Control
 var _preset := "Persp"
+var _grid_on := true
 ## Real-time render preview. The editor chrome disappears, the document plays
 ## at full quality, and only the render transport stays on screen.
 var render_mode := false
@@ -238,16 +245,13 @@ func _build_hud() -> void:
 	top_left.grow_vertical = Control.GROW_DIRECTION_END
 	_hud_root.add_child(top_left)
 
-	_view_chip = Kit.text_button("Persp", "orbit", false, true)
-	_view_chip.tooltip_text = "Cycle camera view"
-	_view_chip.pressed.connect(_cycle_view)
-	_override_hud_button(_view_chip)
-	top_left.add_child(_view_chip)
-
+	# Camera, grid and frame moved to the viewport header, which occupies
+	# layout space instead of floating over the image. The HUD keeps only the
+	# transient draft tag, the FPS chip and the render shortcut.
 	# A quiet draft tag explains the softer image during gestures; it never
 	# appears on the idle viewport or in a render.
 	var draft_panel := PanelContainer.new()
-	var draft_style := Kit.flat_style(HUD_BG, 0, Color(0, 0, 0, 0), 0)
+	var draft_style := Kit.flat_style(HUD_BG, Kit.R_FLOAT, Color(0, 0, 0, 0), 0)
 	draft_style.content_margin_left = 8
 	draft_style.content_margin_right = 8
 	draft_style.content_margin_top = 4
@@ -293,26 +297,15 @@ func _build_hud() -> void:
 	_quick_render_button.pressed.connect(func() -> void: quick_render_requested.emit())
 	top_right.add_child(_quick_render_button)
 
-	_focus_button = Kit.icon_button("focus", "Frame selection (F)", 44, 20)
-	_override_hud_button(_focus_button)
-	_focus_button.pressed.connect(focus_selection)
-	top_right.add_child(_focus_button)
-
-	_grid_button = Kit.icon_button("grid-3x3", "Toggle grid", 30, 15)
-	_override_hud_button(_grid_button)
-	_grid_button.toggle_mode = true
-	_grid_button.button_pressed = true
-	_grid_button.toggled.connect(_on_grid_toggled)
-	top_right.add_child(_grid_button)
-
 func _override_hud_button(button: Button) -> void:
 	# HUD controls read as floating surfaces, not framed cards. State is
 	# carried by fill and glyph luminance; only the field frames in the
-	# inspector and the region hairlines keep an outline.
-	button.add_theme_stylebox_override("normal", Kit.flat_style(HUD_BG, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	# inspector and the region hairlines keep an outline. A floating control
+	# gets the 4 px radius so it reads as detached from the stage.
+	button.add_theme_stylebox_override("normal", Kit.flat_style(HUD_BG, Kit.R_FLOAT, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_FLOAT, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_FLOAT, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_FLOAT, Color(0, 0, 0, 0), 0))
 	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 	button.add_theme_color_override("font_pressed_color", Kit.FOCUS_BRIGHT)
 	button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
@@ -337,6 +330,14 @@ func set_document(document: Node3D) -> void:
 	call_deferred("_reframe_after_layout")
 	queue_redraw()
 
+## Called by the shell once the viewport header exists. The view does not
+## parent these controls; it only keeps the header and the view in step.
+func bind_header_controls(grid_button: Button, frame_button: Button) -> void:
+	_grid_button = grid_button
+	_focus_button = frame_button
+	if _grid_button != null:
+		_grid_button.set_pressed_no_signal(_grid_on)
+
 func set_tool(new_tool: String) -> void:
 	tool = new_tool
 	queue_redraw()
@@ -360,12 +361,12 @@ func set_render_mode(enabled: bool) -> void:
 		return
 	render_mode = enabled
 	if enabled:
-		_render_grid_was_on = _grid_button != null and _grid_button.button_pressed
+		_render_grid_was_on = _grid_on
 		_render_draft_was_on = _draft_enabled
 		_render_hud_was_on = _hud_root != null and _hud_root.visible
 		_render_markers_were_hidden = doc == null or doc.markers_hidden
-		if _grid_button != null:
-			_grid_button.set_pressed_no_signal(false)
+		_grid_on = false
+		grid_changed.emit(false)
 		_set_grid_strength(0.0)
 		set_hud_visible(false)
 		set_draft_quality(false)
@@ -382,8 +383,8 @@ func set_render_mode(enabled: bool) -> void:
 				else SubViewport.UPDATE_ONCE
 			)
 	else:
-		if _grid_button != null:
-			_grid_button.set_pressed_no_signal(_render_grid_was_on)
+		_grid_on = _render_grid_was_on
+		grid_changed.emit(_grid_on)
 		_set_grid_strength(1.0 if _render_grid_was_on else 0.0)
 		set_hud_visible(_render_hud_was_on)
 		set_draft_quality(_render_draft_was_on)
@@ -632,13 +633,16 @@ func _repaint() -> void:
 	if _viewport != null and _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
 		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
-func _cycle_view() -> void:
-	match _preset:
-		"Persp":
-			_apply_preset("Front", 0.0, 0.0)
+## Applies one of the four canonical camera presets. The viewport header
+## owns the menu; this method is the single entry point so a future camera
+## selector can call the same path.
+func set_view_preset(label: String) -> void:
+	match label:
 		"Front":
-			_apply_preset("Right", PI * 0.5, 0.0)
+			_apply_preset("Front", 0.0, 0.0)
 		"Right":
+			_apply_preset("Right", PI * 0.5, 0.0)
+		"Top":
 			_apply_preset("Top", 0.0, 1.45)
 		_:
 			_apply_preset("Persp", deg_to_rad(38.0), deg_to_rad(18.0))
@@ -647,10 +651,15 @@ func _apply_preset(label: String, new_yaw: float, new_pitch: float) -> void:
 	_preset = label
 	yaw = new_yaw
 	pitch = new_pitch
-	_view_chip.text = label
+	_set_view_label(label)
 	queue_redraw()
 
+func _set_view_label(label: String) -> void:
+	view_changed.emit(label)
+
 func _on_grid_toggled(enabled: bool) -> void:
+	_grid_on = enabled
+	grid_changed.emit(enabled)
 	_set_grid_strength(1.0 if enabled else 0.0)
 	_repaint()
 
@@ -662,12 +671,15 @@ func frame_all() -> void:
 
 
 func toggle_grid() -> void:
-	if _grid_button == null:
-		return
-	_grid_button.button_pressed = not _grid_button.button_pressed
-	# set_pressed_no_signal keeps the button and the stage in step; the toggled
-	# signal is emitted manually so the strength follows either entry point.
-	_on_grid_toggled(_grid_button.button_pressed)
+	# The header button is the visible control; this entry point keeps the
+	# stage, the header and any shortcut in step through one signal.
+	_on_grid_toggled(not _grid_on)
+
+func grid_enabled() -> bool:
+	return _grid_on
+
+func view_preset() -> String:
+	return _preset
 
 func focus_selection() -> void:
 	if doc == null:
@@ -850,7 +862,7 @@ func _orbit(relative: Vector2) -> void:
 	yaw -= relative.x * 0.0062
 	pitch = clampf(pitch + relative.y * 0.0062, -1.35, 1.45)
 	_preset = "Free"
-	_view_chip.text = "Free"
+	_set_view_label("Free")
 	queue_redraw()
 
 func _update_multi_anchor() -> void:
@@ -880,7 +892,7 @@ func _update_multi_gesture() -> void:
 	_multi_mid = mid
 	_multi_dist = dist
 	_preset = "Free"
-	_view_chip.text = "Free"
+	_set_view_label("Free")
 	queue_redraw()
 
 # -------------------------------------------------------------------------
@@ -1253,7 +1265,7 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 	if _draft_active:
 		_end_draft()
 		await RenderingServer.frame_post_draw
-	var grid_visible := _grid_button.button_pressed if _grid_button != null else true
+	var grid_visible := _grid_on
 	_set_grid_strength(0.0)
 	var markers_were_hidden := false
 	if doc != null:
@@ -1305,7 +1317,7 @@ func capture_with_camera(size: Vector2i, msaa: int, xform: Transform3D, fov: flo
 	if _draft_active:
 		_end_draft()
 		await RenderingServer.frame_post_draw
-	var grid_visible := _grid_button.button_pressed if _grid_button != null else true
+	var grid_visible := _grid_on
 	_set_grid_strength(0.0)
 	var markers_were_hidden := false
 	if doc != null:

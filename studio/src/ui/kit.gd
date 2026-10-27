@@ -113,25 +113,31 @@ func _build_theme() -> void:
 	theme.default_font_size = TYPE_BODY
 
 	# ---- Core controls ------------------------------------------------
-	var transparent := flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0))
-	var base_button := flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0)
-	var hover_button := flat_style(SURFACE_HOVER, 0, Color(0, 0, 0, 0), 0)
-	var pressed_button := flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0)
-	var disabled_button := flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0))
+	# Controls carry the 2 px radius; only panel bodies are cut square. The
+	# fill alone carries hover and press: a hairline around every button turned
+	# the workbench into a wireframe.
+	var clear := Color(0, 0, 0, 0)
+	var base_button := flat_style(clear, R_CONTROL, clear, 0)
+	var hover_button := flat_style(SURFACE_HOVER, R_CONTROL, clear, 0)
+	var pressed_button := flat_style(SURFACE_ACTIVE, R_CONTROL, clear, 0)
+	var disabled_button := flat_style(clear, R_CONTROL, clear, 0)
 
 	theme.set_stylebox("normal", "Button", base_button)
 	theme.set_stylebox("hover", "Button", hover_button)
 	theme.set_stylebox("pressed", "Button", pressed_button)
+	theme.set_stylebox("hover_pressed", "Button", flat_style(SURFACE_ACTIVE.lightened(0.04), R_CONTROL, clear, 0))
 	theme.set_stylebox("disabled", "Button", disabled_button)
-	theme.set_stylebox("focus", "Button", flat_style(Color(0, 0, 0, 0), 0, FOCUS * Color(1, 1, 1, 0.35)))
+	theme.set_stylebox("focus", "Button", flat_style(clear, R_CONTROL, FOCUS * Color(1, 1, 1, 0.5), 1))
 	theme.set_color("font_color", "Button", TEXT)
 	theme.set_color("font_hover_color", "Button", TEXT)
 	theme.set_color("font_pressed_color", "Button", FOCUS_BRIGHT)
+	theme.set_color("font_hover_pressed_color", "Button", FOCUS_BRIGHT)
 	theme.set_color("font_focus_color", "Button", TEXT)
 	theme.set_color("font_disabled_color", "Button", TEXT_DIM)
 	theme.set_color("icon_normal_color", "Button", TEXT_MUTED)
 	theme.set_color("icon_hover_color", "Button", TEXT)
 	theme.set_color("icon_pressed_color", "Button", FOCUS_BRIGHT)
+	theme.set_color("icon_hover_pressed_color", "Button", FOCUS_BRIGHT)
 	theme.set_color("icon_focus_color", "Button", TEXT)
 	theme.set_color("icon_disabled_color", "Button", TEXT_DIM * Color(1, 1, 1, 0.45))
 	theme.set_font("font", "Button", font_medium)
@@ -141,23 +147,27 @@ func _build_theme() -> void:
 	# Primary action: the one white fill in the interface. Black type on white
 	# keeps the workbench monochrome and makes the intended action obvious.
 	theme.set_type_variation("PrimaryButton", "Button")
-	theme.set_stylebox("normal", "PrimaryButton", flat_style(FOCUS, 0, FOCUS))
-	theme.set_stylebox("hover", "PrimaryButton", flat_style(FOCUS_BRIGHT, 0, FOCUS_BRIGHT))
-	theme.set_stylebox("pressed", "PrimaryButton", flat_style(FOCUS.darkened(0.14), 0, FOCUS.darkened(0.14)))
-	theme.set_stylebox("focus", "PrimaryButton", flat_style(Color(0, 0, 0, 0), 0, FOCUS_BRIGHT))
+	theme.set_stylebox("normal", "PrimaryButton", flat_style(FOCUS, R_CONTROL, FOCUS))
+	theme.set_stylebox("hover", "PrimaryButton", flat_style(FOCUS_BRIGHT, R_CONTROL, FOCUS_BRIGHT))
+	theme.set_stylebox("pressed", "PrimaryButton", flat_style(FOCUS.darkened(0.14), R_CONTROL, FOCUS.darkened(0.14)))
+	theme.set_stylebox("hover_pressed", "PrimaryButton", flat_style(FOCUS.darkened(0.14), R_CONTROL, FOCUS.darkened(0.14)))
+	theme.set_stylebox("focus", "PrimaryButton", flat_style(clear, R_CONTROL, FOCUS_BRIGHT))
 	theme.set_color("font_color", "PrimaryButton", BG)
 	theme.set_color("font_hover_color", "PrimaryButton", BG)
 	theme.set_color("font_pressed_color", "PrimaryButton", BG)
+	theme.set_color("font_hover_pressed_color", "PrimaryButton", BG)
 	theme.set_color("icon_normal_color", "PrimaryButton", BG)
 	theme.set_color("icon_hover_color", "PrimaryButton", BG)
 	theme.set_color("icon_pressed_color", "PrimaryButton", BG)
+	theme.set_color("icon_hover_pressed_color", "PrimaryButton", BG)
 	theme.set_font("font", "PrimaryButton", font_semibold)
 
 	# Quiet action: no frame, only a surface on hover.
 	theme.set_type_variation("QuietButton", "Button")
-	theme.set_stylebox("normal", "QuietButton", flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
-	theme.set_stylebox("hover", "QuietButton", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	theme.set_stylebox("pressed", "QuietButton", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	theme.set_stylebox("normal", "QuietButton", flat_style(clear, R_CONTROL, clear, 0))
+	theme.set_stylebox("hover", "QuietButton", flat_style(SURFACE_HOVER, R_CONTROL, clear, 0))
+	theme.set_stylebox("pressed", "QuietButton", flat_style(SURFACE_ACTIVE, R_CONTROL, clear, 0))
+	theme.set_stylebox("hover_pressed", "QuietButton", flat_style(SURFACE_ACTIVE, R_CONTROL, clear, 0))
 	theme.set_color("font_color", "QuietButton", TEXT)
 	theme.set_color("icon_normal_color", "QuietButton", TEXT_MUTED)
 
@@ -166,9 +176,10 @@ func _build_theme() -> void:
 	theme.set_type_variation("SmallButton", "Button")
 	theme.set_font("font", "SmallButton", font_medium)
 	theme.set_font_size("font_size", "SmallButton", TYPE_CAPTION)
-	theme.set_stylebox("normal", "SmallButton", flat_style(SURFACE_2, 0, Color(0, 0, 0, 0), 0))
-	theme.set_stylebox("hover", "SmallButton", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	theme.set_stylebox("pressed", "SmallButton", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	theme.set_stylebox("normal", "SmallButton", flat_style(SURFACE_2, R_CONTROL, clear, 0))
+	theme.set_stylebox("hover", "SmallButton", flat_style(SURFACE_HOVER, R_CONTROL, clear, 0))
+	theme.set_stylebox("pressed", "SmallButton", flat_style(SURFACE_ACTIVE, R_CONTROL, clear, 0))
+	theme.set_stylebox("hover_pressed", "SmallButton", flat_style(SURFACE_ACTIVE, R_CONTROL, clear, 0))
 	theme.set_constant("h_separation", "SmallButton", 5)
 
 	# Label.
@@ -182,12 +193,12 @@ func _build_theme() -> void:
 
 	# LineEdit. Fields are 44 dp tall everywhere: a comfortable touch target
 	# with 12 dp of horizontal breathing room and a 13 sp value.
-	var field := flat_style(SURFACE_2, 0, BORDER_SOFT)
+	var field := flat_style(SURFACE_2, R_CONTROL, BORDER_SOFT)
 	field.content_margin_left = 12
 	field.content_margin_right = 12
 	field.content_margin_top = 10
 	field.content_margin_bottom = 10
-	var field_focus := flat_style(SURFACE_2, 0, FOCUS * Color(1, 1, 1, 0.65))
+	var field_focus := flat_style(SURFACE_2, R_CONTROL, FOCUS * Color(1, 1, 1, 0.65))
 	field_focus.content_margin_left = 12
 	field_focus.content_margin_right = 12
 	field_focus.content_margin_top = 10
@@ -213,8 +224,10 @@ func _build_theme() -> void:
 	theme.set_stylebox("grabber_pressed", "HScrollBar", flat_style(TEXT_MUTED, 0, Color(0, 0, 0, 0)))
 
 	# Popup menus (only used where a native dropdown is genuinely useful).
-	theme.set_stylebox("panel", "PopupMenu", flat_style(SURFACE_2, 0, BORDER))
-	theme.set_stylebox("hover", "PopupMenu", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0)))
+	# Floating surfaces take the 4 px radius; they are detached from the
+	# square panel grid underneath them.
+	theme.set_stylebox("panel", "PopupMenu", flat_style(SURFACE_2, R_FLOAT, BORDER))
+	theme.set_stylebox("hover", "PopupMenu", flat_style(SURFACE_ACTIVE, R_CONTROL, Color(0, 0, 0, 0)))
 	theme.set_color("font_color", "PopupMenu", TEXT)
 	theme.set_color("font_hover_color", "PopupMenu", TEXT)
 	theme.set_color("font_accelerator_color", "PopupMenu", TEXT_DIM)
@@ -228,14 +241,14 @@ func _build_theme() -> void:
 	theme.set_constant("item_end_padding", "PopupMenu", 12)
 
 	# Tooltip.
-	theme.set_stylebox("panel", "TooltipPanel", flat_style(SURFACE_2, 0, BORDER))
+	theme.set_stylebox("panel", "TooltipPanel", flat_style(SURFACE_2, R_FLOAT, BORDER))
 	theme.set_color("font_color", "TooltipLabel", TEXT)
 	theme.set_font("font", "TooltipLabel", font_regular)
 	theme.set_font_size("font_size", "TooltipLabel", 11)
 
 	# Progress, mostly for render operations.
-	theme.set_stylebox("background", "ProgressBar", flat_style(SURFACE_2, 0, BORDER_SOFT))
-	theme.set_stylebox("fill", "ProgressBar", flat_style(FOCUS, 0, FOCUS))
+	theme.set_stylebox("background", "ProgressBar", flat_style(SURFACE_2, R_CONTROL, BORDER_SOFT))
+	theme.set_stylebox("fill", "ProgressBar", flat_style(FOCUS, R_CONTROL, FOCUS))
 	theme.set_color("font_color", "ProgressBar", TEXT_MUTED)
 	theme.set_font_size("font_size", "ProgressBar", TYPE_CAPTION)
 
@@ -371,7 +384,7 @@ func icon_texture(icon_name: String) -> Texture2D:
 	_icons[icon_name] = texture
 	return texture
 
-func icon(icon_name: String, color: Color = TEXT_MUTED, size: int = 16) -> TextureRect:
+func icon(icon_name: String, color: Color = TEXT_MUTED, size: int = 18) -> TextureRect:
 	var t := TextureRect.new()
 	t.texture = icon_texture(icon_name)
 	t.custom_minimum_size = Vector2(size, size)
@@ -397,10 +410,11 @@ func icon_button(icon_name: String, tooltip: String = "", size: int = 44, icon_s
 	b.add_theme_color_override("icon_normal_color", TEXT_MUTED)
 	b.add_theme_color_override("icon_hover_color", TEXT)
 	b.add_theme_color_override("icon_pressed_color", FOCUS_BRIGHT)
-	b.add_theme_stylebox_override("normal", flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
-	b.add_theme_stylebox_override("hover", flat_style(SURFACE_HOVER, 0, Color(0, 0, 0, 0), 0))
-	b.add_theme_stylebox_override("pressed", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	b.add_theme_stylebox_override("focus", flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
+	b.add_theme_stylebox_override("normal", flat_style(Color(0, 0, 0, 0), R_CONTROL, Color(0, 0, 0, 0), 0))
+	b.add_theme_stylebox_override("hover", flat_style(SURFACE_HOVER, R_CONTROL, Color(0, 0, 0, 0), 0))
+	b.add_theme_stylebox_override("pressed", flat_style(SURFACE_ACTIVE, R_CONTROL, Color(0, 0, 0, 0), 0))
+	b.add_theme_stylebox_override("hover_pressed", flat_style(SURFACE_ACTIVE, R_CONTROL, Color(0, 0, 0, 0), 0))
+	b.add_theme_stylebox_override("focus", flat_style(Color(0, 0, 0, 0), R_CONTROL, Color(0, 0, 0, 0), 0))
 	return b
 
 func text_button(text_value: String, icon_name: String = "", primary: bool = false, compact: bool = false) -> Button:
@@ -431,19 +445,23 @@ func set_icon_active(button: Button, active: bool, edge: String = "left") -> voi
 		# Active tools read from a filled cell plus a single bright edge. A
 		# full outline competed with the field frames in the inspector. The
 		# edge follows the rail: left for a column, bottom for a strip.
-		button.add_theme_stylebox_override("normal", _active_edge_style(FOCUS_DARK, edge))
-		button.add_theme_stylebox_override("hover", _active_edge_style(FOCUS_DARK.lightened(0.04), edge))
-		button.add_theme_stylebox_override("pressed", _active_edge_style(FOCUS_DARK.darkened(0.06), edge))
+		# Selected rows and toggles use the one ACTIVE fill from the token
+		# table, so every "on" state in the workbench reads the same.
+		button.add_theme_stylebox_override("normal", _active_edge_style(SURFACE_ACTIVE, edge))
+		button.add_theme_stylebox_override("hover", _active_edge_style(SURFACE_ACTIVE.lightened(0.04), edge))
+		button.add_theme_stylebox_override("pressed", _active_edge_style(SURFACE_ACTIVE.darkened(0.06), edge))
+		button.add_theme_stylebox_override("hover_pressed", _active_edge_style(SURFACE_ACTIVE.lightened(0.04), edge))
 	else:
 		button.add_theme_color_override("icon_normal_color", TEXT_MUTED)
 		button.add_theme_color_override("icon_hover_color", TEXT)
 		button.add_theme_color_override("icon_pressed_color", FOCUS_BRIGHT)
-		button.add_theme_stylebox_override("normal", flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
-		button.add_theme_stylebox_override("hover", flat_style(SURFACE_HOVER, 0, Color(0, 0, 0, 0), 0))
-		button.add_theme_stylebox_override("pressed", flat_style(SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("normal", flat_style(Color(0, 0, 0, 0), R_CONTROL, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("hover", flat_style(SURFACE_HOVER, R_CONTROL, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("pressed", flat_style(SURFACE_ACTIVE, R_CONTROL, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("hover_pressed", flat_style(SURFACE_ACTIVE, R_CONTROL, Color(0, 0, 0, 0), 0))
 
 func _active_edge_style(fill: Color, edge: String) -> StyleBoxFlat:
-	var style := flat_style(fill, 0, FOCUS_BRIGHT, 0)
+	var style := flat_style(fill, R_CONTROL, FOCUS_BRIGHT, 0)
 	if edge == "bottom":
 		style.border_width_bottom = 1
 	else:
@@ -466,11 +484,11 @@ func text_toggle(text_value: String, icon_name: String = "", accent: bool = fals
 	b.add_theme_color_override("icon_hover_color", TEXT)
 	b.add_theme_color_override("icon_pressed_color", TEXT)
 	b.add_theme_color_override("icon_hover_pressed_color", TEXT)
-	b.add_theme_stylebox_override("normal", style_with_margins(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
-	b.add_theme_stylebox_override("hover", style_with_margins(SURFACE_HOVER, 0, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
-	b.add_theme_stylebox_override("pressed", style_with_margins(FOCUS_DARK, 0, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
-	b.add_theme_stylebox_override("hover_pressed", style_with_margins(FOCUS_DARK.lightened(0.04), 0, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
-	b.add_theme_stylebox_override("focus", flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
+	b.add_theme_stylebox_override("normal", style_with_margins(Color(0, 0, 0, 0), R_CONTROL, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
+	b.add_theme_stylebox_override("hover", style_with_margins(SURFACE_HOVER, R_CONTROL, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
+	b.add_theme_stylebox_override("pressed", style_with_margins(SURFACE_ACTIVE, R_CONTROL, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
+	b.add_theme_stylebox_override("hover_pressed", style_with_margins(SURFACE_ACTIVE.lightened(0.04), R_CONTROL, Color(0, 0, 0, 0), 0, Vector4(9, 2, 9, 2)))
+	b.add_theme_stylebox_override("focus", flat_style(Color(0, 0, 0, 0), R_CONTROL, Color(0, 0, 0, 0), 0))
 	if icon_name != "":
 		b.icon = icon_texture(icon_name)
 		b.add_theme_constant_override("icon_max_width", 14)
@@ -554,3 +572,14 @@ func set_margins(container: Control, left: int, top: int, right: int, bottom: in
 
 func tooltip_icon(button: Control, text_value: String) -> void:
 	button.tooltip_text = text_value
+
+## Desktop menu-bar chrome is a pointer surface, so it is the only place the
+## 44 dp touch floor may be waived. Marking the exemption explicitly keeps the
+## layout matrix honest: every other visible control still has to clear HIT.
+func exempt_from_hit_floor(control: Control) -> void:
+	if control != null:
+		control.set_meta("qa_hit_exempt", true)
+
+
+func is_hit_exempt(control: Control) -> bool:
+	return control != null and control.has_meta("qa_hit_exempt")

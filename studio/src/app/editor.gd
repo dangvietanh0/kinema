@@ -23,6 +23,7 @@ const InspectorScript = preload("res://src/ui/inspector.gd")
 const TimelineScript = preload("res://src/ui/timeline.gd")
 const OverlayScript = preload("res://src/ui/overlay.gd")
 const TopBarScript = preload("res://src/ui/components/top_bar.gd")
+const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
 const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
 const StatusBarScript = preload("res://src/ui/components/status_bar.gd")
 const BottomBarScript = preload("res://src/ui/components/bottom_bar.gd")
@@ -59,6 +60,7 @@ var _bottom_bar: PanelContainer
 var _body: HBoxContainer
 var _rail: PanelContainer
 var _center: VBoxContainer
+var _view_header: PanelContainer
 var _viewport_host: Control
 var _view: Control
 var _perf_overlay: PanelContainer
@@ -144,7 +146,7 @@ func _ready() -> void:
 	clip_contents = true
 	_layout = VBoxContainer.new()
 	_layout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_layout.add_theme_constant_override("separation", 0)
+	_layout.add_theme_constant_override("separation", int(Kit.GUTTER))
 	add_child(_layout)
 
 	_build_top_bar()
@@ -190,7 +192,7 @@ func _build_top_bar() -> void:
 func _build_body() -> void:
 	_body = HBoxContainer.new()
 	_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_body.add_theme_constant_override("separation", 0)
+	_body.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_layout.add_child(_body)
 
 	_rail = ToolRailScript.new()
@@ -202,8 +204,17 @@ func _build_body() -> void:
 	_center = VBoxContainer.new()
 	_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_center.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_center.add_theme_constant_override("separation", 0)
+	# A one-pixel gutter lets the black shell show between the stage, the
+	# header and the sheet instead of stacking same-valued panels edge to edge.
+	_center.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_body.add_child(_center)
+
+	# The view header is part of the layout, not a floating plate: it owns the
+	# camera preset, Add, grid and frame without covering the image.
+	_view_header = ViewportHeaderScript.new()
+	_view_header.add_requested.connect(_open_add_sheet)
+	_view_header.frame_requested.connect(_focus_selection)
+	_center.add_child(_view_header)
 
 	_viewport_host = Control.new()
 	_viewport_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -217,6 +228,13 @@ func _build_body() -> void:
 	_view.set_tool(_tool)
 	_view.quick_render_requested.connect(_enter_render_mode)
 	_view.performance_requested.connect(_toggle_performance_overlay)
+	# The header and the view share one source of truth. The view reports a
+	# free-orbit camera or a grid change; the header writes intent back.
+	_view.view_changed.connect(_on_view_changed)
+	_view.grid_changed.connect(_on_view_grid_changed)
+	_view.bind_header_controls(_view_header.grid_button(), _view_header.frame_button())
+	_view_header.view_requested.connect(_on_view_requested)
+	_view_header.grid_toggled.connect(_on_view_header_grid_toggled)
 
 	# The overlay is a sibling of the view so it floats above the 3D surface
 	# without becoming part of the viewport's own HUD layout.
@@ -276,7 +294,7 @@ func _build_dock() -> void:
 	add_child(_dock)
 
 	_dock_box = VBoxContainer.new()
-	_dock_box.add_theme_constant_override("separation", 0)
+	_dock_box.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_dock.add_child(_dock_box)
 
 	_dock_close_row = MarginContainer.new()
@@ -311,8 +329,7 @@ func _build_dock() -> void:
 	_outliner_panel = PanelContainer.new()
 	_outliner_panel.custom_minimum_size.y = 172
 	_outliner_panel.size_flags_vertical = Control.SIZE_FILL
-	var out_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	out_style.border_width_bottom = 1
+	var out_style := Kit.flat_style(Kit.SURFACE, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	_outliner_panel.add_theme_stylebox_override("panel", out_style)
 	_dock_box.add_child(_outliner_panel)
 
@@ -348,7 +365,7 @@ func _build_render_hud() -> void:
 	_render_hud.offset_bottom = -24.0
 	_render_hud.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_render_hud.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER, 1)
+	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Kit.BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 6
@@ -903,6 +920,10 @@ func _apply_shell() -> void:
 	_top_bar.set_available_width(size.x)
 	_rail.set_mode(workbench_mode)
 	_rail.set_available_height(size.y)
+	_view_header.set_mode(workbench_mode)
+	if _view != null:
+		_view_header.set_view_label(_view.view_preset())
+		_view_header.set_grid(_view.grid_enabled())
 	_bottom_bar.set_mode(workbench_mode)
 	_status_bar.set_mode(workbench_mode)
 	if _overlay != null:
@@ -1248,6 +1269,22 @@ func _focus_selection() -> void:
 	if _view != null:
 		_view.focus_selection()
 
+func _on_view_requested(label: String) -> void:
+	if _view != null:
+		_view.set_view_preset(label)
+
+func _on_view_changed(label: String) -> void:
+	if _view_header != null:
+		_view_header.set_view_label(label)
+
+func _on_view_grid_changed(enabled: bool) -> void:
+	if _view_header != null:
+		_view_header.set_grid(enabled)
+
+func _on_view_header_grid_toggled(enabled: bool) -> void:
+	if _view != null:
+		_view.toggle_grid()
+
 func _undo() -> void:
 	if doc == null or not doc.can_undo():
 		return
@@ -1534,8 +1571,8 @@ func _open_render_sheet() -> void:
 	_render_progress.step = 0.001
 	_render_progress.show_percentage = false
 	_render_progress.custom_minimum_size.y = 5
-	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, 0, Kit.BORDER_SOFT, 0))
-	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, 0, Kit.FOCUS, 0))
+	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Kit.BORDER_SOFT, 0))
+	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, Kit.R_CONTROL, Kit.FOCUS, 0))
 	progress_box.add_child(_render_progress)
 	_render_status = Kit.mono_label("", 9, Kit.TEXT_MUTED)
 	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1656,6 +1693,7 @@ func _capture_render_chrome() -> void:
 		"status": _status_bar != null and _status_bar.visible,
 		"bottom": _bottom_bar != null and _bottom_bar.visible,
 		"rail": _rail != null and _rail.visible,
+		"header": _view_header != null and _view_header.visible,
 		"timeline": _timeline_panel != null and _timeline_panel.visible,
 		"dock": _dock != null and _dock.visible,
 		"dock_slot": _dock_slot != null and _dock_slot.visible,
@@ -1674,6 +1712,8 @@ func _set_render_chrome_hidden() -> void:
 		_bottom_bar.visible = false
 	if _rail != null:
 		_rail.visible = false
+	if _view_header != null:
+		_view_header.visible = false
 	if _timeline_panel != null:
 		_timeline_panel.visible = false
 	if _dock != null:
@@ -1695,6 +1735,8 @@ func _restore_render_chrome() -> void:
 		_bottom_bar.visible = bool(_render_ui_state.get("bottom", false))
 	if _rail != null:
 		_rail.visible = bool(_render_ui_state.get("rail", true))
+	if _view_header != null:
+		_view_header.visible = bool(_render_ui_state.get("header", true))
 	if _timeline_panel != null:
 		_timeline_panel.visible = bool(_render_ui_state.get("timeline", true))
 	if _perf_overlay != null:
@@ -2023,7 +2065,7 @@ func _segment_strip(parent: Control) -> HBoxContainer:
 	# Segmented controls sit on a quiet track. The selected segment is a
 	# lighter fill, so the group reads without a frame around every option.
 	var track := PanelContainer.new()
-	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
+	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	parent.add_child(track)
 	var strip := HBoxContainer.new()
 	strip.add_theme_constant_override("separation", 2)
@@ -2031,10 +2073,10 @@ func _segment_strip(parent: Control) -> HBoxContainer:
 	return strip
 
 func _style_segment(button: Button) -> void:
-	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3.lightened(0.04), 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_ACTIVE.lightened(0.04), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 	button.add_theme_color_override("font_hover_color", Kit.TEXT)
 	button.add_theme_color_override("font_pressed_color", Kit.TEXT)
@@ -2477,9 +2519,9 @@ func _open_color_sheet(property: String) -> void:
 		swatch.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 		swatch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		swatch.tooltip_text = str(hex)
-		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, 0, Kit.BORDER, 1))
-		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), 0, Kit.TEXT_MUTED, 1))
-		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), 0, Kit.FOCUS, 1))
+		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, Kit.R_CONTROL, Kit.BORDER, 1))
+		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), Kit.R_CONTROL, Kit.TEXT_MUTED, 1))
+		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), Kit.R_CONTROL, Kit.FOCUS, 1))
 		swatch.pressed.connect(_set_color_value.bind(color))
 		grid.add_child(swatch)
 
@@ -2523,7 +2565,7 @@ func _open_color_sheet(property: String) -> void:
 	_sync_color_controls()
 
 func _color_preview_style() -> StyleBoxFlat:
-	var style := Kit.flat_style(_color_value, 0, Kit.BORDER, 1)
+	var style := Kit.flat_style(_color_value, Kit.R_CONTROL, Kit.BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	return style

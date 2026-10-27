@@ -969,7 +969,7 @@ func _choice_row(parent: Control, title: String, hint: String, options: Array, c
 
 func _segment(parent: Control) -> HBoxContainer:
 	var track := PanelContainer.new()
-	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
+	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	parent.add_child(track)
 	var strip := HBoxContainer.new()
 	strip.add_theme_constant_override("separation", 2)
@@ -980,10 +980,10 @@ func _segment(parent: Control) -> HBoxContainer:
 func _segment_button(text_value: String) -> Button:
 	var button := Kit.text_toggle(text_value, "", true)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3.lightened(0.04), 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_ACTIVE.lightened(0.04), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 	button.add_theme_color_override("font_hover_color", Kit.TEXT)
 	button.add_theme_color_override("font_pressed_color", Kit.TEXT)
@@ -1001,8 +1001,13 @@ func _option_control(options: Array, current: Variant, on_change: Callable) -> O
 	option.add_theme_color_override("font_pressed_color", Kit.TEXT)
 	option.add_theme_color_override("font_disabled_color", Kit.TEXT_DIM)
 	for state in ["normal", "hover", "pressed", "focus"]:
-		option.add_theme_stylebox_override(state, Kit.flat_style(Kit.SURFACE_2 if state == "normal" else Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	option.add_theme_stylebox_override("disabled", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
+		var fill := Kit.SURFACE_2
+		if state == "hover":
+			fill = Kit.SURFACE_HOVER
+		elif state == "pressed":
+			fill = Kit.SURFACE_ACTIVE
+		option.add_theme_stylebox_override(state, Kit.flat_style(fill, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	option.add_theme_stylebox_override("disabled", Kit.flat_style(Kit.SURFACE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	var selected := 0
 	for i in range(options.size()):
 		var data: Dictionary = options[i]
@@ -1014,7 +1019,7 @@ func _option_control(options: Array, current: Variant, on_change: Callable) -> O
 	var popup := option.get_popup()
 	popup.add_theme_font_override("font", Kit.font_regular)
 	popup.add_theme_font_size_override("font_size", Kit.TYPE_BODY)
-	popup.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER, 1))
+	popup.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_FLOAT, Kit.BORDER, 1))
 	popup.add_theme_color_override("font_color", Kit.TEXT)
 	popup.add_theme_color_override("font_hover_color", Kit.TEXT)
 	popup.add_theme_color_override("font_disabled_color", Kit.TEXT_DIM)

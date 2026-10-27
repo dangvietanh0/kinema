@@ -340,8 +340,7 @@ func _apply_mode() -> void:
 			menu_button.custom_minimum_size.y = 32 if desktop else Kit.Tokens.HIT
 			menu_button.add_theme_font_size_override("font_size", 11 if desktop else Kit.TYPE_BODY)
 
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_bottom = 1
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 6
 	style.content_margin_right = 6
 	style.content_margin_top = 0
