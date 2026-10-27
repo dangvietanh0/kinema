@@ -41,7 +41,7 @@ func max_width_options() -> Array:
 
 
 func proxy_limit_text() -> String:
-	return "Proxy folders are limited to 2 GB; the import is refused before extraction when the folder exceeds it."
+	return "Proxy folders are limited to 2 GB; an oversized proxy is deleted and the import fails."
 
 
 func unsupported_reason(kind: String) -> String:

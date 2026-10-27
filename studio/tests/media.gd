@@ -231,6 +231,15 @@ func _test_video() -> void:
 	_check(not bool(unsupported.get("ok", true)), "MP4 reference import is unavailable on Linux")
 	_check(str(unsupported.get("error", "")).contains("Android"), "MP4 reference refusal names the Android backend")
 	_check(VideoReference.source_kind("clip.ogv") == "ogv", "OGV is recognised as a direct-play reference")
+	_check(_doc.media_system.has_method("proxy_options"), "media system exposes proxy options")
+	if _doc.media_system.has_method("proxy_options"):
+		var proxy: Dictionary = _doc.media_system.proxy_options({"fps": 24, "max_width": 640})
+		_check(int(proxy.get("fps", 0)) == 24 and int(proxy.get("max_width", 0)) == 640, "proxy options honour the import sheet")
+		var clamped: Dictionary = _doc.media_system.proxy_options({"fps": 60, "max_width": 99999})
+		_check(int(clamped.get("fps", 0)) == 12, "unsupported proxy fps falls back to 12")
+		_check(int(clamped.get("max_width", 0)) == 1920, "proxy width clamps to the largest preset")
+		var custom: Dictionary = _doc.media_system.import_video_reference(FIXTURE_DIR.path_join("clip.mp4"), {"fps": 24, "max_width": 640})
+		_check(str(custom.get("error", "")).contains("Android"), "proxy import accepts explicit fps and width options")
 
 	_check(str(_doc.media_system.delete_confirm_text("ref_1")).contains("cannot be undone"), "video delete exposes confirm metadata")
 	_doc.media_system.delete_video_reference("ref_1")

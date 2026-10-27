@@ -18,6 +18,11 @@ const AUDIO_DEFAULTS := {
 	"fade_out": 0.0,
 }
 const DRIFT_TOLERANCE := 0.08
+const PROXY_FPS_PRESETS := [12, 24]
+const PROXY_FPS_DEFAULT := 12
+const PROXY_WIDTH_PRESETS := [640, 960, 1280, 1920]
+const PROXY_WIDTH_DEFAULT := 1280
+const PROXY_LIMIT_BYTES := 2 * 1024 * 1024 * 1024
 
 var _document = null
 var _project_dir := ""
@@ -315,7 +320,7 @@ func _pause_all_players() -> void:
 # Video references
 # -------------------------------------------------------------------------
 
-func import_video_reference(uri: String) -> Dictionary:
+func import_video_reference(uri: String, options: Dictionary = {}) -> Dictionary:
 	var kind := VideoReference.source_kind(uri)
 	if kind == "unsupported":
 		return {"ok": false, "error": "Unsupported video reference format. Use MP4, M4V, MOV or OGV."}
@@ -331,22 +336,61 @@ func import_video_reference(uri: String) -> Dictionary:
 	var backend = backend_script.new()
 	if not bool(backend.available()):
 		return {"ok": false, "error": str(backend.reason())}
+	var proxy := proxy_options(options)
 	var id := "vid_%d" % _next_video
 	_next_video += 1
 	var rel_dir := "video_refs".path_join(id)
 	var out_dir := _root().path_join(rel_dir)
-	var extracted: Dictionary = await backend.extract_frames(uri, out_dir, 12, 1280)
+	var extracted: Dictionary = await backend.extract_frames(uri, out_dir, int(proxy["fps"]), int(proxy["max_width"]))
 	if not bool(extracted.get("ok", false)):
 		VideoReference._remove_tree(out_dir)
 		return {"ok": false, "error": str(extracted.get("error", "Frame extraction failed."))}
+	if _directory_size(out_dir) > PROXY_LIMIT_BYTES:
+		VideoReference._remove_tree(out_dir)
+		return {"ok": false, "error": "The proxy exceeded the 2 GB limit and was deleted."}
 	var ref := VideoReference.default_ref(id, uri.get_file().get_basename(), rel_dir,
-		float(extracted.get("fps", 12)), float(extracted.get("duration", 0.0)),
+		float(extracted.get("fps", proxy["fps"])), float(extracted.get("duration", 0.0)),
 		int(extracted.get("width", 0)), int(extracted.get("height", 0)))
 	ref["kind"] = "video"
 	ref["file"] = uri
 	_video_refs.append(ref)
 	_emit_changed()
 	return {"ok": true, "ref": ref.duplicate(true), "error": ""}
+
+
+## Proxy settings exposed to the import sheet. Unknown fps falls back to the
+## documented 12 fps default; the width clamps to the preset range so the Java
+## extractor never receives an absurd bitmap size.
+static func proxy_options(options: Dictionary) -> Dictionary:
+	var fps := int(options.get("fps", PROXY_FPS_DEFAULT))
+	if not fps in PROXY_FPS_PRESETS:
+		fps = PROXY_FPS_DEFAULT
+	var width := int(options.get("max_width", PROXY_WIDTH_DEFAULT))
+	width = clampi(width, PROXY_WIDTH_PRESETS[0], PROXY_WIDTH_PRESETS[PROXY_WIDTH_PRESETS.size() - 1])
+	return {"fps": fps, "max_width": width}
+
+
+func _directory_size(path: String) -> int:
+	var total := 0
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return total
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := path.path_join(name)
+			if dir.current_is_dir():
+				total += _directory_size(child)
+			else:
+				var file := FileAccess.open(child, FileAccess.READ)
+				if file != null:
+					total += file.get_length()
+					file.close()
+		name = dir.get_next()
+	dir.list_dir_end()
+	return total
+
 
 
 func _import_ogv(uri: String) -> Dictionary:
