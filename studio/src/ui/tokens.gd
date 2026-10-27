@@ -14,28 +14,29 @@ extends RefCounted
 ##   TIME  (grey)       - keys, playhead, transport, 3D selection.
 
 # --- Surfaces -------------------------------------------------------------
-const BG := Color("080808")
-const SURFACE := Color("101010")
+const BG := Color("000000")
+const SURFACE := Color("0E0E0E")
 const SURFACE_2 := Color("151515")
-const SURFACE_3 := Color("1B1B1B")
-const SURFACE_HOVER := Color("232323")
-const BORDER := Color("3A3A3A")
-const BORDER_SOFT := Color("292929")
+const SURFACE_3 := Color("1D1D1D")
+const SURFACE_HOVER := Color("272727")
+const SURFACE_ACTIVE := Color("333333")
+const BORDER := Color("3C3C3C")
+const BORDER_SOFT := Color("242424")
 
 # --- Text -----------------------------------------------------------------
-const TEXT := Color("F0F0F0")
+const TEXT := Color("EBEBEB")
 const TEXT_MUTED := Color("A6A6A6")
 ## Tertiary text must stay above 4.5:1 on SURFACE_3, not only on the darkest
 ## panel. The old #7C7C7C fell to 4.0:1 on raised surfaces.
-const TEXT_DIM := Color("8C8C8C")
+const TEXT_DIM := Color("858585")
 
 # --- Focus (UI) -----------------------------------------------------------
-const FOCUS := Color("E6E6E6")
+const FOCUS := Color("EDEDED")
 const FOCUS_BRIGHT := Color("FFFFFF")
 const FOCUS_DARK := Color("262626")
 
 # --- Time (animation) -----------------------------------------------------
-const TIME := Color("C8C8C8")
+const TIME := Color("B8B8B8")
 const TIME_BRIGHT := Color("F2F2F2")
 const TIME_DARK := Color("2A2A2A")
 
@@ -43,15 +44,15 @@ const TIME_DARK := Color("2A2A2A")
 ## Success and warning are luminance states; danger is the only chromatic
 ## signal in the chrome.
 const WARNING := Color("C8C8C8")
-const DANGER := Color("E06C6C")
+const DANGER := Color("E5706B")
 const SUCCESS := Color("B0B0B0")
 
 # --- Axes -----------------------------------------------------------------
 ## Desaturated so the viewport reads as a graphite study, while X/Y/Z stay
 ## distinguishable on touch screens.
-const AXIS_X := Color("A66A66")
-const AXIS_Y := Color("7F9A78")
-const AXIS_Z := Color("6D8099")
+const AXIS_X := Color("C1675F")
+const AXIS_Y := Color("86A87B")
+const AXIS_Z := Color("6F90B8")
 
 # --- Overlays and stage ---------------------------------------------------
 const SCRIM := Color(0.0, 0.0, 0.0, 0.68)
@@ -72,6 +73,12 @@ const SPACE_32 := 32.0
 const HIT := 44.0
 const FIELD := 44.0
 const TOUCH_GAP := 8.0
+
+# --- Radii (px) -----------------------------------------------------------
+const R_PANEL := 0
+const R_CONTROL := 2
+const R_FLOAT := 4
+const GUTTER := 1
 
 # --- Type roles (sp) ------------------------------------------------------
 ## One fixed scale, Material-like roles with a 1.18 step. Product UI needs
@@ -96,5 +103,5 @@ const RAIL_STUDIO := 44.0
 const RAIL_DESKTOP := 40.0
 
 # --- Motion ---------------------------------------------------------------
-const MOTION_FAST := 0.12
-const MOTION_BASE := 0.18
+const MOTION_FAST := 0.10
+const MOTION_BASE := 0.16

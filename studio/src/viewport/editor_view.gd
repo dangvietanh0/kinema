@@ -1293,3 +1293,74 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 		_begin_draft()
 	queue_redraw()
 	return image
+
+## Render one frame from an explicit camera at an exact pixel size. Used by the
+## sequence renderer, GIF and MP4 exporters; never crops or letterboxes.
+func capture_with_camera(size: Vector2i, msaa: int, xform: Transform3D, fov: float, transparent_bg := false) -> Image:
+	if _viewport == null or _camera == null:
+		return null
+	if size.x < 2 or size.y < 2:
+		return null
+	var was_draft := _draft_active
+	if _draft_active:
+		_end_draft()
+		await RenderingServer.frame_post_draw
+	var grid_visible := _grid_button.button_pressed if _grid_button != null else true
+	_set_grid_strength(0.0)
+	var markers_were_hidden := false
+	if doc != null:
+		markers_were_hidden = doc.markers_hidden
+		doc.markers_hidden = true
+		doc.update_marker_scales(_camera)
+	var probe := SubViewport.new()
+	probe.size = size
+	probe.msaa_3d = msaa
+	probe.world_3d = _viewport.world_3d
+	probe.transparent_bg = transparent_bg
+	probe.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var shot_camera := Camera3D.new()
+	shot_camera.fov = fov
+	shot_camera.near = _camera.near
+	shot_camera.far = _camera.far
+	shot_camera.keep_aspect = Camera3D.KEEP_HEIGHT
+	probe.add_child(shot_camera)
+	shot_camera.global_transform = xform
+	shot_camera.current = true
+	add_child(probe)
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var image := probe.get_texture().get_image()
+	probe.queue_free()
+	if doc != null:
+		doc.markers_hidden = markers_were_hidden
+		doc.update_marker_scales(_camera)
+	if _grid_mesh != null:
+		_set_grid_strength(1.0 if grid_visible else 0.0)
+	if was_draft and _draft_enabled and (_interactive or _playback_active):
+		_begin_draft()
+	queue_redraw()
+	return image
+
+## UI-space projection for the rig overlay. The preview is stretched to fill
+## the control, so the viewport point must be mapped through the same ratio.
+func world_to_screen(world: Vector3) -> Vector2:
+	if _camera == null or _viewport == null:
+		return Vector2.ZERO
+	return _to_ui(_camera.unproject_position(world))
+
+## UI-space ray for bone picking and IK target drags.
+func screen_ray(screen: Vector2) -> Dictionary:
+	if _camera == null or _viewport == null:
+		return {"origin": Vector3.ZERO, "direction": Vector3.FORWARD}
+	var base := _viewport.size
+	if base.x <= 0 or base.y <= 0 or size.x <= 0 or size.y <= 0:
+		return {
+			"origin": _camera.global_position,
+			"direction": -_camera.global_transform.basis.z,
+		}
+	var ratio := Vector2(float(size.x) / float(base.x), float(size.y) / float(base.y))
+	var viewport_pos := screen / ratio
+	return {
+		"origin": _camera.project_ray_origin(viewport_pos),
+		"direction": _camera.project_ray_normal(viewport_pos),
+	}

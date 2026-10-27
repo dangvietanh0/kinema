@@ -2,6 +2,7 @@ extends Control
 ## Temporary headless smoke test. Not part of the app.
 
 const RenderExport = preload("res://src/core/render_export.gd")
+const DocumentScript = preload("res://src/core/document.gd")
 
 var _failures: Array[String] = []
 func _check(condition: bool, message: String) -> void:
@@ -51,9 +52,11 @@ func _ready() -> void:
 	_check(_contrast(Kit.TEXT_DIM, Kit.SURFACE_3) >= 4.5, "tertiary text keeps 4.5:1 on raised surfaces")
 
 	print("SMOKE STEP: tokens and icons")
-	_check(Kit.BG.to_html(false).to_upper() == "080808", "BG token is exact")
-	_check(Kit.FOCUS.to_html(false).to_upper() == "E6E6E6", "FOCUS token is exact")
-	_check(Kit.TIME.to_html(false).to_upper() == "C8C8C8", "TIME token is exact")
+	_check(Kit.BG.to_html(false).to_upper() == "000000", "BG token is exact")
+	_check(Kit.FOCUS.to_html(false).to_upper() == "EDEDED", "FOCUS token is exact")
+	_check(Kit.TIME.to_html(false).to_upper() == "B8B8B8", "TIME token is exact")
+	_check(Kit.SURFACE_ACTIVE.to_html(false).to_upper() == "333333", "SURFACE_ACTIVE token is exact")
+	_check(Kit.R_PANEL == 0 and Kit.R_CONTROL == 2 and Kit.R_FLOAT == 4, "corner radii are exact")
 	for tone in [Kit.FOCUS, Kit.TIME, Kit.WARNING, Kit.SUCCESS]:
 		_check(is_equal_approx(tone.r, tone.g) and is_equal_approx(tone.g, tone.b), "chrome accents stay monochrome")
 	_check(Kit.TEXT.get_luminance() > Kit.BG.get_luminance() + 0.5, "primary text is high contrast")
@@ -224,6 +227,77 @@ func _ready() -> void:
 		_check(is_equal_approx(form_color.r, form_color.g) and is_equal_approx(form_color.g, form_color.b), "study template material is monochrome")
 	_check(editor._view != null and editor._view._viewport != null, "preview viewport built")
 	_check(doc.get_channel_keys(str(doc.objects[0]["id"]), "position").size() >= 0, "channels readable")
+
+	print("SMOKE STEP: expansion contract")
+	for signal_name in [
+		"clips_changed", "active_clip_changed", "media_changed", "rigs_changed",
+		"rig_selection_changed", "imported_scene_ready", "object_spawned",
+	]:
+		_check(doc.has_signal(signal_name), "document exposes signal: %s" % signal_name)
+	_check(doc.animation_system != null, "animation subsystem exists")
+	_check(doc.media_system != null, "media subsystem exists")
+	_check(doc.rig_system != null, "rig subsystem exists")
+	if doc.animation_system != null:
+		_check(doc.animation_system._document == doc, "animation subsystem is owned by the document")
+	if doc.media_system != null:
+		_check(doc.media_system._document == doc, "media subsystem is owned by the document")
+	if doc.rig_system != null:
+		_check(doc.rig_system._document == doc, "rig subsystem is owned by the document")
+	var contract_data: Dictionary = doc.to_data()
+	_check(int(contract_data.get("format", 0)) == 2, "documents serialize as format 2")
+	for key in ["clips", "layers", "rigs", "media"]:
+		_check(contract_data.has(key), "format 2 carries %s" % key)
+	_check(is_equal_approx(doc.sequence_duration(), doc.duration), "sequence duration falls back to the active clip")
+	_check(is_equal_approx(doc.sequence_time(), doc.current_time), "sequence time falls back to the clip time")
+	_check(not doc.is_sequence_playing(), "sequence is stopped by default")
+	_check(doc.has_method("set_active_clip") and doc.has_method("active_clip_id"), "document exposes active-clip transport")
+	_check(doc.has_method("insert_bone_key") and doc.has_method("get_bone_keys"), "document exposes bone-key helpers")
+	_check(editor._view.has_method("capture_with_camera"), "editor view exposes capture_with_camera")
+	_check(editor._view.has_method("world_to_screen"), "editor view exposes world_to_screen")
+	_check(editor._view.has_method("screen_ray"), "editor view exposes screen_ray")
+	var probe_doc = DocumentScript.new()
+	add_child(probe_doc)
+	var spawn_count := [0]
+	var import_count := [0]
+	probe_doc.object_spawned.connect(func(_id: String, _node: Node) -> void: spawn_count[0] += 1)
+	probe_doc.imported_scene_ready.connect(func(_id: String, _node: Node) -> void: import_count[0] += 1)
+	var v1_data := {
+		"format": 1,
+		"title": "V1 Contract",
+		"fps": 24,
+		"duration": 2.0,
+		"loop": true,
+		"objects": [{
+			"id": "1", "name": "Cube", "kind": "mesh", "primitive": "cube",
+			"position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1],
+			"visible": true,
+		}],
+		"animation": {
+			"name": "Take 01", "length": 2.0, "loop": true,
+			"tracks": [{
+				"path": "Object_1:position", "type": Animation.TYPE_POSITION_3D,
+				"interpolation": Animation.INTERPOLATION_LINEAR,
+				"keys": [{"t": 0.0, "v": [0, 0, 0], "e": 1.0}, {"t": 2.0, "v": [2, 0, 0], "e": 1.0}],
+			}],
+		},
+	}
+	_check(probe_doc.load_project(v1_data), "a v1 project loads through the contract")
+	_check(is_equal_approx(probe_doc.duration, 2.0), "v1 duration survives")
+	_check(probe_doc.loop, "v1 loop survives")
+	_check(probe_doc.objects.size() == 1, "v1 object survives")
+	_check(probe_doc.animation != null and probe_doc.animation.get_track_count() == 1, "v1 track survives")
+	_check(spawn_count[0] == 1, "object_spawned fires once while loading")
+	_check(import_count[0] == 0, "loading a project does not re-import scenes")
+	var bone_key := probe_doc.insert_bone_key("1", "Root", Quaternion(Vector3.UP, 0.5))
+	_check(bone_key >= 0, "bone keys can be inserted")
+	var bone_keys: Array = probe_doc.get_bone_keys("1", "Root")
+	_check(bone_keys.size() == 1, "bone keys roundtrip")
+	if bone_keys.size() == 1:
+		var stored: Quaternion = bone_keys[0]["value"]
+		_check(stored.is_equal_approx(Quaternion(Vector3.UP, 0.5)), "bone key value survives")
+	probe_doc.delete_bone_key("1", "Root", 0)
+	_check(probe_doc.get_bone_keys("1", "Root").is_empty(), "bone keys can be deleted")
+	probe_doc.queue_free()
 
 	# Project timing lives in Project settings; the device Settings screen is a
 	# separate surface with eight categories.

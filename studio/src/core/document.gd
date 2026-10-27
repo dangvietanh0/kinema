@@ -18,6 +18,13 @@ signal keyframes_changed(id: String)
 signal playback_changed(time: float, is_playing: bool)
 signal history_changed
 signal dirty_changed(is_dirty: bool)
+signal clips_changed
+signal active_clip_changed(id: String)
+signal media_changed
+signal rigs_changed
+signal rig_selection_changed(rig_id: String, bone: String)
+signal imported_scene_ready(object_id: String, node: Node)
+signal object_spawned(object_id: String, node: Node)
 
 const CHANNELS := ["position", "rotation", "scale"]
 const CHANNEL_LABELS := {
@@ -31,13 +38,16 @@ const CHANNEL_ICONS := {
 	"scale": "tool-scale",
 }
 const ObjImporter = preload("res://src/core/obj_importer.gd")
+const AnimationSystemScript = preload("res://src/core/animation_system.gd")
+const MediaSystemScript = preload("res://src/core/media_system.gd")
+const RigSystemScript = preload("res://src/core/rig_system.gd")
 const TRACK_TYPES := {
 	"position": Animation.TYPE_POSITION_3D,
 	"rotation": Animation.TYPE_ROTATION_3D,
 	"scale": Animation.TYPE_SCALE_3D,
 }
 const ANIMATION_NAME := "Take 01"
-const FORMAT_VERSION := 1
+const FORMAT_VERSION := 2
 
 var project_id := ""
 var project_dir := ""
@@ -57,6 +67,9 @@ var animation: Animation
 var current_time := 0.0
 var is_playing := false
 var markers_hidden := false
+var animation_system
+var media_system
+var rig_system
 
 var _dirty := false
 var _edit_snapshot: Dictionary = {}
@@ -66,13 +79,39 @@ var _redo_stack: Array[Dictionary] = []
 var _loading := false
 var _next_id := 1
 var _last_emitted_time := -1.0
+var _sequence_playing := false
+
+func _init() -> void:
+	animation_system = AnimationSystemScript.new()
+	animation_system.setup(self)
+	media_system = MediaSystemScript.new()
+	media_system.setup(self)
+	rig_system = RigSystemScript.new()
+	rig_system.setup(self)
+	imported_scene_ready.connect(animation_system.on_imported_scene)
+	imported_scene_ready.connect(rig_system.adopt_imported_skeleton)
 
 func _ready() -> void:
+	process_priority = 100
 	_ensure_player()
 	set_process(true)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if _loading or anim_player == null:
+		return
+	# Exactly one clock runs at a time. Sequence mode owns the time update and
+	# leaves the AnimationPlayer alone; clip mode keeps the player fast path.
+	if _sequence_playing:
+		animation_system.advance(delta)
+		current_time = animation_system.active_local_time()
+		if not animation_system.is_sequence_playing():
+			_sequence_playing = false
+			playback_changed.emit(current_time, false)
+		elif absf(current_time - _last_emitted_time) > 0.0005:
+			_last_emitted_time = current_time
+			playback_changed.emit(current_time, true)
+		rig_system.advance(delta)
+		media_system.advance(delta)
 		return
 	if is_playing:
 		if anim_player.is_playing():
@@ -84,6 +123,9 @@ func _process(_delta: float) -> void:
 			is_playing = false
 			current_time = clampf(anim_player.current_animation_position, 0.0, duration)
 			playback_changed.emit(current_time, false)
+	animation_system.advance(delta)
+	rig_system.advance(delta)
+	media_system.advance(delta)
 
 func _ensure_player() -> void:
 	if anim_player != null and is_instance_valid(anim_player):
@@ -123,6 +165,10 @@ func new_project(p_title: String = "Untitled", template: String = "blank") -> vo
 	_clear_runtime()
 	_ensure_player()
 	_create_animation()
+	animation_system.ensure_default_clip()
+	var active: Animation = animation_system.active_animation()
+	if active != null:
+		animation = active
 	_dirty = false
 	if template == "study":
 		_build_study()
@@ -176,7 +222,11 @@ func to_data() -> Dictionary:
 	var json_objects: Array = []
 	for obj in objects:
 		json_objects.append(_object_to_json(obj))
-	return {
+	var anim_data: Dictionary = animation_system.to_data() if animation_system != null else {}
+	var rig_data: Dictionary = rig_system.to_data() if rig_system != null else {}
+	var media_data: Dictionary = media_system.to_data() if media_system != null else {}
+	var clips: Array = anim_data.get("clips", [])
+	var data := {
 		"format": FORMAT_VERSION,
 		"title": title,
 		"fps": fps,
@@ -188,13 +238,25 @@ func to_data() -> Dictionary:
 		"autokey": autokey,
 		"snap": snap,
 		"objects": json_objects,
-		"animation": {
+		"clips": clips,
+		"layers": anim_data.get("layers", []),
+		"rigs": rig_data.get("rigs", []),
+		"media": media_data.get("media", {}),
+	}
+	if anim_data.has("active_clip"):
+		data["active_clip"] = anim_data["active_clip"]
+	if anim_data.has("active_layer"):
+		data["active_layer"] = anim_data["active_layer"]
+	if clips.is_empty():
+		# v1 bridge: single-clip projects keep the legacy mirror readable until
+		# WS-A returns real clips. It disappears as soon as a clip exists.
+		data["animation"] = {
 			"name": ANIMATION_NAME,
 			"length": duration,
 			"loop": loop,
 			"tracks": tracks,
-		},
-	}
+		}
+	return data
 
 func _apply_data(data: Dictionary) -> void:
 	title = str(data.get("title", "Untitled"))
@@ -223,6 +285,12 @@ func _apply_data(data: Dictionary) -> void:
 	var anim_data: Dictionary = data.get("animation", {})
 	if not anim_data.is_empty():
 		_load_animation_tracks(anim_data)
+	animation_system.load_data(data, nodes)
+	rig_system.load_data(data, nodes)
+	media_system.load_data(data, project_dir)
+	var active: Animation = animation_system.active_animation()
+	if active != null:
+		animation = active
 	_refresh_animation()
 	_ensure_valid_selection()
 	_queue_all_object_ui_updates()
@@ -362,6 +430,14 @@ func _ensure_valid_selection() -> void:
 # -------------------------------------------------------------------------
 
 func _clear_runtime() -> void:
+	# Subsystems are RefCounted owners of data, not scene children. Reset them
+	# before the runtime nodes disappear; never free them here.
+	if animation_system != null:
+		animation_system.reset()
+	if media_system != null:
+		media_system.reset()
+	if rig_system != null:
+		rig_system.reset()
 	for child in get_children():
 		remove_child(child)
 		child.queue_free()
@@ -408,6 +484,9 @@ func _spawn_object(obj: Dictionary) -> void:
 			_build_import_visual(node, obj)
 		_:
 			_build_mesh_visual(node, obj)
+	if rig_system != null:
+		rig_system.on_object_spawned(obj, node)
+	object_spawned.emit(id, node)
 
 func _spawn_refresh(id: String) -> void:
 	var obj := get_object(id)
@@ -654,6 +733,8 @@ func _apply_visual_properties(node: Node3D, obj: Dictionary) -> void:
 		var camera := node.get_node_or_null("Camera") as Camera3D
 		if camera != null:
 			camera.fov = clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
+	if rig_system != null:
+		rig_system.on_object_properties(obj, node)
 
 # -------------------------------------------------------------------------
 # Objects
@@ -796,6 +877,11 @@ func add_imported(model_rel_path: String, p_name: String, at: Vector3 = Vector3.
 	obj["model"] = model_rel_path
 	objects.append(obj)
 	_spawn_object(obj)
+	# Import-only signal: load and undo use `object_spawned` and never re-scan
+	# the model, so clips cannot be duplicated on every restore.
+	var id := str(obj["id"])
+	if nodes.has(id):
+		imported_scene_ready.emit(id, nodes[id])
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
@@ -1258,6 +1344,7 @@ func _remove_keys_outside_duration() -> void:
 
 func seek(time: float, silent: bool = false) -> void:
 	_ensure_player()
+	_stop_sequence_playback()
 	current_time = clampf(time, 0.0, duration)
 	is_playing = false
 	if anim_player != null:
@@ -1269,6 +1356,7 @@ func seek(time: float, silent: bool = false) -> void:
 		playback_changed.emit(current_time, false)
 
 func play() -> void:
+	_stop_sequence_playback()
 	if anim_player == null or duration <= 0.001:
 		return
 	if current_time >= duration - 0.0001:
@@ -1284,6 +1372,7 @@ func play() -> void:
 	playback_changed.emit(current_time, true)
 
 func pause() -> void:
+	_stop_sequence_playback()
 	if anim_player != null:
 		current_time = anim_player.current_animation_position
 		anim_player.pause()
@@ -1298,6 +1387,114 @@ func toggle_play() -> void:
 
 func stop() -> void:
 	seek(0.0)
+
+# -------------------------------------------------------------------------
+# Sequence transport (clip lane). Clip time and sequence time are two clocks;
+# only one of them may run at a time.
+# -------------------------------------------------------------------------
+
+## Stop the sequence clock (and its audio/video) before the clip transport
+## takes over. The playhead itself is left where the sequence was.
+func _stop_sequence_playback() -> void:
+	_sequence_playing = false
+	if animation_system != null:
+		animation_system.pause_sequence()
+	if media_system != null:
+		media_system.pause_sequence()
+
+## Keep `doc.animation` and `doc.duration` tied to the active clip when the
+## animation system switches clips during a sequence seek.
+func _adopt_active_animation() -> void:
+	if animation_system == null:
+		return
+	var active: Animation = animation_system.active_animation()
+	if active == null or active == animation:
+		return
+	animation = active
+	duration = maxf(0.04, animation.length)
+	current_time = clampf(current_time, 0.0, duration)
+	_refresh_animation()
+
+func sequence_duration() -> float:
+	if animation_system == null:
+		return duration
+	return animation_system.sequence_duration()
+
+func sequence_time() -> float:
+	if animation_system == null:
+		return current_time
+	return animation_system.sequence_time()
+
+func seek_sequence(time: float, silent: bool = false) -> void:
+	if animation_system == null:
+		return
+	is_playing = false
+	if anim_player != null:
+		anim_player.pause()
+	animation_system.seek_sequence(time)
+	_adopt_active_animation()
+	current_time = animation_system.active_local_time()
+	if media_system != null:
+		media_system.seek_sequence(animation_system.sequence_time(), _sequence_playing)
+	if not silent:
+		playback_changed.emit(current_time, _sequence_playing)
+
+func play_sequence() -> void:
+	if animation_system == null or sequence_duration() <= 0.001:
+		return
+	is_playing = false
+	if anim_player != null:
+		anim_player.pause()
+	_sequence_playing = true
+	animation_system.play_sequence()
+	if media_system != null:
+		media_system.play_sequence(animation_system.sequence_time())
+	current_time = animation_system.active_local_time()
+	_last_emitted_time = current_time
+	playback_changed.emit(current_time, true)
+
+func pause_sequence() -> void:
+	if animation_system == null:
+		return
+	_sequence_playing = false
+	animation_system.pause_sequence()
+	if media_system != null:
+		media_system.pause_sequence()
+	current_time = animation_system.active_local_time()
+	playback_changed.emit(current_time, false)
+
+func stop_sequence() -> void:
+	if animation_system == null:
+		return
+	_sequence_playing = false
+	animation_system.stop_sequence()
+	if media_system != null:
+		media_system.stop_sequence()
+	_adopt_active_animation()
+	current_time = animation_system.active_local_time()
+	playback_changed.emit(current_time, false)
+
+func is_sequence_playing() -> bool:
+	return _sequence_playing
+
+## The clip lane and sheets must call this document method, never the animation
+## system directly, so `doc.animation` can never point at a stale clip.
+func set_active_clip(id: String) -> void:
+	if animation_system == null:
+		return
+	animation_system.set_active_clip(id)
+	var active: Animation = animation_system.active_animation()
+	if active != null:
+		animation = active
+		duration = maxf(0.04, animation.length)
+		current_time = clampf(current_time, 0.0, duration)
+	_refresh_animation()
+	active_clip_changed.emit(id)
+
+func active_clip_id() -> String:
+	if animation_system == null:
+		return ""
+	return animation_system.active_clip_id()
 
 func set_loop(enabled: bool) -> void:
 	loop = enabled
@@ -1545,9 +1742,97 @@ func _refresh_animation() -> void:
 		return
 	animation.length = duration
 	animation.loop_mode = Animation.LOOP_LINEAR if loop else Animation.LOOP_NONE
+	# The player always plays the active clip under ANIMATION_NAME. Re-binding
+	# here keeps the fast path valid after the animation system swaps clips.
+	var library: AnimationLibrary
+	if anim_player.has_animation_library(""):
+		library = anim_player.get_animation_library("")
+	else:
+		library = AnimationLibrary.new()
+		anim_player.add_animation_library("", library)
+	if library.has_animation(ANIMATION_NAME):
+		library.remove_animation(ANIMATION_NAME)
+	library.add_animation(ANIMATION_NAME, animation)
 	anim_player.play(ANIMATION_NAME)
 	anim_player.pause()
 	anim_player.seek(current_time, true)
+
+# -------------------------------------------------------------------------
+# Bone keys (shared contract with the rig workstream)
+# -------------------------------------------------------------------------
+
+func _bone_track_path(rig_object_id: String, bone: String) -> NodePath:
+	var node: Node = nodes.get(rig_object_id)
+	var node_name := str(node.name) if node != null else "Object_" + rig_object_id
+	return NodePath("%s/Skeleton3D:%s" % [node_name, bone])
+
+func _bone_track(rig_object_id: String, bone: String, create: bool) -> int:
+	if animation == null:
+		return -1
+	var path := _bone_track_path(rig_object_id, bone)
+	for ti in range(animation.get_track_count()):
+		if animation.track_get_type(ti) == Animation.TYPE_ROTATION_3D \
+				and animation.track_get_path(ti) == path:
+			return ti
+	if not create:
+		return -1
+	var track := animation.add_track(Animation.TYPE_ROTATION_3D)
+	animation.track_set_path(track, path)
+	animation.track_set_interpolation_type(track, _interpolation_value())
+	return track
+
+func insert_bone_key(rig_object_id: String, bone: String, rotation: Quaternion) -> int:
+	var track := _bone_track(rig_object_id, bone, true)
+	if track < 0:
+		return -1
+	var q := rotation if rotation.length_squared() > 0.000001 else Quaternion.IDENTITY
+	var index := animation.rotation_track_insert_key(track, current_time, q.normalized())
+	if index >= 0:
+		_dirty = true
+		dirty_changed.emit(true)
+		keyframes_changed.emit(rig_object_id)
+	return index
+
+func get_bone_keys(rig_object_id: String, bone: String) -> Array:
+	var result: Array = []
+	var track := _bone_track(rig_object_id, bone, false)
+	if track < 0:
+		return result
+	for ki in range(animation.track_get_key_count(track)):
+		result.append({
+			"time": float(animation.track_get_key_time(track, ki)),
+			"value": animation.track_get_key_value(track, ki),
+			"index": ki,
+		})
+	return result
+
+func delete_bone_key(rig_object_id: String, bone: String, index: int) -> void:
+	var track := _bone_track(rig_object_id, bone, false)
+	if track < 0 or index < 0 or index >= animation.track_get_key_count(track):
+		return
+	animation.track_remove_key(track, index)
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit(rig_object_id)
+
+func sample_bone(rig_object_id: String, bone: String, time: float) -> Quaternion:
+	var track := _bone_track(rig_object_id, bone, false)
+	if track < 0 or animation.track_get_key_count(track) == 0:
+		return Quaternion.IDENTITY
+	var value: Quaternion = animation.rotation_track_interpolate(track, time)
+	return value.normalized()
+
+func insert_pose_keys(rig_object_id: String, pose: Dictionary) -> void:
+	for bone in pose.keys():
+		var value: Variant = pose[bone]
+		var rotation := Quaternion.IDENTITY
+		if value is Quaternion:
+			rotation = value
+		elif value is Array:
+			rotation = _json_to_quat(value)
+		else:
+			continue
+		insert_bone_key(rig_object_id, str(bone), rotation)
 
 func set_autokey(enabled: bool) -> void:
 	autokey = enabled

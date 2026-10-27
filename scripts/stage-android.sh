@@ -43,6 +43,14 @@ cp "$STUDIO/project.godot" "$APP/src/main/assets/project.godot"
 cp -R "$STUDIO/assets" "$APP/src/main/assets/assets"
 cp -R "$STUDIO/src" "$APP/src/main/assets/src"
 
+# Java sources for the Android media backend (WS-B). Source:
+# studio/android/app/java -> $APP/src/main/java. The directory is absent in a
+# clean contract checkout, so this block stays optional until it lands.
+if [[ -d "$STUDIO/android/app/java" ]]; then
+    mkdir -p "$APP/src/main/java"
+    cp -R "$STUDIO/android/app/java/." "$APP/src/main/java/"
+fi
+
 # Android resources and manifest override Godot's template defaults.
 mkdir -p "$APP/res"
 cp -R "$OVERLAY/res/." "$APP/res/"

@@ -11,6 +11,7 @@ const SURFACE := Tokens.SURFACE
 const SURFACE_2 := Tokens.SURFACE_2
 const SURFACE_3 := Tokens.SURFACE_3
 const SURFACE_HOVER := Tokens.SURFACE_HOVER
+const SURFACE_ACTIVE := Tokens.SURFACE_ACTIVE
 const BORDER := Tokens.BORDER
 const BORDER_SOFT := Tokens.BORDER_SOFT
 const TEXT := Tokens.TEXT
@@ -50,6 +51,12 @@ const TYPE_MONO := Tokens.TYPE_MONO
 const TYPE_MONO_LARGE := Tokens.TYPE_MONO_LARGE
 const TYPE_RULER := Tokens.TYPE_RULER
 const FIELD := Tokens.FIELD
+const R_PANEL := Tokens.R_PANEL
+const R_CONTROL := Tokens.R_CONTROL
+const R_FLOAT := Tokens.R_FLOAT
+const GUTTER := Tokens.GUTTER
+const MOTION_FAST := Tokens.MOTION_FAST
+const MOTION_BASE := Tokens.MOTION_BASE
 
 # Action geometry: primary actions are landscape rectangles, never squares.
 # Footer secondaries still clear the 44 dp touch floor with room for a label.
@@ -248,6 +255,18 @@ func style_with_margins(color: Color, radius: int, border: Color, border_width: 
 	sb.content_margin_right = margins.z
 	sb.content_margin_bottom = margins.w
 	return sb
+
+## Panel bodies are square. Controls carry a 2 px radius; floating surfaces
+## (menus, dialogs, toasts) carry 4 px. Keeping these three helpers separate
+## stops a control radius from leaking onto a panel.
+func panel_style(color: Color = SURFACE, border: Color = BORDER_SOFT) -> StyleBoxFlat:
+	return flat_style(color, R_PANEL, border)
+
+func control_style(color: Color = SURFACE_3, border: Color = BORDER) -> StyleBoxFlat:
+	return flat_style(color, R_CONTROL, border)
+
+func float_style(color: Color = SURFACE_2, border: Color = BORDER) -> StyleBoxFlat:
+	return flat_style(color, R_FLOAT, border)
 
 # ---- Small constructors -------------------------------------------------
 
