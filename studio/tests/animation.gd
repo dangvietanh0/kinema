@@ -444,6 +444,20 @@ func _test_model() -> void:
 	_check(not csys.delete_layer(str(csys.layers()[0]["id"])), "delete_layer blocks the last layer")
 	_check(str(csys.last_error) != "", "blocked layer deletion reports a concrete reason")
 
+	# Per-clip loop survives switching the active clip.
+	var loop_doc := await _new_doc()
+	loop_doc.new_project("Loop", "blank")
+	var loopsys = loop_doc.animation_system
+	var loop_a: String = loopsys.active_clip_id()
+	loopsys.set_clip_loop(loop_a, true)
+	var loop_b: String = loopsys.create_clip("No loop", 1.0)
+	loopsys.set_clip_loop(loop_b, false)
+	loop_doc.set_active_clip(loop_b)
+	_check(not bool(loop_doc.loop), "switching to a non-looping clip updates doc.loop")
+	loop_doc.set_active_clip(loop_a)
+	_check(bool(loop_doc.loop), "switching back restores the looping clip flag")
+	await _free_doc(loop_doc)
+
 	# Sequence transport keeps clip and sequence clocks exclusive.
 	var seq := await _new_doc()
 	seq.new_project("Sequence", "blank")

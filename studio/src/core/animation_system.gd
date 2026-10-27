@@ -240,6 +240,7 @@ func active_animation() -> Animation:
 func set_active_clip(id: String) -> void:
 	if _clips.has(id):
 		_active_clip = id
+		_sync_document_loop()
 
 
 func active_clip_id() -> String:
@@ -693,6 +694,7 @@ func seek_sequence(time: float) -> void:
 		var clip_id := str(strip.get("clip", ""))
 		if _clips.has(clip_id):
 			_active_clip = clip_id
+			_sync_document_loop()
 	_apply_result(evaluate(_sequence_time))
 
 
@@ -752,8 +754,21 @@ func _sync_document_clip() -> void:
 		return
 	_document.animation = anim
 	_document.duration = maxf(MIN_DURATION, anim.length)
+	_sync_document_loop()
 	if _document.has_method("_refresh_animation"):
 		_document._refresh_animation()
+
+
+## `Document._refresh_animation()` takes the loop flag from `doc.loop`, so the
+## active clip must publish its own loop mode before the document rebinds the
+## AnimationPlayer. This keeps per-clip loop independent from the last clip.
+func _sync_document_loop() -> void:
+	if _document == null:
+		return
+	var anim: Animation = active_animation()
+	if anim == null:
+		return
+	_document.loop = anim.loop_mode != Animation.LOOP_NONE
 
 
 # -------------------------------------------------------------------------
@@ -936,6 +951,7 @@ func load_data(data: Dictionary, _nodes: Dictionary) -> void:
 		_active_clip = str(data.get("active_clip", ""))
 		_active_layer = str(data.get("active_layer", ""))
 	_ensure_active()
+	_sync_document_loop()
 	_sequence_time = clampf(float(data.get("current_time", 0.0)), 0.0, sequence_duration())
 	_sequence_playing = false
 	_silent = false
