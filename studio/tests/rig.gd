@@ -52,6 +52,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await _test_model()
 	await _test_skinning()
+	await _test_undo()
 	await _test_ik()
 	await _test_pose_and_bone_keys()
 	await _test_imported_adoption()
@@ -368,6 +369,25 @@ func _test_skinning() -> void:
 		if file != null:
 			file.close()
 
+	# Unbind restores the source mesh and the saved transform. A rebind after a
+	# weight change must keep the original source transform and the old sidecar.
+	var first_file := str(skin.get("file", ""))
+	rs.set_bone_influence_scale(rig_id, "Spine", 100.0)
+	rig_node.position = Vector3(2, 0, 0)
+	rs.advance(0.0)
+	var rebind_job: String = rs.start_bind(rig_id, mesh_id, {})
+	var rebind_state := {"state": "running", "progress": 0.0}
+	var rebind_polls := 0
+	while rebind_polls < 120 and str(rebind_state.get("state", "")) == "running":
+		rebind_state = rs.poll_bind(rebind_job)
+		rebind_polls += 1
+	_check(str(rebind_state.get("state", "")) == "done", "the rebind job completes")
+	var rebind_skin: Dictionary = rs.get_rig(rig_id).get("skins", [])[0]
+	var second_file := str(rebind_skin.get("file", ""))
+	_check(second_file != first_file, "rebind writes a new sidecar generation")
+	_check(FileAccess.file_exists(sidecar), "rebind keeps the old sidecar")
+	_check(FileAccess.file_exists(_tmp_dir.path_join(second_file)), "rebind writes the new sidecar")
+
 	# Unbind restores the source mesh and the saved transform.
 	var original_arrays: Array = mesh_instance.mesh.surface_get_arrays(0)
 	_check(rs.unbind_mesh(rig_id, mesh_id), "unbind_mesh succeeds")
@@ -395,6 +415,145 @@ func _test_skinning() -> void:
 	var limit_state: Dictionary = rs.poll_bind(limit_job)
 	_check(str(limit_state.get("state", "")) == "error", "the bind job rejects a mesh over 50,000 vertices")
 	_check(str(limit_state.get("error", "")).contains("50,000"), "the 50k error names the limit")
+	doc.queue_free()
+
+
+func _test_undo() -> void:
+	print("RIG STEP: undo")
+	var doc := _new_doc("Undo Test")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var mesh_id: String = doc.add_primitive("box", Vector3(0, 0.5, 0))
+	var job: String = rs.start_bind(rig_id, mesh_id, {})
+	var state := {"state": "running", "progress": 0.0}
+	var polls := 0
+	while polls < 120 and str(state.get("state", "")) == "running":
+		state = rs.poll_bind(job)
+		polls += 1
+	_check(str(state.get("state", "")) == "done", "undo test bind completes")
+	_check(doc.undo_label() == "Bind mesh", "bind finalization is one undo step")
+	doc.undo()
+	_check(rs.get_rig(rig_id).get("skins", []).is_empty(), "undo removes the skin record")
+	var node: Node3D = doc.nodes.get(mesh_id)
+	_check(node != null, "undo keeps the mesh object")
+	if node != null:
+		var mesh_instance := node.get_node_or_null("Mesh") as MeshInstance3D
+		_check(mesh_instance != null and mesh_instance.skin == null, "undo restores the static mesh")
+	doc.redo()
+	_check(rs.get_rig(rig_id).get("skins", []).size() == 1, "redo restores the skin record")
+	node = doc.nodes.get(mesh_id)
+	if node != null:
+		var rebound := node.get_node_or_null("Mesh") as MeshInstance3D
+		_check(rebound != null and rebound.skin != null, "redo re-applies the skin")
+
+	# Bone structure.
+	var bones_before: int = (rs.get_rig(rig_id).get("bones", []) as Array).size()
+	_check(rs.add_bone(rig_id, "Hand", "Spine", _rest(Vector3(0, 0.5, 0), 0.3)) >= 0, "undo test adds a bone")
+	_check(doc.undo_label() == "Add bone", "add_bone is one undo step")
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("bones", []) as Array).size() == bones_before, "undo removes the added bone")
+	doc.redo()
+	_check((rs.get_rig(rig_id).get("bones", []) as Array).size() == bones_before + 1, "redo restores the added bone")
+
+	rs.set_bone_rest(rig_id, "Root", _rest(Vector3(0.2, 0, 0), 0.9))
+	_check(doc.undo_label() == "Edit bone rest", "set_bone_rest is one undo step")
+	doc.undo()
+	var root_bone: Dictionary = rs.get_rig(rig_id)["bones"][0]
+	_check(_close((root_bone.get("p", Vector3.ZERO) as Vector3).x, 0.0), "undo restores the root rest")
+	doc.redo()
+	root_bone = rs.get_rig(rig_id)["bones"][0]
+	_check(_close((root_bone.get("p", Vector3.ZERO) as Vector3).x, 0.2), "redo restores the edited root rest")
+
+	_check(rs.set_bone_parent(rig_id, "Hand", "Root"), "undo test reparents Hand")
+	_check(doc.undo_label() == "Reparent bone", "set_bone_parent is one undo step")
+	doc.undo()
+	var hand_index := _bone_index(rs.get_rig(rig_id), "Hand")
+	_check(int(rs.get_rig(rig_id)["bones"][hand_index].get("parent", -1)) == _bone_index(rs.get_rig(rig_id), "Spine"), "undo restores the bone parent")
+	doc.redo()
+	hand_index = _bone_index(rs.get_rig(rig_id), "Hand")
+	_check(int(rs.get_rig(rig_id)["bones"][hand_index].get("parent", -1)) == _bone_index(rs.get_rig(rig_id), "Root"), "redo restores the reparent")
+
+	_check(rs.rename_bone(rig_id, "Hand", "Fist"), "undo test renames Hand")
+	_check(doc.undo_label() == "Rename bone", "rename_bone is one undo step")
+	doc.undo()
+	_check(_bone_index(rs.get_rig(rig_id), "Hand") >= 0, "undo restores the old bone name")
+	doc.redo()
+	_check(_bone_index(rs.get_rig(rig_id), "Fist") >= 0, "redo restores the new bone name")
+
+	rs.set_bone_influence_scale(rig_id, "Fist", 2.5)
+	_check(doc.undo_label() == "Change bone influence", "influence scale is one undo step")
+	doc.undo()
+	var fist_bone: Dictionary = rs.get_rig(rig_id)["bones"][_bone_index(rs.get_rig(rig_id), "Fist")]
+	_check(_close(float(fist_bone.get("influence_scale", 0.0)), 1.0), "undo restores influence scale")
+	doc.redo()
+	fist_bone = rs.get_rig(rig_id)["bones"][_bone_index(rs.get_rig(rig_id), "Fist")]
+	_check(_close(float(fist_bone.get("influence_scale", 0.0)), 2.5), "redo restores influence scale")
+
+	_check(rs.remove_bone(rig_id, "Fist"), "undo test removes Fist")
+	_check(doc.undo_label() == "Remove bone", "remove_bone is one undo step")
+	doc.undo()
+	_check(_bone_index(rs.get_rig(rig_id), "Fist") >= 0, "undo restores the removed bone")
+	doc.redo()
+	_check(_bone_index(rs.get_rig(rig_id), "Fist") < 0, "redo removes the bone again")
+
+	# Pose library.
+	var pose_id: String = rs.save_pose(rig_id, "Undo Pose")
+	_check(pose_id != "", "undo test saves a pose")
+	_check(doc.undo_label() == "Save pose", "save_pose is one undo step")
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).is_empty(), "undo removes the saved pose")
+	doc.redo()
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).size() == 1, "redo restores the saved pose")
+	var restored_poses: Array = rs.get_rig(rig_id).get("poses", [])
+	pose_id = str((restored_poses[0] as Dictionary).get("id", "")) if not restored_poses.is_empty() else ""
+
+	_check(rs.rename_pose(rig_id, pose_id, "Renamed"), "undo test renames the pose")
+	_check(doc.undo_label() == "Rename pose", "rename_pose is one undo step")
+	doc.undo()
+	var undone_poses: Array = rs.get_rig(rig_id).get("poses", [])
+	_check(not undone_poses.is_empty() and str((undone_poses[0] as Dictionary).get("name", "")) == "Undo Pose", "undo restores the pose name")
+	doc.redo()
+	var redone_poses: Array = rs.get_rig(rig_id).get("poses", [])
+	_check(not redone_poses.is_empty() and str((redone_poses[0] as Dictionary).get("name", "")) == "Renamed", "redo restores the pose name")
+
+	var copy_id: String = rs.duplicate_pose(rig_id, pose_id)
+	_check(copy_id != "", "undo test duplicates the pose")
+	_check(doc.undo_label() == "Duplicate pose", "duplicate_pose is one undo step")
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).size() == 1, "undo removes the duplicate pose")
+	doc.redo()
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).size() == 2, "redo restores the duplicate pose")
+
+	rs.delete_pose(rig_id, pose_id)
+	_check(doc.undo_label() == "Delete pose", "delete_pose is one undo step")
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).size() == 2, "undo restores the deleted pose")
+	doc.redo()
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).size() == 1, "redo removes the deleted pose")
+
+	# IK chains.
+	var chain: String = rs.add_ik_chain(rig_id, "Root", "Spine", mesh_id)
+	_check(chain != "", "undo test adds an IK chain")
+	_check(doc.undo_label() == "Add IK chain", "add_ik_chain is one undo step")
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("ik", []) as Array).is_empty(), "undo removes the IK chain")
+	doc.redo()
+	_check((rs.get_rig(rig_id).get("ik", []) as Array).size() == 1, "redo restores the IK chain")
+	chain = str((rs.get_rig(rig_id)["ik"][0] as Dictionary).get("id", ""))
+
+	rs.update_ik_chain(rig_id, chain, {"weight": 0.5})
+	_check(doc.undo_label() == "Update IK chain", "update_ik_chain is one undo step")
+	doc.undo()
+	_check(_close(float((rs.get_rig(rig_id)["ik"][0] as Dictionary).get("weight", 0.0)), 1.0), "undo restores the IK weight")
+	doc.redo()
+	_check(_close(float((rs.get_rig(rig_id)["ik"][0] as Dictionary).get("weight", 0.0)), 0.5), "redo restores the IK weight")
+
+	rs.delete_ik_chain(rig_id, chain)
+	_check(doc.undo_label() == "Delete IK chain", "delete_ik_chain is one undo step")
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("ik", []) as Array).size() == 1, "undo restores the deleted IK chain")
+	doc.redo()
+	_check((rs.get_rig(rig_id).get("ik", []) as Array).is_empty(), "redo removes the IK chain again")
 	doc.queue_free()
 
 
@@ -525,12 +684,18 @@ func _test_pose_and_bone_keys() -> void:
 	_check(doc.nodes[rig_id].position.distance_to(Vector3(0.3, 0.1, -0.2)) < 0.001, "apply_pose restores the root position")
 	_check(doc.get_bone_keys(rig_id, "Root").is_empty(), "apply_pose does not key")
 
-	# Key pose is one undo step.
+	# Key pose is one undo step and stores the captured rotations.
 	doc.current_time = 1.5
+	var expected_root: Quaternion = skel.get_bone_pose_rotation(0)
+	var expected_spine: Quaternion = skel.get_bone_pose_rotation(1)
 	_check(rs.key_pose(rig_id), "key_pose succeeds")
-	_check(doc.get_bone_keys(rig_id, "Root").size() == 1, "key_pose keys the root at current_time")
-	_check(doc.get_bone_keys(rig_id, "Spine").size() == 1, "key_pose keys every bone")
-	_check(doc.can_undo(), "key_pose creates an undo step")
+	var root_keys: Array = doc.get_bone_keys(rig_id, "Root")
+	var spine_keys: Array = doc.get_bone_keys(rig_id, "Spine")
+	_check(root_keys.size() == 1, "key_pose keys the root at current_time")
+	_check(spine_keys.size() == 1, "key_pose keys every bone")
+	_check(root_keys.size() == 1 and (root_keys[0].get("value", Quaternion.IDENTITY) as Quaternion).angle_to(expected_root) < 0.001, "key_pose stores the captured root rotation")
+	_check(spine_keys.size() == 1 and (spine_keys[0].get("value", Quaternion.IDENTITY) as Quaternion).angle_to(expected_spine) < 0.001, "key_pose stores the captured spine rotation")
+	_check(doc.undo_label() == "Key pose", "key_pose is one undo step")
 	doc.undo()
 	_check(doc.get_bone_keys(rig_id, "Root").is_empty(), "one undo removes every pose key")
 
@@ -601,9 +766,47 @@ func _test_imported_adoption() -> void:
 	_check(rig.get("bones", []).size() == 2, "adoption copies the imported bones")
 	_check(str(rig["bones"][1].get("name", "")) == "Knee", "adoption keeps imported bone names")
 	_check(doc.rig_system.active_rig_id() == object_id, "the adopted rig becomes active")
+
+	# Pose capture/apply works on the imported skeleton.
+	var q_hip := Quaternion(Vector3.UP, 0.7)
+	skel.set_bone_pose_rotation(0, q_hip)
 	var pose_id: String = doc.rig_system.save_pose(object_id, "Imported")
 	_check(pose_id != "", "the adopted rig can save a pose")
-	_check(doc.rig_system.apply_pose(object_id, pose_id) == null, "the adopted rig can apply a pose")
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	doc.rig_system.apply_pose(object_id, pose_id)
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_hip) < 0.001, "the adopted rig can apply a pose")
+
+	# Imported bone structure is read-only; only pose/IK may change.
+	var bones_before: int = (doc.rig_system.get_rig(object_id).get("bones", []) as Array).size()
+	_check(doc.rig_system.add_bone(object_id, "Extra", "Hip", _rest()) == -1, "imported rigs reject add_bone")
+	_check(not doc.rig_system.remove_bone(object_id, "Knee"), "imported rigs reject remove_bone")
+	_check(not doc.rig_system.rename_bone(object_id, "Knee", "Leg"), "imported rigs reject rename_bone")
+	_check(not doc.rig_system.set_bone_parent(object_id, "Knee", ""), "imported rigs reject set_bone_parent")
+	_check((doc.rig_system.get_rig(object_id).get("bones", []) as Array).size() == bones_before, "imported bone structure stays unchanged")
+
+	# The tree disables structural actions with a concrete reason.
+	var panel = RigPanelScript.new()
+	panel.name = "ImportedRigPanel"
+	add_child(panel)
+	panel.setup(doc)
+	await get_tree().process_frame
+	var tree = panel.find_child("BoneTree", true, false)
+	_check(tree != null, "the imported rig tree builds")
+	if tree != null:
+		var add_button: Button = tree.find_child("AddBoneButton", true, false)
+		var rename_button: Button = tree.find_child("RenameBoneButton", true, false)
+		var reparent_button: Button = tree.find_child("ReparentBoneButton", true, false)
+		var delete_button: Button = tree.find_child("DeleteBoneButton", true, false)
+		_check(add_button != null and add_button.disabled, "the bone tree disables Add bone for an imported rig")
+		_check(rename_button != null and rename_button.disabled, "the bone tree disables Rename for an imported rig")
+		_check(reparent_button != null and reparent_button.disabled, "the bone tree disables Reparent for an imported rig")
+		_check(delete_button != null and delete_button.disabled, "the bone tree disables Delete for an imported rig")
+		var message: Label = tree.find_child("BoneTreeMessage", true, false)
+		_check(message != null and message.text.contains("Imported"), "the bone tree explains the imported lock")
+		if add_button != null:
+			add_button.pressed.emit()
+			_check((doc.rig_system.get_rig(object_id).get("bones", []) as Array).size() == bones_before, "pressing Add bone on an imported rig changes nothing")
+	panel.queue_free()
 	doc.queue_free()
 
 
