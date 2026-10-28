@@ -335,7 +335,9 @@ static func _apply_layer(
 			if not channels.has(channel):
 				continue
 			var entry: Dictionary = channels[channel]
-			var weight := effective * minf(1.0, float(entry.get("weight", 0.0)))
+			# `entry.weight` is already the summed strip weight/fade for this
+			# channel, so the layer weight is the only factor left to apply.
+			var weight := layer_weight * minf(1.0, float(entry.get("weight", 0.0)))
 			if weight <= 0.0:
 				continue
 			var value: Variant = entry.get("value")
@@ -376,7 +378,7 @@ static func _apply_layer(
 				rig[bone] = {"rotation": Quaternion.IDENTITY, "weight": 0.0}
 			var acc: Dictionary = rig[bone]
 			var entry: Dictionary = bone_data[bone]
-			var weight := effective * minf(1.0, float(entry.get("weight", 0.0)))
+			var weight := layer_weight * minf(1.0, float(entry.get("weight", 0.0)))
 			if weight <= 0.0:
 				continue
 			var value: Quaternion = entry.get("value", Quaternion.IDENTITY)

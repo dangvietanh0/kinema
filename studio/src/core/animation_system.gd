@@ -749,14 +749,15 @@ func _set_player_active(active: bool) -> void:
 func _sync_document_clip() -> void:
 	if _document == null:
 		return
+	if _document.has_method("set_active_clip"):
+		_document.set_active_clip(_active_clip)
+		return
 	var anim: Animation = active_animation()
 	if anim == null:
 		return
 	_document.animation = anim
 	_document.duration = maxf(MIN_DURATION, anim.length)
 	_sync_document_loop()
-	if _document.has_method("_refresh_animation"):
-		_document._refresh_animation()
 
 
 ## `Document._refresh_animation()` takes the loop flag from `doc.loop`, so the
@@ -1028,6 +1029,9 @@ func _load_layers(raw_layers: Variant) -> void:
 		}
 		if str(layer["blend"]) not in ["override", "additive"]:
 			layer["blend"] = "override"
+		# Append before filling strips so generated ids can see ids that are
+		# already present in this layer while loading.
+		_layers.append(layer)
 		for raw_strip in raw.get("strips", []):
 			if not raw_strip is Dictionary:
 				continue
@@ -1055,7 +1059,6 @@ func _load_layers(raw_layers: Variant) -> void:
 				strip["trim_end"] = minf(length, float(strip["trim_start"]) + 0.001)
 			_clamp_fades(strip, length)
 			layer["strips"].append(strip)
-		_layers.append(layer)
 
 
 func to_data() -> Dictionary:
@@ -1165,9 +1168,19 @@ func _new_layer_id() -> String:
 
 
 func _new_strip_id() -> String:
+	while _strip_id_exists("strip_%d" % _next_strip):
+		_next_strip += 1
 	var id := "strip_%d" % _next_strip
 	_next_strip += 1
 	return id
+
+
+func _strip_id_exists(id: String) -> bool:
+	for layer in _layers:
+		for strip in layer.get("strips", []):
+			if str(strip.get("id", "")) == id:
+				return true
+	return false
 
 
 func _first_clip_id() -> String:
@@ -1250,9 +1263,6 @@ func _notify_clips() -> void:
 		return
 	if _document.has_signal("clips_changed"):
 		_document.clips_changed.emit()
-	if _document.has_signal("dirty_changed"):
-		_document.set("_dirty", true)
-		_document.dirty_changed.emit(true)
 
 
 func _value_to_json(value: Variant) -> Variant:
