@@ -100,7 +100,7 @@ func set_mode(mode: String) -> void:
 	_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
 	if _row == null:
 		return
-	var height := 44.0
+	var height := float(Kit.Tokens.HIT)
 	var icon := 20 if _mode == "compact" else 18
 	custom_minimum_size.y = height
 	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
