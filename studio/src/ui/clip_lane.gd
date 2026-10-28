@@ -383,6 +383,19 @@ func _strip_end(strip: Dictionary, clip: Dictionary) -> float:
 
 
 func _hit_at(position: Vector2) -> Dictionary:
+	# On a strip narrower than the 44 px handles the two trim rects (and any
+	# fade rects) cover the whole block. Let the centre and the padded area
+	# outside the visual block win so move/tap-select stays reachable; only the
+	# thin visual edges keep the trim/fade handles.
+	for hit in _strip_hits:
+		var strip_rect: Rect2 = hit["rect"]
+		var hit_rect: Rect2 = hit.get("hit_rect", strip_rect)
+		if strip_rect.size.x > 44.0 or not hit_rect.has_point(position):
+			continue
+		var edge := clampf(strip_rect.size.x * 0.25, 4.0, 10.0)
+		var in_visual := position.x >= strip_rect.position.x and position.x <= strip_rect.end.x
+		if not in_visual or (position.x > strip_rect.position.x + edge and position.x < strip_rect.end.x - edge):
+			return _strip_move_hit(hit)
 	for hit in _fade_hits:
 		if hit["rect"].has_point(position):
 			var strip := _strip_hit(str(hit["strip_id"]))
@@ -404,13 +417,17 @@ func _hit_at(position: Vector2) -> Dictionary:
 	for hit in _strip_hits:
 		var hit_rect: Rect2 = hit.get("hit_rect", hit["rect"])
 		if hit_rect.has_point(position):
-			return {
-				"kind": "strip",
-				"mode": "move",
-				"strip_id": str(hit["strip_id"]),
-				"clip_id": str(hit["clip_id"]),
-			}
+			return _strip_move_hit(hit)
 	return {}
+
+
+func _strip_move_hit(hit: Dictionary) -> Dictionary:
+	return {
+		"kind": "strip",
+		"mode": "move",
+		"strip_id": str(hit["strip_id"]),
+		"clip_id": str(hit["clip_id"]),
+	}
 
 
 func _strip_hit(strip_id: String) -> Dictionary:
