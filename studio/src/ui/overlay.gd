@@ -108,8 +108,9 @@ func _build() -> void:
 	_panel.add_child(_panel_content)
 
 	# Drag handle: the only part of the panel body that can dismiss a sheet.
+	# The visible bar stays 32x4, but the row itself is a full 44 dp target.
 	_handle_row = MarginContainer.new()
-	_handle_row.custom_minimum_size.y = 20
+	_handle_row.custom_minimum_size.y = HIT
 	_handle_row.mouse_filter = Control.MOUSE_FILTER_STOP
 	_handle_row.gui_input.connect(_on_handle_input)
 	_panel_content.add_child(_handle_row)
