@@ -583,7 +583,3 @@ func tooltip_icon(button: Control, text_value: String) -> void:
 func exempt_from_hit_floor(control: Control) -> void:
 	if control != null:
 		control.set_meta("qa_hit_exempt", true)
-
-
-func is_hit_exempt(control: Control) -> bool:
-	return control != null and control.has_meta("qa_hit_exempt")

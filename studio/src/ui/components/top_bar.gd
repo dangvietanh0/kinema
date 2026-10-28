@@ -146,7 +146,7 @@ func _build() -> void:
 	for menu in MENUS:
 		var button := Kit.text_toggle(str(menu["label"]), "", false)
 		button.add_theme_font_override("font", Kit.font_medium)
-		button.set_meta("qa_hit_exempt", true)
+		Kit.exempt_from_hit_floor(button)
 		button.pressed.connect(_open_menu.bind(button, menu))
 		_menu_bar.add_child(button)
 
@@ -330,7 +330,7 @@ func _apply_mode() -> void:
 			height = 44.0
 		"desktop":
 			height = 36.0
-			icon_size = 16
+			icon_size = 18
 	custom_minimum_size.y = height
 	var desktop := _mode == "desktop"
 	# Desktop is a mouse surface with a 36 dp menu bar. Touch modes keep the
@@ -382,7 +382,7 @@ func _apply_mode() -> void:
 			button.add_theme_constant_override("icon_max_width", 18)
 			# Desktop is a mouse surface: the 36 dp bar is exempt from the
 			# 44 dp touch-floor sweep, exactly like the menu-bar labels.
-			button.set_meta("qa_hit_exempt", true)
+			Kit.exempt_from_hit_floor(button)
 		else:
 			button.custom_minimum_size = Vector2(44, 44)
 			button.add_theme_constant_override("icon_max_width", icon_size)

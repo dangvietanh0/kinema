@@ -56,7 +56,7 @@ func _build() -> void:
 	_view_button.theme_type_variation = "QuietButton"
 	_view_button.add_theme_font_override("font", Kit.font_medium)
 	_view_button.add_theme_font_size_override("font_size", Kit.TYPE_BODY)
-	_view_button.add_theme_constant_override("icon_max_width", 12)
+	_view_button.add_theme_constant_override("icon_max_width", 18)
 	_view_button.add_theme_constant_override("h_separation", 6)
 	_view_button.pressed.connect(_open_views)
 	_row.add_child(_view_button)
@@ -69,7 +69,7 @@ func _build() -> void:
 	_add_button.theme_type_variation = "QuietButton"
 	_add_button.add_theme_font_override("font", Kit.font_medium)
 	_add_button.add_theme_font_size_override("font_size", Kit.TYPE_BODY)
-	_add_button.add_theme_constant_override("icon_max_width", 16)
+	_add_button.add_theme_constant_override("icon_max_width", 18)
 	_add_button.add_theme_constant_override("h_separation", 6)
 	_add_button.pressed.connect(func() -> void: add_requested.emit())
 	_row.add_child(_add_button)
@@ -114,7 +114,7 @@ func set_mode(mode: String) -> void:
 		button.add_theme_constant_override("icon_max_width", icon)
 	for button in [_view_button, _add_button]:
 		button.custom_minimum_size = Vector2(0, height)
-	_view_button.add_theme_constant_override("icon_max_width", 12)
+		button.add_theme_constant_override("icon_max_width", icon)
 
 
 ## The view keeps references to the real header buttons so older call sites
@@ -163,7 +163,15 @@ func _open_views() -> void:
 		_menu.add_item(str(entry["text"]))
 		_menu.set_item_metadata(_menu.get_item_count() - 1, str(entry["id"]))
 	var rect := _view_button.get_global_rect()
-	_menu.position = Vector2i(int(rect.position.x), int(rect.position.y + rect.size.y))
+	var popup_size := _menu.get_contents_minimum_size()
+	var view_size := get_viewport_rect().size
+	# A popup opened near the right or bottom edge must stay on screen; the
+	# header sits inside the viewport, so clamping here is enough.
+	var pos := Vector2i(
+		clampi(int(rect.position.x), 0, maxi(0, int(view_size.x - popup_size.x))),
+		clampi(int(rect.position.y + rect.size.y), 0, maxi(0, int(view_size.y - popup_size.y)))
+	)
+	_menu.position = pos
 	_menu.popup()
 
 
