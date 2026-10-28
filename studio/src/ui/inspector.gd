@@ -11,7 +11,6 @@ signal collapse_toggled(collapsed: bool)
 
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
-const AXIS_COLORS := [Color(0.651, 0.416, 0.400), Color(0.498, 0.604, 0.471), Color(0.427, 0.502, 0.600)]
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -255,7 +254,9 @@ func _build_transform_section() -> void:
 				fields.add_child(Kit.hsep())
 			var field = NumberFieldScript.new()
 			field.axis = ["X", "Y", "Z"][i]
-			field.axis_color = AXIS_COLORS[i]
+			# The axis tint is reserved for the viewport gizmo/compass; the
+			# inspector badge is a label on a field, so it stays achromatic.
+			field.axis_color = Kit.TEXT_MUTED
 			field.suffix = ""
 			if channel == "position":
 				field.step = 0.02
