@@ -678,6 +678,14 @@ func toggle_grid() -> void:
 func grid_enabled() -> bool:
 	return _grid_on
 
+
+## The header toggle is the source of intent; writing the requested state
+## instead of flipping the current one keeps a queued duplicate toggle honest.
+func set_grid_enabled(enabled: bool) -> void:
+	if _grid_on == enabled:
+		return
+	_on_grid_toggled(enabled)
+
 func view_preset() -> String:
 	return _preset
 

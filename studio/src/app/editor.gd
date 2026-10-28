@@ -1021,7 +1021,20 @@ func _apply_shell() -> void:
 	_sync_timeline_visibility()
 	_update_bottom_bar()
 	_update_drawer_tabs()
+	_sync_view_header_visibility()
 	_refresh_chrome_values()
+
+
+## A drawer or sheet can begin inside the camera label and cut it mid-word
+## ("Persp"). The header is layout, so it yields the space while a surface
+## covers the viewport instead of leaving a clipped fragment behind an edge.
+func _sync_view_header_visibility() -> void:
+	if _view_header == null:
+		return
+	var covered := _render_mode or _drawer_open
+	if _overlay != null and _overlay.has_modal():
+		covered = true
+	_view_header.visible = not covered
 
 
 func _refresh_chrome_values() -> void:
@@ -1128,6 +1141,7 @@ func _open_drawer() -> void:
 	_dock.visible = true
 	_dock.modulate.a = 0.0
 	_drawer_scrim.modulate.a = 0.0
+	_sync_view_header_visibility()
 	var tween := create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(_dock, "modulate:a", 1.0, 0.13)
@@ -1142,6 +1156,7 @@ func _close_drawer() -> void:
 	_drawer_scrim.visible = false
 	_dock.visible = false
 	_dock.modulate.a = 1.0
+	_sync_view_header_visibility()
 	_update_bottom_bar()
 
 func _dock_overlay_mode() -> bool:
@@ -1283,7 +1298,7 @@ func _on_view_grid_changed(enabled: bool) -> void:
 
 func _on_view_header_grid_toggled(enabled: bool) -> void:
 	if _view != null:
-		_view.toggle_grid()
+		_view.set_grid_enabled(enabled)
 
 func _undo() -> void:
 	if doc == null or not doc.can_undo():
@@ -2618,10 +2633,12 @@ func _on_modal_opened() -> void:
 	# surface. The 3D scene remains visible through the scrim.
 	if _view != null:
 		_view.set_hud_visible(false)
+	_sync_view_header_visibility()
 
 func _on_modal_closed() -> void:
 	if _view != null and not _render_mode:
 		_view.set_hud_visible(true)
+	_sync_view_header_visibility()
 	if not _color_sheet_active:
 		return
 	_color_sheet_active = false
