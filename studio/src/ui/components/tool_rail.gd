@@ -135,14 +135,12 @@ func _rebuild() -> void:
 	_add_button.pressed.connect(func() -> void: add_requested.emit())
 	_box.add_child(_add_button)
 
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	if _mode == "compact":
-		style.border_width_bottom = 1
 		style.content_margin_top = 2
 		style.content_margin_bottom = 2
 		custom_minimum_size = Vector2(0, 48)
 	else:
-		style.border_width_right = 1
 		style.content_margin_top = 2
 		style.content_margin_bottom = 8
 		custom_minimum_size = Vector2(rail_width(), 0)

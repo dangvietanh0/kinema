@@ -97,7 +97,7 @@ func _rebuild() -> void:
 
 	add_child(Kit.section_label("Arrangement"))
 	var track := PanelContainer.new()
-	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
+	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	add_child(track)
 	var strip := HBoxContainer.new()
 	strip.add_theme_constant_override("separation", 2)
@@ -175,7 +175,7 @@ func _rebuild() -> void:
 
 	var orientation_track := PanelContainer.new()
 	_orientation_track = orientation_track
-	orientation_track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
+	orientation_track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	var orientation_strip := HBoxContainer.new()
 	orientation_strip.add_theme_constant_override("separation", 2)
 	orientation_track.add_child(orientation_strip)
@@ -242,11 +242,16 @@ func _rebuild() -> void:
 	_scale_control.add_theme_color_override("font_color", Kit.TEXT)
 	_scale_control.add_theme_color_override("font_disabled_color", Kit.TEXT_DIM)
 	for state in ["normal", "hover", "pressed", "focus"]:
+		var fill := Kit.SURFACE_2
+		if state == "hover":
+			fill = Kit.SURFACE_HOVER
+		elif state == "pressed":
+			fill = Kit.SURFACE_ACTIVE
 		_scale_control.add_theme_stylebox_override(
 			state,
-			Kit.flat_style(Kit.SURFACE_2 if state == "normal" else Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0)
+			Kit.flat_style(fill, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
 		)
-	_scale_control.add_theme_stylebox_override("disabled", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
+	_scale_control.add_theme_stylebox_override("disabled", Kit.flat_style(Kit.SURFACE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	var selected := 0
 	var current_scale := float(Prefs.get_value("display.user_scale", 1.0))
 	for i in range(SCALE_VALUES.size()):
@@ -284,10 +289,10 @@ func _mode_label(mode: String) -> String:
 
 
 func _style_segment(button: Button) -> void:
-	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_3.lightened(0.04), 0, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_ACTIVE.lightened(0.04), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
 	button.add_theme_color_override("font_hover_color", Kit.TEXT)
 	button.add_theme_color_override("font_pressed_color", Kit.TEXT)

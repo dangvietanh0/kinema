@@ -11,7 +11,6 @@ signal collapse_toggled(collapsed: bool)
 
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
-const AXIS_COLORS := [Color(0.651, 0.416, 0.400), Color(0.498, 0.604, 0.471), Color(0.427, 0.502, 0.600)]
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -65,7 +64,7 @@ func _build_shell() -> void:
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation", 6)
 	header_margin.add_child(header)
-	var title := Kit.section_label("Object")
+	var title := Kit.section_label("Properties")
 	title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header.add_child(title)
 	var spacer := Control.new()
@@ -245,7 +244,7 @@ func _build_transform_section() -> void:
 		# One frame around X/Y/Z reads as a vector row. Three separately framed
 		# fields with 4 dp gaps looked like unrelated controls.
 		var fields_frame := PanelContainer.new()
-		fields_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+		fields_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.BORDER_SOFT, 1))
 		section.add_child(fields_frame)
 		var fields := HBoxContainer.new()
 		fields.add_theme_constant_override("separation", 0)
@@ -255,7 +254,9 @@ func _build_transform_section() -> void:
 				fields.add_child(Kit.hsep())
 			var field = NumberFieldScript.new()
 			field.axis = ["X", "Y", "Z"][i]
-			field.axis_color = AXIS_COLORS[i]
+			# The axis tint is reserved for the viewport gizmo/compass; the
+			# inspector badge is a label on a field, so it stays achromatic.
+			field.axis_color = Kit.TEXT_MUTED
 			field.suffix = ""
 			if channel == "position":
 				field.step = 0.02
@@ -505,13 +506,13 @@ func _set_swatch(color: Color) -> void:
 	_swatch_value = color
 	if _color_button == null:
 		return
-	var normal := Kit.flat_style(color, 0, Kit.BORDER, 1)
-	var hover := Kit.flat_style(color.lightened(0.08), 0, Kit.TEXT_MUTED, 1)
-	var pressed := Kit.flat_style(color.darkened(0.08), 0, Kit.FOCUS, 1)
+	var normal := Kit.flat_style(color, Kit.R_CONTROL, Kit.BORDER, 1)
+	var hover := Kit.flat_style(color.lightened(0.08), Kit.R_CONTROL, Kit.TEXT_MUTED, 1)
+	var pressed := Kit.flat_style(color.darkened(0.08), Kit.R_CONTROL, Kit.FOCUS, 1)
 	_color_button.add_theme_stylebox_override("normal", normal)
 	_color_button.add_theme_stylebox_override("hover", hover)
 	_color_button.add_theme_stylebox_override("pressed", pressed)
-	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), 0, Kit.FOCUS, 1))
+	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Kit.FOCUS, 1))
 
 func str_to_var_hex(hex: String) -> Color:
 	return Color.from_string(hex, Color(0.66, 0.66, 0.66))

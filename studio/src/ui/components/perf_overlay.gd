@@ -6,7 +6,7 @@ extends PanelContainer
 ## as a dash instead of an estimate.
 
 const WIDTH := 248.0
-const HEIGHT := 190.0
+const HEIGHT := 200.0
 const TOP := 62.0
 const MARGIN := 10
 
@@ -32,7 +32,7 @@ func _ready() -> void:
 	grow_vertical = Control.GROW_DIRECTION_END
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER, 1)
+	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Kit.BORDER, 1)
 	style.content_margin_left = MARGIN
 	style.content_margin_right = MARGIN
 	style.content_margin_top = 4
@@ -78,7 +78,7 @@ func _build() -> void:
 	readout.add_child(_frame_label)
 
 	_graph = Control.new()
-	_graph.custom_minimum_size.y = 30.0
+	_graph.custom_minimum_size.y = 40.0
 	_graph.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_graph.draw.connect(_draw_graph)
 	_graph.visible = _frame_graph

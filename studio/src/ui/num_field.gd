@@ -21,7 +21,9 @@ var step := 0.01
 var axis := "X"
 var axis_color := Color(1, 1, 1)
 var suffix := ""
-var badge_width := 22
+## The badge is an interactive drag target, so it keeps the 44 dp touch floor
+## in both axes even when a caller asks for a narrower glyph cell.
+var badge_width := int(Kit.Tokens.HIT)
 ## When grouped, the caller draws one frame around several fields; the field
 ## itself contributes no border or background.
 var grouped := false
@@ -36,7 +38,7 @@ func _ready() -> void:
 	if grouped:
 		add_theme_stylebox_override("panel", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
 	else:
-		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.BORDER_SOFT, 1))
 
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)
@@ -44,13 +46,13 @@ func _ready() -> void:
 	add_child(row)
 
 	var badge_panel := PanelContainer.new()
-	var badge_style := Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0)
+	var badge_style := Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
 	badge_style.border_width_right = 1
 	badge_style.border_color = Kit.BORDER_SOFT
 	badge_style.content_margin_left = 0
 	badge_style.content_margin_right = 0
 	badge_panel.add_theme_stylebox_override("panel", badge_style)
-	badge_panel.custom_minimum_size = Vector2(maxf(badge_width, 22.0), Kit.FIELD)
+	badge_panel.custom_minimum_size = Vector2(maxf(badge_width, Kit.Tokens.HIT), Kit.FIELD)
 	badge_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	badge_panel.tooltip_text = "Drag to adjust %s" % axis
 	row.add_child(badge_panel)

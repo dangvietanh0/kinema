@@ -12,7 +12,7 @@ signal request_quit
 const OverlayScript = preload("res://src/ui/overlay.gd")
 
 const PAGE_MAX_WIDTH := 980.0
-const ROW_HEIGHT := 56.0
+const ROW_HEIGHT := 44.0
 const WIDE_MIN_WIDTH := 720.0
 
 var _overlay: Control
@@ -35,7 +35,7 @@ func _ready() -> void:
 	_build_top()
 	_scroll = ScrollContainer.new()
 	_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_scroll.offset_top = 56
+	_scroll.offset_top = 48
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	Kit.style_scroll_container(_scroll)
@@ -50,15 +50,14 @@ func _ready() -> void:
 
 func _build_top() -> void:
 	_top = PanelContainer.new()
-	var style := Kit.flat_style(Kit.BG, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_bottom = 1
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 20
 	style.content_margin_right = 12
-	style.content_margin_top = 6
-	style.content_margin_bottom = 6
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
 	_top.add_theme_stylebox_override("panel", style)
 	_top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_top.custom_minimum_size.y = 56
+	_top.custom_minimum_size.y = 48
 	add_child(_top)
 
 	var row := HBoxContainer.new()
@@ -68,7 +67,7 @@ func _build_top() -> void:
 	var mark := PanelContainer.new()
 	mark.custom_minimum_size = Vector2(30, 30)
 	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	mark.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	mark.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	row.add_child(mark)
 	var mark_label := Kit.mono_label("K", Kit.TYPE_EMPHASIS, Kit.TEXT)
 	mark_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -164,7 +163,6 @@ func _build_page_header(parent: Control) -> void:
 	titles.add_child(Kit.label("Local projects on this device", Kit.TYPE_BODY, Kit.TEXT_MUTED))
 
 	var new_button := Kit.text_button("New project", "plus", true)
-	new_button.custom_minimum_size = Vector2(148, 44)
 	new_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	new_button.pressed.connect(_open_new_project_sheet)
 	row.add_child(new_button)
@@ -258,7 +256,7 @@ func _recent_row(entry: Dictionary, last: bool) -> Control:
 	icon_box.custom_minimum_size = Vector2(32, 32)
 	icon_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	icon_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	icon_box.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
+	icon_box.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	row.add_child(icon_box)
 	var icon_center := CenterContainer.new()
 	icon_box.add_child(icon_center)
@@ -305,7 +303,7 @@ func _value_label(text_value: String, width: float) -> Label:
 func _recent_style(hover: bool, _last: bool) -> StyleBoxFlat:
 	# Project rows are separated by spacing and hover fill, not by a rule per
 	# row. The only rule in the list is under the column header.
-	var style := Kit.flat_style(Kit.SURFACE_2 if hover else Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0)
+	var style := Kit.flat_style(Kit.SURFACE_2 if hover else Color(0, 0, 0, 0), Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 12
 	style.content_margin_right = 12
 	style.content_margin_top = 0
@@ -401,7 +399,7 @@ func _template_card(id: String, title: String, description: String, icon_name: S
 	return panel
 
 func _template_style(active: bool) -> StyleBoxFlat:
-	var style := Kit.flat_style(Kit.SURFACE_3 if active else Kit.SURFACE_2, 0, Kit.FOCUS if active else Kit.BORDER_SOFT, 1)
+	var style := Kit.flat_style(Kit.SURFACE_ACTIVE if active else Kit.SURFACE_2, Kit.R_CONTROL, Kit.FOCUS if active else Kit.BORDER_SOFT, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 8

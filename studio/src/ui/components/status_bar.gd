@@ -28,8 +28,7 @@ func _ready() -> void:
 
 func _build() -> void:
 	custom_minimum_size.y = 24
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_top = 1
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 8
 	style.content_margin_right = 8
 	style.content_margin_top = 2

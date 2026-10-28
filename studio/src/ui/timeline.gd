@@ -139,8 +139,7 @@ func setup(document: Node3D) -> void:
 func _build_transport() -> void:
 	var panel := PanelContainer.new()
 	_transport_panel = panel
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_top = 1
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 6
 	style.content_margin_right = 6
 	style.content_margin_top = 4
@@ -188,9 +187,9 @@ func _build_transport() -> void:
 	_play_button.add_theme_color_override("icon_normal_color", Kit.TIME_BRIGHT)
 	_play_button.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT)
 	_play_button.add_theme_color_override("icon_pressed_color", Kit.BG)
-	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0))
-	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_3, 0, Color(0, 0, 0, 0), 0))
-	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.TIME_BRIGHT, 0, Kit.TIME_BRIGHT, 0))
+	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.TIME_BRIGHT, Kit.R_CONTROL, Kit.TIME_BRIGHT, 0))
 	_play_button.pressed.connect(_on_play)
 	row.add_child(_play_button)
 
@@ -265,7 +264,7 @@ func _build_compact_header() -> void:
 	_compact_header = PanelContainer.new()
 	_compact_header.custom_minimum_size.y = 48
 	_compact_header.visible = false
-	var style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 6
 	style.content_margin_right = 6
 	style.content_margin_top = 2
@@ -513,10 +512,10 @@ func _style_flag_button(button: Button, active: bool) -> void:
 	if active:
 		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
 		button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.FOCUS_DARK, 0, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	else:
 		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
+		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 
 func _refresh_transport(time: float, playing: bool) -> void:
 	if doc == null:
@@ -704,7 +703,7 @@ func _draw_sheet(canvas: Control) -> void:
 		var top := row_top + float(ci) * _row_h
 		var center_y := top + _row_h * 0.5
 		if channel == _selected_channel:
-			canvas.draw_rect(Rect2(0, top, w, _row_h), Kit.SURFACE_2)
+			canvas.draw_rect(Rect2(0, top, w, _row_h), Kit.SURFACE_ACTIVE)
 			canvas.draw_rect(Rect2(0, top, CHANNEL_EDGE, _row_h), Kit.ACCENT)
 		elif ci % 2 == 1:
 			canvas.draw_rect(Rect2(_label_width, top, w - _label_width, _row_h), Kit.SURFACE * Color(1, 1, 1, 0.35))
@@ -769,7 +768,7 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 		var channel := str(tab["channel"])
 		var rect: Rect2 = tab["rect"]
 		var selected := channel == _selected_channel
-		canvas.draw_rect(rect, Kit.SURFACE_2 if selected else Kit.SURFACE)
+		canvas.draw_rect(rect, Kit.SURFACE_ACTIVE if selected else Kit.SURFACE)
 		if selected:
 			selected_tab = rect
 			has_selected_tab = true
