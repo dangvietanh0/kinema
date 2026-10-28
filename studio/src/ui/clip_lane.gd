@@ -53,6 +53,8 @@ var _strip_hits: Array = []
 var _trim_hits: Array = []
 var _fade_hits: Array = []
 var _drag: Dictionary = {}
+var _touches: Dictionary = {}
+var _pinch: Dictionary = {}
 var _built := false
 
 
@@ -460,13 +462,65 @@ func _lane_input(event: InputEvent, _canvas: Control) -> void:
 	elif event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
-			_begin_drag(touch.position)
+			_touches[int(touch.index)] = touch.position
+			if _touches.size() >= 2:
+				_start_pinch()
+			else:
+				_begin_drag(touch.position)
 		else:
-			_end_drag()
+			_touches.erase(int(touch.index))
+			if _touches.size() < 2:
+				_pinch = {}
+			if _touches.is_empty():
+				_end_drag()
 		accept_event()
-	elif event is InputEventScreenDrag and not _drag.is_empty():
-		_update_drag((event as InputEventScreenDrag).position)
-		accept_event()
+	elif event is InputEventScreenDrag:
+		var drag := event as InputEventScreenDrag
+		if _touches.has(int(drag.index)):
+			_touches[int(drag.index)] = drag.position
+		if not _pinch.is_empty():
+			_update_pinch()
+			accept_event()
+		elif not _drag.is_empty():
+			_update_drag(drag.position)
+			accept_event()
+
+
+func _start_pinch() -> void:
+	var indexes := _touches.keys()
+	if indexes.size() < 2:
+		return
+	# A second finger cancels the pending single-finger drag.
+	if not _drag.is_empty():
+		_drag = {}
+		if doc != null and doc.has_method("end_edit"):
+			doc.end_edit()
+	var p0: Vector2 = _touches[indexes[0]]
+	var p1: Vector2 = _touches[indexes[1]]
+	var distance := p0.distance_to(p1)
+	if distance < 1.0:
+		return
+	var mid := (p0 + p1) * 0.5
+	_pinch = {
+		"distance": distance,
+		"zoom": _zoom,
+		"anchor_time": _x_to_time(mid.x),
+	}
+
+
+func _update_pinch() -> void:
+	var indexes := _touches.keys()
+	if indexes.size() < 2 or _pinch.is_empty():
+		return
+	var p0: Vector2 = _touches[indexes[0]]
+	var p1: Vector2 = _touches[indexes[1]]
+	var distance := p0.distance_to(p1)
+	var factor := distance / maxf(1.0, float(_pinch.get("distance", distance)))
+	var mid := (p0 + p1) * 0.5
+	_zoom = clampf(float(_pinch.get("zoom", _zoom)) * factor, 0.25, 16.0)
+	# Keep the time under the pinch midpoint fixed while the scale changes.
+	_offset = mid.x - LABEL_W - float(_pinch.get("anchor_time", _x_to_time(mid.x))) * _px_per_second()
+	refresh()
 
 
 func _begin_drag(position: Vector2) -> void:
