@@ -686,6 +686,8 @@ func _test_ui() -> void:
 		if fade_rect.size.x < 44.0 or fade_rect.size.y < 44.0:
 			fade_ok = false
 	_check(fade_ok, "fade handles expose 44x44 hit areas")
+	var fade_mid_hit: Dictionary = lane._hit_at(Vector2(lane._time_to_x(0.5 + 0.5), rect.position.y + 22.0))
+	_check(str(fade_mid_hit.get("kind", "")) == "fade" and str(fade_mid_hit.get("mode", "")) == "fade_in", "a fade midpoint reaches the fade handle on a wide strip")
 	_check(lane.row_height() >= 44.0, "layer rows are 44 dp")
 	lane.tap_strip(strip_b)
 	await get_tree().process_frame
@@ -695,7 +697,7 @@ func _test_ui() -> void:
 
 	# A short strip keeps a narrow visual block but still gets a 44x44 hit target.
 	var far_clip: String = sys.create_clip("Far", 2.0)
-	sys.add_strip(layer_b, far_clip, 98.0)
+	var far_strip: String = sys.add_strip(layer_b, far_clip, 98.0)
 	lane.refresh()
 	await get_tree().process_frame
 	var narrow_rect: Rect2 = lane.strip_rect(strip_b)
@@ -705,6 +707,39 @@ func _test_ui() -> void:
 			narrow_hit = hit.get("hit_rect", Rect2())
 	_check(narrow_rect.size.x < 44.0, "a short strip keeps its narrow visual block")
 	_check(narrow_hit.size.x >= 44.0 and narrow_hit.size.y >= 44.0, "a narrow strip keeps a 44x44 hit target")
+	var narrow_center_hit: Dictionary = lane._hit_at(Vector2(narrow_rect.position.x + narrow_rect.size.x * 0.5, narrow_rect.position.y + 22.0))
+	_check(str(narrow_center_hit.get("kind", "")) == "strip" and str(narrow_center_hit.get("mode", "")) == "move", "a narrow strip centre tap moves the strip")
+	var far_rect: Rect2 = lane.strip_rect(far_strip)
+	var far_center_hit: Dictionary = lane._hit_at(Vector2(far_rect.position.x + far_rect.size.x * 0.5, far_rect.position.y + 22.0))
+	_check(str(far_center_hit.get("kind", "")) == "strip" and str(far_center_hit.get("mode", "")) == "move", "a 24 px strip centre tap moves the strip")
+	var far_edge_hit: Dictionary = lane._hit_at(Vector2(far_rect.position.x + 1.0, far_rect.position.y + 22.0))
+	_check(str(far_edge_hit.get("kind", "")) == "trim" and str(far_edge_hit.get("mode", "")) == "trim_start", "a narrow strip left edge still trims")
+	var far_outside_hit: Dictionary = lane._hit_at(Vector2(far_rect.position.x - 4.0, far_rect.position.y + 22.0))
+	_check(str(far_outside_hit.get("kind", "")) == "strip", "the 44x44 move target includes the area just outside a narrow strip")
+
+	# A touch device can pinch to zoom; Fit remains the reset.
+	var pinch_before: float = lane._zoom
+	var touch_a := InputEventScreenTouch.new()
+	touch_a.index = 0
+	touch_a.position = Vector2(400, 88)
+	touch_a.pressed = true
+	lane._lane_input(touch_a, lane._canvas)
+	var touch_b := InputEventScreenTouch.new()
+	touch_b.index = 1
+	touch_b.position = Vector2(500, 88)
+	touch_b.pressed = true
+	lane._lane_input(touch_b, lane._canvas)
+	var drag_a := InputEventScreenDrag.new()
+	drag_a.index = 0
+	drag_a.position = Vector2(300, 88)
+	lane._lane_input(drag_a, lane._canvas)
+	var drag_b := InputEventScreenDrag.new()
+	drag_b.index = 1
+	drag_b.position = Vector2(600, 88)
+	lane._lane_input(drag_b, lane._canvas)
+	_check(lane._zoom > pinch_before, "a two-finger pinch zooms the clip lane")
+	lane._on_fit()
+	_check(_approx(lane._zoom, 1.0), "Fit restores the zoom after a pinch")
 
 	var clip_sheet_script = load(CLIP_SHEET_PATH)
 	_check(clip_sheet_script != null, "clip_sheet.gd exists")
