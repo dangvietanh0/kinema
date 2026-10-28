@@ -1,71 +1,618 @@
 extends RefCounted
-## Media subsystem contract: audio tracks, video-reference proxies, sequence
-## playback and export helpers.
+## Media subsystem: audio tracks that follow sequence time, video-reference
+## frame proxies, and the WAV mixdown used by the Android MP4 backend.
 ##
-## The contract commit installs safe no-ops so the shell can be wired before
-## WS-B lands. Every import/export method returns an explicit error instead of
-## pretending to succeed. WS-B replaces this file with the real implementation
-## and keeps these signatures.
+## `Document` owns one instance for the whole session. Scene children such as
+## `AudioStreamPlayer` are attached to the document node, never to this
+## `RefCounted`, so resetting a project cannot leave orphan players behind.
+
+const AudioLibrary = preload("res://src/core/audio_library.gd")
+const VideoReference = preload("res://src/core/video_reference.gd")
+
+const AUDIO_DEFAULTS := {
+	"start": 0.0,
+	"trim_start": 0.0,
+	"volume": 1.0,
+	"muted": false,
+	"fade_in": 0.0,
+	"fade_out": 0.0,
+}
+const DRIFT_TOLERANCE := 0.08
+const PROXY_FPS_PRESETS := VideoReference.PROXY_FPS_PRESETS
+const PROXY_FPS_DEFAULT := VideoReference.PROXY_FPS_DEFAULT
+const PROXY_WIDTH_PRESETS := VideoReference.PROXY_WIDTH_PRESETS
+const PROXY_WIDTH_DEFAULT := VideoReference.PROXY_WIDTH_DEFAULT
+const PROXY_LIMIT_BYTES := 2 * 1024 * 1024 * 1024
+const FRAME_CACHE_LIMIT := 12
 
 var _document = null
 var _project_dir := ""
+var _audio: Array[Dictionary] = []
+var _video_refs: Array[Dictionary] = []
+var _players: Dictionary = {}
+var _frame_cache: Dictionary = {}
+var _frame_cache_keys: Array[String] = []
+var _manifest_cache: Dictionary = {}
+var _next_audio := 1
+var _next_video := 1
+var _sequence_time := 0.0
+var _sequence_playing := false
+
 
 func setup(document) -> void:
 	_document = document
 
+
 func reset() -> void:
+	_stop_all_players(true)
+	_audio.clear()
+	_video_refs.clear()
+	_frame_cache.clear()
+	_frame_cache_keys.clear()
+	_manifest_cache.clear()
 	_project_dir = ""
+	_next_audio = 1
+	_next_video = 1
+	_sequence_time = 0.0
+	_sequence_playing = false
+
 
 func to_data() -> Dictionary:
-	return {"media": {"audio": [], "video_refs": []}}
+	return {
+		"media": {
+			"audio": _audio.duplicate(true),
+			"video_refs": _video_refs.duplicate(true),
+		},
+	}
 
-func load_data(_data: Dictionary, project_dir: String) -> void:
+
+func load_data(data: Dictionary, project_dir: String) -> void:
 	_project_dir = project_dir
+	_stop_all_players(true)
+	_audio.clear()
+	_video_refs.clear()
+	_frame_cache.clear()
+	_frame_cache_keys.clear()
+	_manifest_cache.clear()
+	_next_audio = 1
+	_next_video = 1
+	var media: Dictionary = data.get("media", {}) if data is Dictionary else {}
+	for raw in media.get("audio", []):
+		if raw is Dictionary:
+			_audio.append(_normalize_audio(raw))
+	for raw in media.get("video_refs", []):
+		if raw is Dictionary:
+			_video_refs.append(_normalize_video(raw))
+	_emit_changed()
 
-func advance(_delta: float) -> void:
-	pass
 
-func import_audio(_uri: String) -> Dictionary:
-	return {"ok": false, "error": "Audio import is not implemented yet."}
+func advance(delta: float) -> void:
+	if not _sequence_playing:
+		return
+	var time := _sequence_time + delta
+	if _document != null and _document.has_method("sequence_time"):
+		time = float(_document.sequence_time())
+	_sequence_time = time
+	_sync_players()
 
-func add_audio_track(_rel_path: String, _start: float) -> String:
-	return ""
 
-func update_audio_track(_id: String, _patch: Dictionary) -> void:
-	pass
+# -------------------------------------------------------------------------
+# Audio
+# -------------------------------------------------------------------------
 
-func delete_audio_track(_id: String) -> void:
-	pass
+func import_audio(uri: String) -> Dictionary:
+	var result := AudioLibrary.import_file(uri, _root())
+	if bool(result.get("ok", false)):
+		_emit_changed()
+	return result
+
+
+func add_audio_track(rel_path: String, start: float) -> String:
+	var loaded := AudioLibrary.load_stream(_root().path_join(rel_path))
+	if not bool(loaded.get("ok", false)):
+		return ""
+	var track := {
+		"id": "aud_%d" % _next_audio,
+		"name": rel_path.get_file().get_basename(),
+		"file": rel_path,
+		"start": maxf(0.0, start),
+		"trim_start": 0.0,
+		"trim_end": maxf(0.0, float(loaded.get("duration", 0.0))),
+		"volume": 1.0,
+		"muted": false,
+		"fade_in": 0.0,
+		"fade_out": 0.0,
+	}
+	_next_audio += 1
+	_audio.append(track)
+	_emit_changed()
+	return str(track["id"])
+
+
+func update_audio_track(id: String, patch: Dictionary) -> void:
+	var index := _audio_index(id)
+	if index < 0:
+		return
+	var track: Dictionary = _audio[index]
+	for key in patch.keys():
+		if key in ["name", "file", "start", "trim_start", "trim_end", "volume", "muted", "fade_in", "fade_out"]:
+			track[key] = patch[key]
+	track["start"] = maxf(0.0, float(track.get("start", 0.0)))
+	track["trim_start"] = maxf(0.0, float(track.get("trim_start", 0.0)))
+	track["trim_end"] = maxf(float(track.get("trim_start", 0.0)), float(track.get("trim_end", 0.0)))
+	track["volume"] = clampf(float(track.get("volume", 1.0)), 0.0, 1.0)
+	track["fade_in"] = maxf(0.0, float(track.get("fade_in", 0.0)))
+	track["fade_out"] = maxf(0.0, float(track.get("fade_out", 0.0)))
+	_audio[index] = track
+	var player: AudioStreamPlayer = _players.get(id)
+	if player != null and patch.has("file"):
+		var loaded := AudioLibrary.load_stream(_root().path_join(str(track.get("file", ""))))
+		if bool(loaded.get("ok", false)):
+			player.stream = loaded.get("stream")
+	_emit_changed()
+
+
+func delete_audio_track(id: String) -> void:
+	var index := _audio_index(id)
+	if index < 0:
+		return
+	_audio.remove_at(index)
+	var player: AudioStreamPlayer = _players.get(id)
+	if player != null and is_instance_valid(player):
+		player.stop()
+		player.queue_free()
+	_players.erase(id)
+	_emit_changed()
+
 
 func audio_tracks() -> Array:
-	return []
+	return _audio.duplicate(true)
 
-func import_video_reference(_uri: String) -> Dictionary:
-	return {"ok": false, "error": "Video reference import is not implemented yet."}
 
-func video_references() -> Array:
-	return []
+func audio_track(id: String) -> Dictionary:
+	var index := _audio_index(id)
+	if index < 0:
+		return {}
+	return _audio[index].duplicate(true)
 
-func update_video_reference(_id: String, _patch: Dictionary) -> void:
-	pass
 
-func delete_video_reference(_id: String) -> void:
-	pass
+func project_dir() -> String:
+	return _root()
 
-func frame_for_time(_id: String, _time: float) -> Image:
-	return null
 
-func seek_sequence(_time: float, _playing: bool) -> void:
-	pass
+## Sequence-time position inside the source file. `sequence_time - start +
+## trim_start` is the single formula used by playback, the UI and the mixdown.
+func audio_offset(track: Dictionary, sequence_time: float) -> float:
+	return sequence_time - float(track.get("start", 0.0)) + float(track.get("trim_start", 0.0))
 
-func play_sequence(_time: float) -> void:
-	pass
+
+func audio_active(track: Dictionary, sequence_time: float) -> bool:
+	var trim_start := float(track.get("trim_start", 0.0))
+	var trim_end := float(track.get("trim_end", 0.0))
+	if trim_end <= trim_start:
+		return false
+	var expected := audio_offset(track, sequence_time)
+	return expected >= trim_start - 0.00001 and expected <= trim_end + 0.00001
+
+
+func audio_volume_at(track: Dictionary, sequence_time: float) -> float:
+	if not audio_active(track, sequence_time):
+		return 0.0
+	return clampf(float(track.get("volume", 1.0)), 0.0, 1.0) * AudioLibrary.track_envelope(track, sequence_time)
+
+
+func mix_wav(output_path: String) -> Dictionary:
+	return AudioLibrary.mix_tracks(_audio, _root(), output_path)
+
+
+func _normalize_audio(raw: Dictionary) -> Dictionary:
+	var track: Dictionary = raw.duplicate(true)
+	track["id"] = str(track.get("id", "aud_%d" % _next_audio))
+	track["name"] = str(track.get("name", str(track.get("file", "Audio")).get_file().get_basename()))
+	track["file"] = str(track.get("file", ""))
+	for key in AUDIO_DEFAULTS.keys():
+		if not track.has(key):
+			track[key] = AUDIO_DEFAULTS[key]
+	if not track.has("trim_end") or float(track.get("trim_end", 0.0)) <= float(track.get("trim_start", 0.0)):
+		var loaded := AudioLibrary.load_stream(_root().path_join(str(track.get("file", ""))))
+		track["trim_end"] = float(loaded.get("duration", 0.0)) if bool(loaded.get("ok", false)) else float(track.get("trim_start", 0.0))
+	_next_audio = maxi(_next_audio, _id_serial(str(track["id"])) + 1)
+	return track
+
+
+func _audio_index(id: String) -> int:
+	for index in range(_audio.size()):
+		if str(_audio[index].get("id", "")) == id:
+			return index
+	return -1
+
+
+func _id_serial(id: String) -> int:
+	var parts := id.split("_")
+	if parts.size() < 2:
+		return 0
+	return int(parts[parts.size() - 1])
+
+
+func _ensure_player(track: Dictionary) -> AudioStreamPlayer:
+	var id := str(track.get("id", ""))
+	var player: AudioStreamPlayer = _players.get(id)
+	if player != null and is_instance_valid(player):
+		return player
+	if _document == null or not _document is Node:
+		return null
+	player = AudioStreamPlayer.new()
+	player.name = "Audio_" + id
+	var loaded := AudioLibrary.load_stream(_root().path_join(str(track.get("file", ""))))
+	if bool(loaded.get("ok", false)):
+		player.stream = loaded.get("stream")
+	_document.add_child(player)
+	_players[id] = player
+	return player
+
+
+func _sync_players() -> void:
+	for track in _audio:
+		var player := _ensure_player(track)
+		if player == null:
+			continue
+		var active := audio_active(track, _sequence_time)
+		if _sequence_playing and active:
+			var expected := audio_offset(track, _sequence_time)
+			if player.stream_paused:
+				player.stream_paused = false
+			if not player.playing:
+				player.play(expected)
+			elif absf(player.get_playback_position() - expected) > DRIFT_TOLERANCE:
+				player.seek(expected)
+			var volume := audio_volume_at(track, _sequence_time)
+			player.volume_db = linear_to_db(maxf(volume, 0.0001)) if volume > 0.0 else -80.0
+		else:
+			if player.playing:
+				player.stop()
+			player.volume_db = -80.0
+
+
+func _stop_all_players(free_them: bool = false) -> void:
+	for id in _players.keys():
+		var player: AudioStreamPlayer = _players[id]
+		if player != null and is_instance_valid(player):
+			player.stop()
+			if free_them:
+				player.queue_free()
+	if free_them:
+		_players.clear()
+
+
+# -------------------------------------------------------------------------
+# Sequence transport
+# -------------------------------------------------------------------------
+
+func seek_sequence(time: float, playing: bool) -> void:
+	_sequence_time = maxf(0.0, time)
+	_sequence_playing = playing
+	if playing:
+		_sync_players()
+	else:
+		_pause_all_players()
+
+
+func play_sequence(time: float) -> void:
+	_sequence_time = maxf(0.0, time)
+	_sequence_playing = true
+	_sync_players()
+
 
 func pause_sequence() -> void:
-	pass
+	_sequence_playing = false
+	_pause_all_players()
+
 
 func stop_sequence() -> void:
-	pass
+	_sequence_playing = false
+	_sequence_time = 0.0
+	for id in _players.keys():
+		var player: AudioStreamPlayer = _players[id]
+		if player != null and is_instance_valid(player):
+			player.stop()
+			player.volume_db = -80.0
 
-func mix_wav(_output_path: String) -> Dictionary:
-	return {"ok": false, "error": "WAV mixdown is not implemented yet."}
+
+func audio_player(id: String) -> AudioStreamPlayer:
+	var index := _audio_index(id)
+	if index < 0:
+		return null
+	return _ensure_player(_audio[index])
+
+
+func _pause_all_players() -> void:
+	for id in _players.keys():
+		var player: AudioStreamPlayer = _players[id]
+		if player != null and is_instance_valid(player) and player.playing:
+			player.stream_paused = true
+
+
+# -------------------------------------------------------------------------
+# Video references
+# -------------------------------------------------------------------------
+
+func import_video_reference(uri: String, options: Dictionary = {}) -> Dictionary:
+	var kind := VideoReference.source_kind(uri)
+	if kind == "unsupported":
+		return {"ok": false, "error": "Unsupported video reference format. Use MP4, M4V, MOV or OGV."}
+	if not FileAccess.file_exists(uri):
+		return {"ok": false, "error": "Video file not found: %s" % uri}
+	if kind == "ogv":
+		return _import_ogv(uri)
+	if OS.get_name() != "android":
+		return {"ok": false, "error": "Video frame extraction uses the Android MediaCodec backend. Build the Android APK to import MP4/MOV references."}
+	var backend_script = load("res://src/core/android_video.gd")
+	if backend_script == null:
+		return {"ok": false, "error": "The Android video backend is not staged in this build."}
+	var backend = backend_script.new()
+	if not bool(backend.available()):
+		return {"ok": false, "error": str(backend.reason())}
+	var proxy := proxy_options(options)
+	var id := "vid_%d" % _next_video
+	_next_video += 1
+	var rel_dir := "video_refs".path_join(id)
+	var out_dir := _root().path_join(rel_dir)
+	var extracted: Dictionary = await backend.extract_frames(uri, out_dir, int(proxy["fps"]), int(proxy["max_width"]))
+	if not bool(extracted.get("ok", false)):
+		VideoReference._remove_tree(out_dir)
+		return {"ok": false, "error": str(extracted.get("error", "Frame extraction failed."))}
+	if _directory_size(out_dir) > PROXY_LIMIT_BYTES:
+		VideoReference._remove_tree(out_dir)
+		return {"ok": false, "error": "The proxy exceeded the 2 GB limit and was deleted."}
+	var ref := VideoReference.default_ref(id, uri.get_file().get_basename(), rel_dir,
+		float(extracted.get("fps", proxy["fps"])), float(extracted.get("duration", 0.0)),
+		int(extracted.get("width", 0)), int(extracted.get("height", 0)))
+	ref["kind"] = "video"
+	ref["file"] = uri
+	_video_refs.append(ref)
+	_emit_changed()
+	return {"ok": true, "ref": ref.duplicate(true), "error": ""}
+
+
+## Proxy settings exposed to the import sheet. Unknown fps falls back to the
+## documented 12 fps default; the width clamps to the preset range so the Java
+## extractor never receives an absurd bitmap size.
+static func proxy_options(options: Dictionary) -> Dictionary:
+	var fps := int(options.get("fps", PROXY_FPS_DEFAULT))
+	if not fps in PROXY_FPS_PRESETS:
+		fps = PROXY_FPS_DEFAULT
+	var width := int(options.get("max_width", PROXY_WIDTH_DEFAULT))
+	width = clampi(width, PROXY_WIDTH_PRESETS[0], PROXY_WIDTH_PRESETS[PROXY_WIDTH_PRESETS.size() - 1])
+	return {"fps": fps, "max_width": width}
+
+
+func _directory_size(path: String) -> int:
+	var total := 0
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return total
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := path.path_join(name)
+			if dir.current_is_dir():
+				total += _directory_size(child)
+			else:
+				var file := FileAccess.open(child, FileAccess.READ)
+				if file != null:
+					total += file.get_length()
+					file.close()
+		name = dir.get_next()
+	dir.list_dir_end()
+	return total
+
+
+
+func _import_ogv(uri: String) -> Dictionary:
+	var id := "vid_%d" % _next_video
+	_next_video += 1
+	var rel_dir := "video_refs".path_join(id)
+	var dir := _root().path_join(rel_dir)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var target := dir.path_join("source.ogv")
+	var bytes := FileAccess.get_file_as_bytes(uri)
+	if bytes.is_empty():
+		VideoReference._remove_tree(dir)
+		return {"ok": false, "error": "Could not read OGV file: %s" % uri}
+	var file := FileAccess.open(target, FileAccess.WRITE)
+	if file == null:
+		VideoReference._remove_tree(dir)
+		return {"ok": false, "error": "Could not copy the OGV file into the project."}
+	file.store_buffer(bytes)
+	file.close()
+	var ref := VideoReference.default_ref(id, uri.get_file().get_basename(), rel_dir, 0.0, 0.0, 0, 0)
+	ref["kind"] = "ogv"
+	ref["file"] = rel_dir.path_join("source.ogv")
+	_video_refs.append(ref)
+	_emit_changed()
+	return {"ok": true, "ref": ref.duplicate(true), "error": "", "note": "OGV plays through VideoStreamPlayer; it has no frame proxy."}
+
+
+func video_references() -> Array:
+	return _video_refs.duplicate(true)
+
+
+func update_video_reference(id: String, patch: Dictionary) -> void:
+	var index := _video_index(id)
+	if index < 0:
+		return
+	var ref: Dictionary = _video_refs[index]
+	for key in patch.keys():
+		if key in ["name", "start", "opacity", "fit", "offset", "scale", "flip_h", "visible"]:
+			ref[key] = patch[key]
+	_video_refs[index] = VideoReference.normalize(ref)
+	_drop_video_caches(id)
+	_emit_changed()
+
+
+func delete_video_reference(id: String) -> void:
+	var index := _video_index(id)
+	if index < 0:
+		return
+	var ref: Dictionary = _video_refs[index]
+	VideoReference.delete_dir(_root(), ref)
+	_video_refs.remove_at(index)
+	_drop_video_caches(id)
+	_emit_changed()
+
+
+func delete_confirm_text(id: String) -> String:
+	var index := _video_index(id)
+	if index < 0:
+		return ""
+	var ref: Dictionary = _video_refs[index]
+	return "Delete “%s” and its frame folder? The proxy files are removed and this cannot be undone." % str(ref.get("name", "reference"))
+
+
+func frame_for_time(id: String, time: float) -> Image:
+	var index := _video_index(id)
+	if index < 0:
+		return null
+	var ref: Dictionary = _video_refs[index]
+	if str(ref.get("kind", "")) == "ogv":
+		return null
+	var loaded := _manifest_for(id, ref)
+	if not bool(loaded.get("ok", false)):
+		return null
+	var frames: Array = loaded["manifest"].get("frames", [])
+	var frame_index := VideoReference.frame_index(time, float(ref.get("fps", 12.0)), frames.size())
+	if frame_index < 0:
+		return null
+	var cached: Image = _cached_frame(id, frame_index)
+	if cached != null:
+		return cached
+	var path := VideoReference.frame_path_for_manifest(_root(), ref, loaded["manifest"], frame_index)
+	if path == "" or not FileAccess.file_exists(path):
+		return null
+	var image := Image.new()
+	if image.load(path) != OK:
+		return null
+	_store_frame(id, frame_index, image)
+	return image
+
+
+func video_frame_index(id: String, time: float) -> int:
+	var index := _video_index(id)
+	if index < 0:
+		return -1
+	var ref: Dictionary = _video_refs[index]
+	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), _frame_count_for(id, ref))
+
+
+## Clip mode is preview only: use the active strip's start plus the clip-local
+## time. No strip means frame zero and no audio playback.
+func preview_frame_index(id: String) -> int:
+	if _document == null:
+		return 0
+	var strip: Dictionary = {}
+	if _document.animation_system != null and _document.animation_system.has_method("strip_at"):
+		strip = _document.animation_system.strip_at(float(_document.sequence_time()))
+	var time := VideoReference.clip_preview_time(strip, float(_document.current_time))
+	var index := _video_index(id)
+	if index < 0:
+		return 0
+	var ref: Dictionary = _video_refs[index]
+	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), _frame_count_for(id, ref))
+
+
+func frame_cache_size() -> int:
+	return _frame_cache_keys.size()
+
+
+func _manifest_for(id: String, ref: Dictionary) -> Dictionary:
+	if _manifest_cache.has(id):
+		return _manifest_cache[id]
+	var loaded := VideoReference.manifest_for(_root(), ref)
+	_manifest_cache[id] = loaded
+	return loaded
+
+
+func _frame_count_for(id: String, ref: Dictionary) -> int:
+	var loaded := _manifest_for(id, ref)
+	if not bool(loaded.get("ok", false)):
+		return 0
+	return Array(loaded["manifest"].get("frames", [])).size()
+
+
+func _frame_cache_key(id: String, index: int) -> String:
+	return "%s:%d" % [id, index]
+
+
+func _cached_frame(id: String, index: int) -> Image:
+	var key := _frame_cache_key(id, index)
+	if not _frame_cache_keys.has(key):
+		return null
+	_frame_cache_keys.erase(key)
+	_frame_cache_keys.append(key)
+	var cache: Dictionary = _frame_cache.get(id, {})
+	return cache.get(index)
+
+
+func _store_frame(id: String, index: int, image: Image) -> void:
+	var key := _frame_cache_key(id, index)
+	var cache: Dictionary = _frame_cache.get(id, {})
+	cache[index] = image
+	_frame_cache[id] = cache
+	if not _frame_cache_keys.has(key):
+		_frame_cache_keys.append(key)
+	while _frame_cache_keys.size() > FRAME_CACHE_LIMIT:
+		var oldest: String = _frame_cache_keys.pop_front()
+		var old_id := oldest.get_slice(":", 0)
+		var old_index := int(oldest.get_slice(":", 1))
+		var old_cache: Dictionary = _frame_cache.get(old_id, {})
+		old_cache.erase(old_index)
+		if old_cache.is_empty():
+			_frame_cache.erase(old_id)
+		else:
+			_frame_cache[old_id] = old_cache
+
+
+func _drop_video_caches(id: String) -> void:
+	_manifest_cache.erase(id)
+	_frame_cache.erase(id)
+	var kept: Array[String] = []
+	for key in _frame_cache_keys:
+		if key.get_slice(":", 0) != id:
+			kept.append(key)
+	_frame_cache_keys = kept
+
+
+func video_reference(id: String) -> Dictionary:
+	var index := _video_index(id)
+	if index < 0:
+		return {}
+	return _video_refs[index].duplicate(true)
+
+
+func _normalize_video(raw: Dictionary) -> Dictionary:
+	var ref := VideoReference.normalize(raw)
+	_next_video = maxi(_next_video, _id_serial(str(ref.get("id", ""))) + 1)
+	return ref
+
+
+func _video_index(id: String) -> int:
+	for index in range(_video_refs.size()):
+		if str(_video_refs[index].get("id", "")) == id:
+			return index
+	return -1
+
+
+func _root() -> String:
+	if _project_dir != "":
+		return _project_dir
+	if _document != null:
+		var value = _document.get("project_dir")
+		if value != null:
+			return str(value)
+	return ""
+
+
+func _emit_changed() -> void:
+	if _document != null and is_instance_valid(_document) and _document.has_signal("media_changed"):
+		_document.emit_signal("media_changed")
