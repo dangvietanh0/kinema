@@ -130,8 +130,12 @@ func delete_button() -> Button:
 func _on_field_changed(key: String, value: float) -> void:
 	if doc == null or _syncing:
 		return
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Strip " + key)
 	var patch: Dictionary = {key: value}
 	doc.animation_system.update_strip(strip_id, patch)
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	refresh()
 	changed.emit()
 
@@ -142,7 +146,11 @@ func _on_blend_selected(index: int) -> void:
 	var strip: Dictionary = doc.animation_system.get_strip(strip_id)
 	if strip.is_empty():
 		return
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer blend")
 	doc.animation_system.update_layer(str(strip.get("layer_id", "")), {"blend": "additive" if index == 1 else "override"})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 

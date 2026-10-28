@@ -232,15 +232,17 @@ func _on_delete() -> void:
 		doc.begin_edit("Delete clip")
 	var system = doc.animation_system
 	var ok: bool = system.delete_clip(system.active_clip_id())
+	var reason := ""
 	if ok:
 		doc.set_active_clip(system.active_clip_id())
-		_error_label.visible = false
 	else:
-		_error_label.text = str(system.last_error)
-		_error_label.visible = true
+		reason = str(system.last_error)
 	if doc.has_method("end_edit"):
 		doc.end_edit()
 	refresh()
+	# Refresh rebuilds the list and hides the label, so publish the refusal last.
+	_error_label.text = reason
+	_error_label.visible = not ok
 	changed.emit()
 
 

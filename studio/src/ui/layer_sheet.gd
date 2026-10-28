@@ -184,7 +184,11 @@ func _on_new_layer() -> void:
 func _on_name_changed() -> void:
 	if doc == null or _syncing:
 		return
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer name")
 	doc.animation_system.update_layer(layer_id, {"name": _name_edit.text})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 
@@ -194,7 +198,11 @@ func _on_weight_slider(value: float) -> void:
 	_syncing = true
 	_weight_field.set_value_silent(value)
 	_syncing = false
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer weight")
 	doc.animation_system.update_layer(layer_id, {"weight": value})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 
@@ -204,28 +212,44 @@ func _on_weight_field(value: float) -> void:
 	_syncing = true
 	_weight_slider.set_value_no_signal(value)
 	_syncing = false
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer weight")
 	doc.animation_system.update_layer(layer_id, {"weight": value})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 
 func _on_blend_selected(index: int) -> void:
 	if doc == null or _syncing:
 		return
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer blend")
 	doc.animation_system.update_layer(layer_id, {"blend": "additive" if index == 1 else "override"})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 
 func _on_mute_toggled(enabled: bool) -> void:
 	if doc == null or _syncing:
 		return
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer mute")
 	doc.animation_system.update_layer(layer_id, {"muted": enabled})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 
 func _on_solo_toggled(enabled: bool) -> void:
 	if doc == null or _syncing:
 		return
+	if doc.has_method("begin_edit"):
+		doc.begin_edit("Layer solo")
 	doc.animation_system.update_layer(layer_id, {"solo": enabled})
+	if doc.has_method("end_edit"):
+		doc.end_edit()
 	changed.emit()
 
 
@@ -235,13 +259,15 @@ func _on_delete() -> void:
 	if doc.has_method("begin_edit"):
 		doc.begin_edit("Delete layer")
 	var ok: bool = doc.animation_system.delete_layer(layer_id)
+	var reason := ""
 	if ok:
 		layer_id = doc.animation_system.active_layer_id()
-		_error_label.visible = false
 	else:
-		_error_label.text = str(doc.animation_system.last_error)
-		_error_label.visible = true
+		reason = str(doc.animation_system.last_error)
 	if doc.has_method("end_edit"):
 		doc.end_edit()
 	refresh()
+	# Refresh hides the label, so publish the refusal last.
+	_error_label.text = reason
+	_error_label.visible = not ok
 	changed.emit()

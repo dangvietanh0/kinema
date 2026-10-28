@@ -165,11 +165,14 @@ func _rebuild_hits(layers: Array) -> void:
 			var x0 := _time_to_x(start)
 			var x1 := _time_to_x(end)
 			var rect := Rect2(x0, y, maxf(24.0, x1 - x0), ROW_H)
+			var hit_width := maxf(44.0, rect.size.x)
+			var hit_rect := Rect2(rect.position.x + rect.size.x * 0.5 - hit_width * 0.5, y, hit_width, ROW_H)
 			_strip_hits.append({
 				"strip_id": str(strip.get("id", "")),
 				"clip_id": str(strip.get("clip", "")),
 				"layer_id": str(layer.get("id", "")),
 				"rect": rect,
+				"hit_rect": hit_rect,
 				"strip": strip,
 				"clip": clip,
 			})
@@ -185,16 +188,18 @@ func _rebuild_hits(layers: Array) -> void:
 			})
 			var fade_in_x := _time_to_x(start + float(strip.get("fade_in", 0.0)))
 			var fade_out_x := _time_to_x(end - float(strip.get("fade_out", 0.0)))
-			_fade_hits.append({
-				"mode": "fade_in",
-				"strip_id": str(strip.get("id", "")),
-				"rect": Rect2(fade_in_x - 22.0, y, 44.0, ROW_H),
-			})
-			_fade_hits.append({
-				"mode": "fade_out",
-				"strip_id": str(strip.get("id", "")),
-				"rect": Rect2(fade_out_x - 22.0, y, 44.0, ROW_H),
-			})
+			if float(strip.get("fade_in", 0.0)) > 0.0:
+				_fade_hits.append({
+					"mode": "fade_in",
+					"strip_id": str(strip.get("id", "")),
+					"rect": Rect2(fade_in_x - 22.0, y, 44.0, ROW_H),
+				})
+			if float(strip.get("fade_out", 0.0)) > 0.0:
+				_fade_hits.append({
+					"mode": "fade_out",
+					"strip_id": str(strip.get("id", "")),
+					"rect": Rect2(fade_out_x - 22.0, y, 44.0, ROW_H),
+				})
 		y += ROW_H
 
 
@@ -218,6 +223,13 @@ func strip_rect(strip_id: String) -> Rect2:
 	for hit in _strip_hits:
 		if str(hit.get("strip_id", "")) == strip_id:
 			return hit["rect"]
+	return Rect2()
+
+
+func strip_hit_rect(strip_id: String) -> Rect2:
+	for hit in _strip_hits:
+		if str(hit.get("strip_id", "")) == strip_id:
+			return hit.get("hit_rect", hit["rect"])
 	return Rect2()
 
 
@@ -314,6 +326,14 @@ func _on_fit() -> void:
 	refresh()
 
 
+func _zoom_at(position: Vector2, factor: float) -> void:
+	var anchor := _x_to_time(position.x)
+	_zoom = clampf(_zoom * factor, 0.25, 16.0)
+	# Keep the time under the pointer fixed while the scale changes.
+	_offset = position.x - LABEL_W - anchor * _px_per_second()
+	refresh()
+
+
 func _sync_play_button() -> void:
 	if _play_button == null or doc == null:
 		return
@@ -382,7 +402,8 @@ func _hit_at(position: Vector2) -> Dictionary:
 				"clip_id": str(strip.get("clip_id", "")),
 			}
 	for hit in _strip_hits:
-		if hit["rect"].has_point(position):
+		var hit_rect: Rect2 = hit.get("hit_rect", hit["rect"])
+		if hit_rect.has_point(position):
 			return {
 				"kind": "strip",
 				"mode": "move",
@@ -404,6 +425,11 @@ func _lane_input(event: InputEvent, _canvas: Control) -> void:
 		return
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
+		if button.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+			if button.pressed:
+				_zoom_at(button.position, 1.25 if button.button_index == MOUSE_BUTTON_WHEEL_UP else 0.8)
+				accept_event()
+			return
 		if button.button_index != MOUSE_BUTTON_LEFT:
 			return
 		if button.pressed:
@@ -531,6 +557,9 @@ func _draw_lane(canvas: Control) -> void:
 		var fill := Color(shade, shade, shade, 1.0)
 		canvas.draw_rect(rect, fill)
 		canvas.draw_rect(rect, Kit.FOCUS if selected else Kit.BORDER, false, 1)
+		# Trim bars stay visible even when both fades are zero.
+		canvas.draw_rect(Rect2(rect.position.x, rect.position.y, 2.0, rect.size.y), Kit.TEXT_DIM)
+		canvas.draw_rect(Rect2(rect.end.x - 2.0, rect.position.y, 2.0, rect.size.y), Kit.TEXT_DIM)
 		var clip_name := str(clip.get("name", "Clip"))
 		canvas.draw_string(Kit.font_regular, Vector2(rect.position.x + 6.0, rect.position.y + 17.0), clip_name, HORIZONTAL_ALIGNMENT_LEFT, maxf(20.0, rect.size.x - 12.0), 10, Kit.TEXT)
 		var start := float(strip.get("start", 0.0))
