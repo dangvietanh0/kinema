@@ -82,10 +82,12 @@ func _build() -> void:
 	actions.add_theme_constant_override("separation", 4)
 	add_child(actions)
 	_rename_button = Kit.text_button("Rename", "", false, true)
+	_rename_button.name = "RenameBoneButton"
 	_rename_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
 	_rename_button.pressed.connect(_show_rename)
 	actions.add_child(_rename_button)
 	_reparent_button = Kit.text_button("Reparent", "", false, true)
+	_reparent_button.name = "ReparentBoneButton"
 	_reparent_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
 	_reparent_button.pressed.connect(_show_reparent)
 	actions.add_child(_reparent_button)
@@ -140,11 +142,20 @@ func refresh() -> void:
 	_message.text = ""
 	_pending_delete = false
 	_delete_button.text = "Delete"
+	_rename_row.visible = false
+	_reparent_row.visible = false
 	if rig_system == null or _rig_id == "":
 		return
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
 	if rig.is_empty():
 		return
+	var imported := bool(rig.get("imported", false))
+	_add_button.disabled = imported
+	_rename_button.disabled = imported
+	_reparent_button.disabled = imported
+	_delete_button.disabled = imported
+	if imported:
+		_message.text = "Imported rig: bone structure is locked. Pose and IK remain editable."
 	var bones: Array = rig.get("bones", [])
 	var active := str(rig.get("active_bone", ""))
 	for i in range(bones.size()):
@@ -190,11 +201,21 @@ func _select_bone(bone: String) -> void:
 	refresh()
 
 
+func _imported_lock() -> bool:
+	if rig_system == null or _rig_id == "":
+		return false
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	if not bool(rig.get("imported", false)):
+		return false
+	_message.text = "Imported rig: bone structure is locked. Pose and IK remain editable."
+	return true
+
+
 func _on_add() -> void:
 	if rig_system == null or _rig_id == "":
 		return
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or _imported_lock():
 		return
 	var parent := str(rig.get("active_bone", ""))
 	var base := "Bone"
@@ -224,7 +245,7 @@ func _show_rename() -> void:
 	if rig_system == null or _rig_id == "":
 		return
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or _imported_lock():
 		return
 	_rename_field.text = str(rig.get("active_bone", ""))
 	_rename_row.visible = true
@@ -234,6 +255,8 @@ func _show_rename() -> void:
 
 func _confirm_rename() -> void:
 	if rig_system == null or _rig_id == "":
+		return
+	if _imported_lock():
 		return
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
 	var active := str(rig.get("active_bone", ""))
@@ -249,7 +272,7 @@ func _show_reparent() -> void:
 	if rig_system == null or _rig_id == "":
 		return
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or _imported_lock():
 		return
 	var active := str(rig.get("active_bone", ""))
 	_reparent_picker.clear()
@@ -268,6 +291,8 @@ func _show_reparent() -> void:
 func _confirm_reparent() -> void:
 	if rig_system == null or _rig_id == "":
 		return
+	if _imported_lock():
+		return
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
 	var active := str(rig.get("active_bone", ""))
 	var parent := ""
@@ -283,6 +308,8 @@ func _confirm_reparent() -> void:
 
 func _on_delete() -> void:
 	if rig_system == null or _rig_id == "":
+		return
+	if _imported_lock():
 		return
 	if not _pending_delete:
 		_pending_delete = true
