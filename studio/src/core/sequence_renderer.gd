@@ -27,6 +27,10 @@ static func frame_name(index: int) -> String:
 func render(options: Dictionary, progress: Callable = Callable(), cancel: Callable = Callable()) -> Dictionary:
 	if _document == null or _view == null:
 		return {"ok": false, "error": "The sequence renderer needs a document and a viewport.", "frames_dir": "", "frame_count": 0}
+	var original_time := float(_document.sequence_time()) if _document.has_method("sequence_time") else 0.0
+	var was_playing := bool(_document.is_sequence_playing()) if _document.has_method("is_sequence_playing") else false
+	if was_playing and _document.has_method("pause_sequence"):
+		_document.pause_sequence()
 	var width := maxi(2, int(options.get("width", 1280)))
 	var height := maxi(2, int(options.get("height", 720)))
 	var fps := maxi(1, int(options.get("fps", 24)))
@@ -41,6 +45,7 @@ func render(options: Dictionary, progress: Callable = Callable(), cancel: Callab
 	else:
 		output_dir = _unique_dir(output_dir)
 	if DirAccess.make_dir_recursive_absolute(output_dir) != OK:
+		_restore_transport(was_playing, original_time)
 		return {"ok": false, "error": "Could not create the render folder: %s" % output_dir, "frames_dir": output_dir, "frame_count": 0}
 	var camera_id := str(options.get("camera_id", ""))
 	var msaa := int(options.get("msaa", 2))
@@ -49,6 +54,7 @@ func render(options: Dictionary, progress: Callable = Callable(), cancel: Callab
 	for index in range(frame_count):
 		if cancel.is_valid() and bool(cancel.call()):
 			_remove_tree(output_dir)
+			_restore_transport(was_playing, original_time)
 			return {"ok": false, "cancelled": true, "error": "Render cancelled.", "frames_dir": "", "frame_count": 0}
 		var time := start + float(index) / float(fps)
 		if _document.has_method("seek_sequence"):
@@ -60,14 +66,17 @@ func render(options: Dictionary, progress: Callable = Callable(), cancel: Callab
 		var camera := _camera_for(camera_id)
 		var image: Image = await _view.capture_with_camera(size, msaa, camera["transform"], camera["fov"], transparent_bg)
 		if image == null:
+			_restore_transport(was_playing, original_time)
 			return {"ok": false, "error": "Capture failed at frame %d." % (index + 1), "frames_dir": output_dir, "frame_count": index}
 		if image.get_width() != width or image.get_height() != height:
 			image.resize(width, height, Image.INTERPOLATE_LANCZOS)
 		var path := output_dir.path_join(frame_name(index))
 		if image.save_png(path) != OK:
+			_restore_transport(was_playing, original_time)
 			return {"ok": false, "error": "Could not write frame %d." % (index + 1), "frames_dir": output_dir, "frame_count": index}
 		if progress.is_valid():
 			progress.call(index + 1, frame_count)
+	_restore_transport(was_playing, original_time)
 	return {
 		"ok": true,
 		"cancelled": false,
@@ -78,6 +87,15 @@ func render(options: Dictionary, progress: Callable = Callable(), cancel: Callab
 		"fps": fps,
 		"error": "",
 	}
+
+
+func _restore_transport(was_playing: bool, original_time: float) -> void:
+	if _document == null:
+		return
+	if _document.has_method("seek_sequence"):
+		_document.seek_sequence(original_time, true)
+	if was_playing and _document.has_method("play_sequence"):
+		_document.play_sequence()
 
 
 func _camera_for(camera_id: String) -> Dictionary:

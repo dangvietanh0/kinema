@@ -13,9 +13,10 @@ signal close_requested
 
 const AndroidVideo = preload("res://src/core/android_video.gd")
 const AudioLibrary = preload("res://src/core/audio_library.gd")
+const VideoReference = preload("res://src/core/video_reference.gd")
 
-const PROXY_FPS := [12, 24]
-const MAX_WIDTHS := [640, 960, 1280, 1920]
+const PROXY_FPS := VideoReference.PROXY_FPS_PRESETS
+const MAX_WIDTHS := VideoReference.PROXY_WIDTH_PRESETS
 const PROXY_LIMIT_BYTES := 2 * 1024 * 1024 * 1024
 
 var _doc = null
@@ -23,6 +24,8 @@ var _audio_path := ""
 var _video_path := ""
 var _proxy_fps := 12
 var _max_width := 1280
+var _video_button: Button
+var _video_field: LineEdit
 var _progress_label: Label
 var _status_label: Label
 
@@ -51,6 +54,17 @@ func unsupported_reason(kind: String) -> String:
 		"ogv":
 			return "OGV plays directly through VideoStreamPlayer on every platform; no frame proxy is extracted."
 	return ""
+
+
+func video_import_enabled() -> bool:
+	return _video_button != null and not _video_button.disabled
+
+
+func set_video_path(path: String) -> void:
+	_video_path = path
+	if _video_field != null:
+		_video_field.text = path
+	_sync_video_button()
 
 
 func can_import_video(kind: String) -> bool:
@@ -84,6 +98,8 @@ func _rebuild() -> void:
 		child.queue_free()
 	_progress_label = null
 	_status_label = null
+	_video_button = null
+	_video_field = null
 	add_theme_constant_override("separation", 8)
 	add_child(Kit.section_label("Import media"))
 
@@ -113,16 +129,20 @@ func _rebuild() -> void:
 	video_row.custom_minimum_size.y = 44
 	video_row.add_theme_constant_override("separation", 8)
 	add_child(video_row)
-	var video_field := Kit.line_edit("Video file path")
-	video_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	video_field.text_changed.connect(func(text: String) -> void: _video_path = text)
-	video_row.add_child(video_field)
-	var video_button := Kit.text_button("Import video", "film", true)
-	video_button.pressed.connect(func() -> void:
+	_video_field = Kit.line_edit("Video file path")
+	_video_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_video_field.text_changed.connect(func(text: String) -> void:
+		_video_path = text
+		_sync_video_button()
+	)
+	video_row.add_child(_video_field)
+	_video_button = Kit.text_button("Import video", "film", true)
+	_video_button.pressed.connect(func() -> void:
 		if not _video_path.is_empty():
 			video_import_requested.emit(_video_path, {"fps": _proxy_fps, "max_width": _max_width})
 	)
-	video_row.add_child(video_button)
+	video_row.add_child(_video_button)
+	_sync_video_button()
 
 	add_child(_labeled_option("Proxy fps", _proxy_fps_option()))
 	add_child(_labeled_option("Max width", _max_width_option()))
@@ -179,6 +199,17 @@ func _labeled_option(label_text: String, option: OptionButton) -> HBoxContainer:
 	row.add_child(label)
 	row.add_child(option)
 	return row
+
+
+func _sync_video_button() -> void:
+	if _video_button == null:
+		return
+	var kind := _video_extension()
+	var blocked := kind in ["mp4", "m4v", "mov"] and not AndroidVideo.new().available()
+	_video_button.disabled = blocked
+	_video_button.tooltip_text = unsupported_reason(kind) if blocked else ""
+	if _status_label != null:
+		_status_label.text = unsupported_reason(kind)
 
 
 func _video_extension() -> String:

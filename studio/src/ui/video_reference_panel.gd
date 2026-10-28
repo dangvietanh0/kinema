@@ -15,6 +15,8 @@ var _ref: Dictionary = {}
 var _delete_button: Button
 var _warning: Label
 var _frame_label: Label
+var _opacity_label: Label
+var _delete_armed := false
 
 
 func setup(media) -> void:
@@ -38,6 +40,27 @@ func frame_text() -> String:
 	return _frame_label.text if _frame_label != null else ""
 
 
+func opacity_text() -> String:
+	return _opacity_label.text if _opacity_label != null else ""
+
+
+## The first press only arms the destructive action; the second press deletes.
+## Returns true when the reference was actually removed.
+func request_delete() -> bool:
+	if _media == null or _id == "":
+		return false
+	if not _delete_armed:
+		_delete_armed = true
+		if _delete_button != null:
+			_delete_button.text = "Confirm delete"
+		if _warning != null:
+			_warning.text = _confirm_text()
+		return false
+	_media.delete_video_reference(_id)
+	delete_requested.emit(_id)
+	return true
+
+
 func _rebuild() -> void:
 	for child in get_children():
 		remove_child(child)
@@ -45,6 +68,8 @@ func _rebuild() -> void:
 	_delete_button = null
 	_warning = null
 	_frame_label = null
+	_opacity_label = null
+	_delete_armed = false
 	add_theme_constant_override("separation", 8)
 	_ref = _media.video_reference(_id) if _media != null else {}
 	if _ref.is_empty():
@@ -59,10 +84,7 @@ func _rebuild() -> void:
 	header.add_child(name)
 	_delete_button = Kit.text_button("Delete reference", "", false, true)
 	_delete_button.add_theme_color_override("font_color", Kit.DANGER)
-	_delete_button.pressed.connect(func() -> void:
-		_media.delete_video_reference(_id)
-		delete_requested.emit(_id)
-	)
+	_delete_button.pressed.connect(func() -> void: request_delete())
 	header.add_child(_delete_button)
 
 	_frame_label = Kit.mono_label(
@@ -95,11 +117,7 @@ func _rebuild() -> void:
 	)
 	add_child(visible)
 
-	_warning = Kit.label(
-		"Deleting removes the proxy folder. This cannot be undone.",
-		Kit.TYPE_CAPTION,
-		Kit.DANGER
-	)
+	_warning = Kit.label(_confirm_text(), Kit.TYPE_CAPTION, Kit.DANGER)
 	add_child(_warning)
 
 
@@ -119,13 +137,23 @@ func _opacity_row() -> HBoxContainer:
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.value_changed.connect(func(value: float) -> void:
 		_media.update_video_reference(_id, {"opacity": clampf(value / 100.0, 0.0, 1.0)})
+		if _opacity_label != null:
+			_opacity_label.text = "%d%%" % int(round(value))
 		changed.emit()
 	)
 	row.add_child(slider)
-	var value_label := Kit.mono_label("%d%%" % int(round(float(_ref.get("opacity", 0.5)) * 100.0)), Kit.TYPE_MONO, Kit.TEXT_MUTED)
-	value_label.custom_minimum_size.x = 40
-	row.add_child(value_label)
+	_opacity_label = Kit.mono_label("%d%%" % int(round(float(_ref.get("opacity", 0.5)) * 100.0)), Kit.TYPE_MONO, Kit.TEXT_MUTED)
+	_opacity_label.custom_minimum_size.x = 40
+	row.add_child(_opacity_label)
 	return row
+
+
+func _confirm_text() -> String:
+	if _media != null and _media.has_method("delete_confirm_text"):
+		var text := str(_media.delete_confirm_text(_id))
+		if text != "":
+			return text
+	return "Deleting removes the proxy folder. This cannot be undone."
 
 
 func _fit_row() -> HBoxContainer:

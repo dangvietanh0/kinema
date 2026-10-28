@@ -76,8 +76,10 @@ func capabilities() -> Dictionary:
 	var raw = _encoder.capabilities()
 	var parsed: Variant = JSON.parse_string(str(raw))
 	var result: Dictionary = parsed if parsed is Dictionary else {}
-	result["supported"] = true
-	result["reason"] = ""
+	if not result.has("supported"):
+		result["supported"] = true
+	if not result.has("reason"):
+		result["reason"] = ""
 	return result
 
 
@@ -154,6 +156,7 @@ func build_manifest(options: Dictionary) -> Dictionary:
 	if count <= 0:
 		count = maxi(1, int(round(maxf(1.0 / float(fps), end - start) * float(fps))))
 	var audio_out: Array = []
+	var project_dir := str(options.get("project_dir", ""))
 	for raw in options.get("audio", []):
 		if not raw is Dictionary:
 			continue
@@ -161,6 +164,8 @@ func build_manifest(options: Dictionary) -> Dictionary:
 		var path := str(track.get("path", track.get("file", "")))
 		if path == "":
 			continue
+		if project_dir != "" and not path.is_absolute_path() and not path.begins_with("user://") and not path.begins_with("res://"):
+			path = project_dir.path_join(path)
 		audio_out.append({
 			"path": path,
 			"start": float(track.get("start", 0.0)),

@@ -17,6 +17,7 @@ var _track: Dictionary = {}
 var _waveform: Control
 var _waveform_label: Label
 var _delete_button: Button
+var _volume_label: Label
 
 
 class WaveformView:
@@ -59,6 +60,10 @@ func has_delete_confirm() -> bool:
 	return _delete_button != null
 
 
+func volume_text() -> String:
+	return _volume_label.text if _volume_label != null else ""
+
+
 func _rebuild() -> void:
 	for child in get_children():
 		remove_child(child)
@@ -66,6 +71,7 @@ func _rebuild() -> void:
 	_waveform = null
 	_waveform_label = null
 	_delete_button = null
+	_volume_label = null
 	add_theme_constant_override("separation", 8)
 	_track = _media.audio_track(_track_id) if _media != null else {}
 	if _track.is_empty():
@@ -148,12 +154,14 @@ func _volume_row() -> HBoxContainer:
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.value_changed.connect(func(value: float) -> void:
 		_media.update_audio_track(_track_id, {"volume": value})
+		if _volume_label != null:
+			_volume_label.text = "%d%%" % int(round(value * 100.0))
 		changed.emit()
 	)
 	row.add_child(slider)
-	var value_label := Kit.mono_label("%d%%" % int(round(float(_track.get("volume", 1.0)) * 100.0)), Kit.TYPE_MONO, Kit.TEXT_MUTED)
-	value_label.custom_minimum_size.x = 40
-	row.add_child(value_label)
+	_volume_label = Kit.mono_label("%d%%" % int(round(float(_track.get("volume", 1.0)) * 100.0)), Kit.TYPE_MONO, Kit.TEXT_MUTED)
+	_volume_label.custom_minimum_size.x = 40
+	row.add_child(_volume_label)
 	return row
 
 

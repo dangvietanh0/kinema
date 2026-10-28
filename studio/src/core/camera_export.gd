@@ -47,10 +47,15 @@ func build(camera_id: String, fps: int, duration: float, frame_count: int = -1) 
 	var count := frame_count if frame_count > 0 else maxi(1, int(round(length * rate)))
 	var frames: Array = []
 	var original_time := float(_document.sequence_time()) if _document.has_method("sequence_time") else 0.0
+	var was_playing := bool(_document.is_sequence_playing()) if _document.has_method("is_sequence_playing") else false
+	if was_playing and _document.has_method("pause_sequence"):
+		_document.pause_sequence()
 	for index in range(count):
 		var time := float(index) / float(rate)
 		if _document.has_method("seek_sequence"):
 			_document.seek_sequence(time, true)
+		if _document.is_inside_tree():
+			await _document.get_tree().process_frame
 		var xform := node.global_transform
 		var rotation := xform.basis.get_rotation_quaternion()
 		frames.append({
@@ -60,6 +65,8 @@ func build(camera_id: String, fps: int, duration: float, frame_count: int = -1) 
 		})
 	if _document.has_method("seek_sequence"):
 		_document.seek_sequence(original_time, true)
+	if was_playing and _document.has_method("play_sequence"):
+		_document.play_sequence()
 	return {
 		"version": VERSION,
 		"fps": rate,
@@ -73,7 +80,7 @@ func build(camera_id: String, fps: int, duration: float, frame_count: int = -1) 
 func export(path: String, camera_id: String, fps: int, duration: float, frame_count: int = -1) -> Dictionary:
 	if _document == null:
 		return {"ok": false, "error": "No document is open."}
-	var data := build(camera_id, fps, duration, frame_count)
+	var data: Dictionary = await build(camera_id, fps, duration, frame_count)
 	if data.is_empty():
 		return {"ok": false, "error": "Select a scene camera before exporting a camera track."}
 	if path.get_base_dir() != "":

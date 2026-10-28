@@ -108,7 +108,7 @@ public final class KinemaVideoFrames {
                     throw new IllegalStateException("Frame extraction cancelled.");
                 }
                 long timeUs = (long) index * 1000000L / fps;
-                Bitmap frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                Bitmap frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST);
                 if (frame == null) {
                     throw new IllegalStateException("Could not extract frame " + (index + 1) + ".");
                 }

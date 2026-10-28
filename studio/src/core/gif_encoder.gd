@@ -73,16 +73,18 @@ static func encode(frames: Array, fps: int, loop: bool = true) -> PackedByteArra
 		out.append(color.r8)
 		out.append(color.g8)
 		out.append(color.b8)
-	# NETSCAPE loop extension. Count 0 means forever; 1 plays the animation
-	# once on players that honour the extension.
-	out.append(0x21)
-	out.append(0xFF)
-	out.append(0x0B)
-	out.append_array("NETSCAPE2.0".to_ascii_buffer())
-	out.append(0x03)
-	out.append(0x01)
-	_append_u16(out, 0 if loop else 1)
-	out.append(0x00)
+	# NETSCAPE loop extension. Count 0 means forever. A once-through GIF omits
+	# the extension entirely instead of writing count 1, which some players
+	# still treat as a loop.
+	if loop:
+		out.append(0x21)
+		out.append(0xFF)
+		out.append(0x0B)
+		out.append_array("NETSCAPE2.0".to_ascii_buffer())
+		out.append(0x03)
+		out.append(0x01)
+		_append_u16(out, 0)
+		out.append(0x00)
 	for index in range(frames.size()):
 		var image: Image = frames[index]
 		var indices := PackedByteArray()

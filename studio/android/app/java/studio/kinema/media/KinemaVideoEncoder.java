@@ -53,8 +53,6 @@ public final class KinemaVideoEncoder {
 
     public static void encode(String manifestJson, String outputPath) {
         if (!RUNNING.compareAndSet(false, true)) {
-            sError = "An MP4 encode is already running.";
-            sDone = true;
             return;
         }
         sProgress = 0;
@@ -128,8 +126,27 @@ public final class KinemaVideoEncoder {
                 }
             }
             JSONArray aac = new JSONArray();
-            aac.put(44100);
-            aac.put(48000);
+            java.util.LinkedHashSet<Integer> aacRates = new java.util.LinkedHashSet<>();
+            for (MediaCodecInfo info : list.getCodecInfos()) {
+                if (!info.isEncoder()) {
+                    continue;
+                }
+                for (String type : info.getSupportedTypes()) {
+                    if (!type.equalsIgnoreCase(MediaFormat.MIMETYPE_AUDIO_AAC)) {
+                        continue;
+                    }
+                    MediaCodecInfo.CodecCapabilities audioCaps = info.getCapabilitiesForType(type);
+                    MediaCodecInfo.AudioCapabilities audio = audioCaps.getAudioCapabilities();
+                    if (audio != null) {
+                        for (int rate : audio.getSupportedSampleRates()) {
+                            aacRates.add(rate);
+                        }
+                    }
+                }
+            }
+            for (int rate : aacRates) {
+                aac.put(rate);
+            }
             out.put("supported", true);
             out.put("avc", "video/avc");
             out.put("profiles", profiles);
@@ -300,11 +317,17 @@ public final class KinemaVideoEncoder {
     private static List<Sample> encodeVideo(File directory, String pattern, int frameCount,
                                             int width, int height, int fps, int bitrate) throws Exception {
         MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar);
+        MediaCodecInfo codecInfo = findVideoEncoder(width, height);
+        int colorFormat = codecInfo == null
+                ? MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
+                : selectColorFormat(codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC));
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        MediaCodec encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+        MediaCodec encoder = codecInfo == null
+                ? MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                : MediaCodec.createByCodecName(codecInfo.getName());
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         encoder.start();
         List<Sample> samples = new ArrayList<>();
@@ -328,7 +351,11 @@ public final class KinemaVideoEncoder {
                         bitmap = scaled;
                     }
                 }
-                fillI420(bitmap, yuv, width, height);
+                if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                    fillNV12(bitmap, yuv, width, height);
+                } else {
+                    fillI420(bitmap, yuv, width, height);
+                }
                 bitmap.recycle();
                 int inputIndex = encoder.dequeueInputBuffer(DEQUEUE_TIMEOUT_US * 10L);
                 if (inputIndex >= 0) {
@@ -372,14 +399,19 @@ public final class KinemaVideoEncoder {
     private static MediaFormat drainEncoder(MediaCodec encoder, List<Sample> samples, boolean endOfStream) {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         MediaFormat changed = null;
+        int idle = 0;
         while (true) {
             int index = encoder.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US);
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (!endOfStream) {
                     break;
                 }
+                if (++idle > 100) {
+                    break;
+                }
                 continue;
             }
+            idle = 0;
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 changed = encoder.getOutputFormat();
                 continue;
@@ -401,6 +433,58 @@ public final class KinemaVideoEncoder {
             }
         }
         return changed;
+    }
+
+    private static MediaCodecInfo findVideoEncoder(int width, int height) {
+        MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : list.getCodecInfos()) {
+            if (!info.isEncoder()) {
+                continue;
+            }
+            for (String type : info.getSupportedTypes()) {
+                if (!type.equalsIgnoreCase(MediaFormat.MIMETYPE_VIDEO_AVC)) {
+                    continue;
+                }
+                MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType(type);
+                MediaCodecInfo.VideoCapabilities video = caps.getVideoCapabilities();
+                if (video == null || video.isSizeSupported(width, height)) {
+                    return info;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static int selectColorFormat(MediaCodecInfo.CodecCapabilities caps) {
+        for (int candidate : caps.colorFormats) {
+            if (candidate == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                return candidate;
+            }
+        }
+        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar;
+    }
+
+    private static void fillNV12(Bitmap bitmap, byte[] out, int width, int height) {
+        int frameSize = width * height;
+        int[] argb = new int[width];
+        for (int y = 0; y < height; y++) {
+            bitmap.getPixels(argb, 0, width, 0, y, width, 1);
+            for (int x = 0; x < width; x++) {
+                int color = argb[x];
+                int r = (color >> 16) & 0xFF;
+                int g = (color >> 8) & 0xFF;
+                int b = color & 0xFF;
+                int yValue = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                out[y * width + x] = (byte) clamp(yValue);
+                if ((y & 1) == 0 && (x & 1) == 0) {
+                    int uValue = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                    int vValue = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+                    int chromaIndex = frameSize + (y / 2) * width + (x / 2) * 2;
+                    out[chromaIndex] = (byte) clamp(uValue);
+                    out[chromaIndex + 1] = (byte) clamp(vValue);
+                }
+            }
+        }
     }
 
     private static void fillI420(Bitmap bitmap, byte[] out, int width, int height) {

@@ -11,6 +11,7 @@ signal close_requested
 
 const AndroidVideo = preload("res://src/core/android_video.gd")
 const CameraExport = preload("res://src/core/camera_export.gd")
+const GifEncoder = preload("res://src/core/gif_encoder.gd")
 
 const FORMATS := ["png", "gif", "mp4"]
 const RESOLUTIONS := [
@@ -21,7 +22,7 @@ const RESOLUTIONS := [
 const FPS_OPTIONS := [12, 24, 30, 60]
 const GIF_FPS := [12, 24, 30]
 const BITRATE_MBPS := [4, 8, 12, 20]
-const GIF_60_REASON := "GIF timing is centisecond-based; 60 fps cannot be represented"
+const GIF_60_REASON := GifEncoder.FPS_60_REASON
 
 var _doc = null
 var _view = null
@@ -33,6 +34,9 @@ var _camera_id := ""
 var _include_audio := true
 var _start := 0.0
 var _end := 4.0
+var _output_path_value := ""
+var _gif_width := 640
+var _gif_reason_label: Label
 var _progress_label: Label
 var _status_label: Label
 var _result_label: Label
@@ -45,7 +49,39 @@ func setup(doc, view = null) -> void:
 	_view = view
 	if _doc != null and _doc.has_method("sequence_duration"):
 		_end = maxf(0.04, float(_doc.sequence_duration()))
+	if _output_path_value == "":
+		_output_path_value = _default_output_path()
 	_rebuild()
+
+
+func output_path() -> String:
+	return _output_path()
+
+
+func set_output_path(path: String) -> void:
+	_output_path_value = path
+
+
+func set_format(id: String) -> void:
+	if not id in FORMATS:
+		return
+	_format = id
+	if _format == "gif" and _fps == 60:
+		_fps = 30
+	_output_path_value = _normalize_output_path(_output_path_value, _format)
+	_rebuild()
+
+
+func gif_width_options() -> Array:
+	return GifEncoder.widths()
+
+
+func gif_reason_visible() -> bool:
+	return _gif_reason_label != null and _gif_reason_label.visible
+
+
+func gif_reason_text() -> String:
+	return _gif_reason_label.text if _gif_reason_label != null else ""
 
 
 func format_ids() -> Array:
@@ -107,10 +143,15 @@ func set_result(path: String, size_bytes: int, duration: float, tracks: String) 
 
 
 func build_options() -> Dictionary:
+	var width := _size.x
+	var height := _size.y
+	if _format == "gif":
+		width = _gif_width
+		height = GifEncoder.height_for_width(_gif_width)
 	return {
 		"format": _format,
-		"width": _size.x,
-		"height": _size.y,
+		"width": width,
+		"height": height,
 		"fps": _fps,
 		"start": _start,
 		"end": _end,
@@ -130,6 +171,7 @@ func _rebuild() -> void:
 	_result_label = null
 	_export_button = null
 	_cancel_button = null
+	_gif_reason_label = null
 	add_theme_constant_override("separation", 8)
 	add_child(Kit.section_label("Media export"))
 
@@ -148,15 +190,17 @@ func _rebuild() -> void:
 			button.tooltip_text = AndroidVideo.REASON
 		button.toggled.connect(func(on: bool) -> void:
 			if on:
-				_format = id
-				if _format == "gif" and _fps == 60:
-					_fps = 30
-				_rebuild()
+				set_format(id)
 		)
 		formats.add_child(button)
 
 	add_child(_labeled_option("Resolution", _resolution_option()))
+	if _format == "gif":
+		add_child(_labeled_option("GIF width", _gif_width_option()))
 	add_child(_labeled_option("FPS", _fps_option()))
+	_gif_reason_label = Kit.label(GIF_60_REASON, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	_gif_reason_label.visible = _format == "gif"
+	add_child(_gif_reason_label)
 	add_child(_labeled_option("Bitrate", _bitrate_option()))
 	add_child(_range_row())
 	add_child(_labeled_option("Camera", _camera_option()))
@@ -199,6 +243,20 @@ func _resolution_option() -> OptionButton:
 	option.selected = selected
 	option.item_selected.connect(func(index: int) -> void:
 		_size = RESOLUTIONS[index]["size"]
+	)
+	return option
+
+
+func _gif_width_option() -> OptionButton:
+	var option := OptionButton.new()
+	option.custom_minimum_size.y = 44
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for width in GifEncoder.widths():
+		option.add_item("%d × %d" % [width, GifEncoder.height_for_width(width)])
+		if width == _gif_width:
+			option.selected = option.item_count - 1
+	option.item_selected.connect(func(index: int) -> void:
+		_gif_width = int(GifEncoder.widths()[index])
 	)
 	return option
 
@@ -280,6 +338,9 @@ func _labeled_field(label_text: String, value: String) -> HBoxContainer:
 	var field := Kit.line_edit("Output path")
 	field.text = value
 	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	field.text_changed.connect(func(text: String) -> void:
+		_output_path_value = text
+	)
 	row.add_child(field)
 	return row
 
@@ -295,9 +356,19 @@ func _labeled_option(label_text: String, option: OptionButton) -> HBoxContainer:
 	return row
 
 
+func _default_output_path() -> String:
+	return "user://exports/kinema_export." + _format
+
+
+func _normalize_output_path(path: String, format: String) -> String:
+	var value := path if path != "" else _default_output_path()
+	if value.get_extension().to_lower() == format:
+		return value
+	return value.get_basename() + "." + format
+
+
 func _output_path() -> String:
-	var extension := "png" if _format == "png" else ("gif" if _format == "gif" else "mp4")
-	return "user://exports/kinema_export." + extension
+	return _normalize_output_path(_output_path_value, _format)
 
 
 func _on_export() -> void:

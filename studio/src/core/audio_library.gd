@@ -179,7 +179,10 @@ static func _cache_key(path: String) -> String:
 	var size := 0
 	var modified := 0
 	if FileAccess.file_exists(path):
-		size = FileAccess.get_file_as_bytes(path).size()
+		var file := FileAccess.open(path, FileAccess.READ)
+		if file != null:
+			size = file.get_length()
+			file.close()
 		modified = int(FileAccess.get_modified_time(path))
 	return ("%s|%d|%d" % [path, size, modified]).md5_text()
 
@@ -234,7 +237,7 @@ static func mix_tracks(tracks: Array, project_dir: String, output_path: String) 
 		var last := mini(frames, int(ceil((start + duration) * MIX_RATE)))
 		for out_frame in range(maxi(0, first), last):
 			var sequence_time := float(out_frame) / MIX_RATE
-			var envelope := _track_envelope(track, sequence_time)
+			var envelope := track_envelope(track, sequence_time)
 			if envelope <= 0.0:
 				continue
 			var local := sequence_time - start
@@ -291,7 +294,7 @@ static func mix_tracks(tracks: Array, project_dir: String, output_path: String) 
 
 ## Smoothstep envelope for a track at sequence time, including mute. Shared by
 ## playback volume and the WAV mixdown so both use identical maths.
-static func _track_envelope(track: Dictionary, sequence_time: float) -> float:
+static func track_envelope(track: Dictionary, sequence_time: float) -> float:
 	if bool(track.get("muted", false)):
 		return 0.0
 	var start := float(track.get("start", 0.0))

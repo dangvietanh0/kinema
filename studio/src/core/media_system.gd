@@ -18,11 +18,12 @@ const AUDIO_DEFAULTS := {
 	"fade_out": 0.0,
 }
 const DRIFT_TOLERANCE := 0.08
-const PROXY_FPS_PRESETS := [12, 24]
-const PROXY_FPS_DEFAULT := 12
-const PROXY_WIDTH_PRESETS := [640, 960, 1280, 1920]
-const PROXY_WIDTH_DEFAULT := 1280
+const PROXY_FPS_PRESETS := VideoReference.PROXY_FPS_PRESETS
+const PROXY_FPS_DEFAULT := VideoReference.PROXY_FPS_DEFAULT
+const PROXY_WIDTH_PRESETS := VideoReference.PROXY_WIDTH_PRESETS
+const PROXY_WIDTH_DEFAULT := VideoReference.PROXY_WIDTH_DEFAULT
 const PROXY_LIMIT_BYTES := 2 * 1024 * 1024 * 1024
+const FRAME_CACHE_LIMIT := 12
 
 var _document = null
 var _project_dir := ""
@@ -30,6 +31,8 @@ var _audio: Array[Dictionary] = []
 var _video_refs: Array[Dictionary] = []
 var _players: Dictionary = {}
 var _frame_cache: Dictionary = {}
+var _frame_cache_keys: Array[String] = []
+var _manifest_cache: Dictionary = {}
 var _next_audio := 1
 var _next_video := 1
 var _sequence_time := 0.0
@@ -45,6 +48,8 @@ func reset() -> void:
 	_audio.clear()
 	_video_refs.clear()
 	_frame_cache.clear()
+	_frame_cache_keys.clear()
+	_manifest_cache.clear()
 	_project_dir = ""
 	_next_audio = 1
 	_next_video = 1
@@ -67,6 +72,8 @@ func load_data(data: Dictionary, project_dir: String) -> void:
 	_audio.clear()
 	_video_refs.clear()
 	_frame_cache.clear()
+	_frame_cache_keys.clear()
+	_manifest_cache.clear()
 	_next_audio = 1
 	_next_video = 1
 	var media: Dictionary = data.get("media", {}) if data is Dictionary else {}
@@ -191,7 +198,7 @@ func audio_active(track: Dictionary, sequence_time: float) -> bool:
 func audio_volume_at(track: Dictionary, sequence_time: float) -> float:
 	if not audio_active(track, sequence_time):
 		return 0.0
-	return clampf(float(track.get("volume", 1.0)), 0.0, 1.0) * AudioLibrary._track_envelope(track, sequence_time)
+	return clampf(float(track.get("volume", 1.0)), 0.0, 1.0) * AudioLibrary.track_envelope(track, sequence_time)
 
 
 func mix_wav(output_path: String) -> Dictionary:
@@ -252,6 +259,8 @@ func _sync_players() -> void:
 		var active := audio_active(track, _sequence_time)
 		if _sequence_playing and active:
 			var expected := audio_offset(track, _sequence_time)
+			if player.stream_paused:
+				player.stream_paused = false
 			if not player.playing:
 				player.play(expected)
 			elif absf(player.get_playback_position() - expected) > DRIFT_TOLERANCE:
@@ -309,11 +318,18 @@ func stop_sequence() -> void:
 			player.volume_db = -80.0
 
 
+func audio_player(id: String) -> AudioStreamPlayer:
+	var index := _audio_index(id)
+	if index < 0:
+		return null
+	return _ensure_player(_audio[index])
+
+
 func _pause_all_players() -> void:
 	for id in _players.keys():
 		var player: AudioStreamPlayer = _players[id]
 		if player != null and is_instance_valid(player) and player.playing:
-			player.pause()
+			player.stream_paused = true
 
 
 # -------------------------------------------------------------------------
@@ -431,7 +447,7 @@ func update_video_reference(id: String, patch: Dictionary) -> void:
 		if key in ["name", "start", "opacity", "fit", "offset", "scale", "flip_h", "visible"]:
 			ref[key] = patch[key]
 	_video_refs[index] = VideoReference.normalize(ref)
-	_frame_cache.erase(id)
+	_drop_video_caches(id)
 	_emit_changed()
 
 
@@ -442,7 +458,7 @@ func delete_video_reference(id: String) -> void:
 	var ref: Dictionary = _video_refs[index]
 	VideoReference.delete_dir(_root(), ref)
 	_video_refs.remove_at(index)
-	_frame_cache.erase(id)
+	_drop_video_caches(id)
 	_emit_changed()
 
 
@@ -461,17 +477,23 @@ func frame_for_time(id: String, time: float) -> Image:
 	var ref: Dictionary = _video_refs[index]
 	if str(ref.get("kind", "")) == "ogv":
 		return null
-	var count := VideoReference.frame_count(_root(), ref)
-	var frame_index := VideoReference.frame_index(time, float(ref.get("fps", 12.0)), count)
+	var loaded := _manifest_for(id, ref)
+	if not bool(loaded.get("ok", false)):
+		return null
+	var frames: Array = loaded["manifest"].get("frames", [])
+	var frame_index := VideoReference.frame_index(time, float(ref.get("fps", 12.0)), frames.size())
 	if frame_index < 0:
 		return null
-	var cache: Dictionary = _frame_cache.get(id, {})
-	if cache.has(frame_index):
-		return cache[frame_index]
-	var image := VideoReference.frame_image(_root(), ref, frame_index)
-	if image != null:
-		cache[frame_index] = image
-		_frame_cache[id] = cache
+	var cached: Image = _cached_frame(id, frame_index)
+	if cached != null:
+		return cached
+	var path := VideoReference.frame_path_for_manifest(_root(), ref, loaded["manifest"], frame_index)
+	if path == "" or not FileAccess.file_exists(path):
+		return null
+	var image := Image.new()
+	if image.load(path) != OK:
+		return null
+	_store_frame(id, frame_index, image)
 	return image
 
 
@@ -480,7 +502,7 @@ func video_frame_index(id: String, time: float) -> int:
 	if index < 0:
 		return -1
 	var ref: Dictionary = _video_refs[index]
-	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), VideoReference.frame_count(_root(), ref))
+	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), _frame_count_for(id, ref))
 
 
 ## Clip mode is preview only: use the active strip's start plus the clip-local
@@ -496,7 +518,69 @@ func preview_frame_index(id: String) -> int:
 	if index < 0:
 		return 0
 	var ref: Dictionary = _video_refs[index]
-	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), VideoReference.frame_count(_root(), ref))
+	return VideoReference.frame_index(time, float(ref.get("fps", 12.0)), _frame_count_for(id, ref))
+
+
+func frame_cache_size() -> int:
+	return _frame_cache_keys.size()
+
+
+func _manifest_for(id: String, ref: Dictionary) -> Dictionary:
+	if _manifest_cache.has(id):
+		return _manifest_cache[id]
+	var loaded := VideoReference.manifest_for(_root(), ref)
+	_manifest_cache[id] = loaded
+	return loaded
+
+
+func _frame_count_for(id: String, ref: Dictionary) -> int:
+	var loaded := _manifest_for(id, ref)
+	if not bool(loaded.get("ok", false)):
+		return 0
+	return Array(loaded["manifest"].get("frames", [])).size()
+
+
+func _frame_cache_key(id: String, index: int) -> String:
+	return "%s:%d" % [id, index]
+
+
+func _cached_frame(id: String, index: int) -> Image:
+	var key := _frame_cache_key(id, index)
+	if not _frame_cache_keys.has(key):
+		return null
+	_frame_cache_keys.erase(key)
+	_frame_cache_keys.append(key)
+	var cache: Dictionary = _frame_cache.get(id, {})
+	return cache.get(index)
+
+
+func _store_frame(id: String, index: int, image: Image) -> void:
+	var key := _frame_cache_key(id, index)
+	var cache: Dictionary = _frame_cache.get(id, {})
+	cache[index] = image
+	_frame_cache[id] = cache
+	if not _frame_cache_keys.has(key):
+		_frame_cache_keys.append(key)
+	while _frame_cache_keys.size() > FRAME_CACHE_LIMIT:
+		var oldest: String = _frame_cache_keys.pop_front()
+		var old_id := oldest.get_slice(":", 0)
+		var old_index := int(oldest.get_slice(":", 1))
+		var old_cache: Dictionary = _frame_cache.get(old_id, {})
+		old_cache.erase(old_index)
+		if old_cache.is_empty():
+			_frame_cache.erase(old_id)
+		else:
+			_frame_cache[old_id] = old_cache
+
+
+func _drop_video_caches(id: String) -> void:
+	_manifest_cache.erase(id)
+	_frame_cache.erase(id)
+	var kept: Array[String] = []
+	for key in _frame_cache_keys:
+		if key.get_slice(":", 0) != id:
+			kept.append(key)
+	_frame_cache_keys = kept
 
 
 func video_reference(id: String) -> Dictionary:

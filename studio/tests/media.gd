@@ -53,6 +53,7 @@ func _ready() -> void:
 
 	await _test_audio()
 	await _test_video()
+	await _test_video_cache()
 	await _test_gif()
 	await _test_render_and_camera()
 	await _test_android_backend()
@@ -145,6 +146,23 @@ func _test_audio() -> void:
 	var waveform: Dictionary = AudioLibrary.waveform_peaks(PROJECT_DIR.path_join(str(imported.get("rel_path", ""))))
 	_check(bool(waveform.get("ok", false)), "WAV waveform peaks are available")
 	_check(Array(waveform.get("peaks", [])).size() > 0, "WAV waveform cache contains buckets")
+
+	# Transport regression: pause must really pause, and play must clear the
+	# paused flag instead of only seeking a paused player.
+	_check(_doc.media_system.has_method("audio_player"), "media system exposes its AudioStreamPlayer")
+	if _doc.media_system.has_method("audio_player"):
+		var player: AudioStreamPlayer = _doc.media_system.audio_player(track_id)
+		_check(player != null, "audio track has a real AudioStreamPlayer")
+		if player != null:
+			_doc.media_system.play_sequence(1.0)
+			_check(player.playing and not player.stream_paused, "play_sequence starts an unpaused player")
+			_check(_near(player.get_playback_position(), 0.25, 0.12), "play_sequence starts at the trimmed offset")
+			_doc.media_system.pause_sequence()
+			_check(player.stream_paused, "pause_sequence sets stream_paused")
+			_doc.media_system.play_sequence(1.0)
+			_check(player.playing and not player.stream_paused, "play after pause clears stream_paused")
+			_doc.media_system.stop_sequence()
+			_check(not player.playing, "stop_sequence stops the player")
 
 	_doc.media_system.delete_audio_track(track_id)
 	_check(_doc.media_system.audio_tracks().is_empty(), "delete_audio_track removes the track")
@@ -247,6 +265,48 @@ func _test_video() -> void:
 	_check(not DirAccess.dir_exists_absolute(ref_dir), "delete_video_reference removes the proxy directory")
 
 
+func _test_video_cache() -> void:
+	print("MEDIA STEP: video frame and manifest caches")
+	var ref_dir := PROJECT_DIR.path_join("video_refs").path_join("cache_ref")
+	var frames_dir := ref_dir.path_join("frames")
+	DirAccess.make_dir_recursive_absolute(frames_dir)
+	var names: Array = []
+	for index in range(16):
+		var name := "frame_%06d.jpg" % (index + 1)
+		_make_jpeg(frames_dir.path_join(name), Color(float(index) / 16.0, 0.3, 0.3))
+		names.append(name)
+	_write_json(ref_dir.path_join("reference.json"), {
+		"version": 1, "fps": 8, "duration": 2.0, "width": 8, "height": 8, "frames": names,
+	})
+	_doc.media_system.load_data({"media": {"audio": [], "video_refs": [{
+		"id": "cache_ref", "name": "Cache reference", "dir": "video_refs/cache_ref",
+		"fps": 8, "duration": 2.0, "width": 8, "height": 8,
+	}]}}, PROJECT_DIR)
+	_check(_doc.media_system.has_method("frame_cache_size"), "media system exposes its decoded-frame cache size")
+	var first: Image = _doc.media_system.frame_for_time("cache_ref", 0.0)
+	_check(first != null, "cache reference decodes its first frame")
+
+	# Rewrite the manifest behind the cache. Until the reference is updated the
+	# cached manifest must keep serving the original frame count.
+	_write_json(ref_dir.path_join("reference.json"), {
+		"version": 1, "fps": 8, "duration": 2.0, "width": 8, "height": 8, "frames": [names[0]],
+	})
+	_check(_doc.media_system.video_frame_index("cache_ref", 99.0) == 15, "manifest is cached instead of re-read per frame")
+	_doc.media_system.update_video_reference("cache_ref", {"opacity": 0.6})
+	_check(_doc.media_system.video_frame_index("cache_ref", 99.0) == 0, "manifest cache invalidates on update")
+
+	_write_json(ref_dir.path_join("reference.json"), {
+		"version": 1, "fps": 8, "duration": 2.0, "width": 8, "height": 8, "frames": names,
+	})
+	_doc.media_system.update_video_reference("cache_ref", {"opacity": 0.7})
+	for index in range(16):
+		_doc.media_system.frame_for_time("cache_ref", float(index) / 8.0)
+	if _doc.media_system.has_method("frame_cache_size"):
+		_check(_doc.media_system.frame_cache_size() > 0, "decoded frames are cached")
+		_check(_doc.media_system.frame_cache_size() <= 12, "decoded-frame cache is capped")
+	_doc.media_system.delete_video_reference("cache_ref")
+
+
 class FakeAnimation:
 	extends RefCounted
 	var strip: Dictionary = {"start": 0.5}
@@ -296,6 +356,22 @@ func _test_gif() -> void:
 	_check(int(parsed.get("frames", 0)) == 3, "GIF contains three image frames")
 	var delays: Array = parsed.get("delays", [])
 	_check(delays == [4, 4, 5], "GIF delays use the centisecond accumulator")
+	_check(Array(parsed.get("disposals", [])) == [1, 1, 1], "GIF frames use disposal method 1")
+
+	var once_bytes: PackedByteArray = GifEncoder.encode(frames, 24, false)
+	_check(_index_of(once_bytes, "NETSCAPE2.0".to_ascii_buffer()) < 0, "GIF loop=false omits the NETSCAPE loop extension")
+
+	var transparent := Image.create(2, 2, false, Image.FORMAT_RGBA8)
+	transparent.fill(Color(1, 1, 1, 0))
+	var opaque_black := Image.create(2, 2, false, Image.FORMAT_RGBA8)
+	opaque_black.fill(Color(0, 0, 0, 1))
+	var opaque_white := Image.create(2, 2, false, Image.FORMAT_RGBA8)
+	opaque_white.fill(Color(1, 1, 1, 1))
+	var transparent_bytes: PackedByteArray = GifEncoder.encode([transparent], 12, true)
+	var black_bytes: PackedByteArray = GifEncoder.encode([opaque_black], 12, true)
+	var white_bytes: PackedByteArray = GifEncoder.encode([opaque_white], 12, true)
+	_check(transparent_bytes == black_bytes, "GIF alpha below 0.5 composites to the background")
+	_check(transparent_bytes != white_bytes, "GIF alpha is not silently treated as opaque")
 
 	var long_frames: Array = []
 	for index in range(30):
@@ -315,9 +391,10 @@ func _test_gif() -> void:
 func _parse_gif(bytes: PackedByteArray) -> Dictionary:
 	var frames := 0
 	var delays: Array = []
+	var disposals: Array = []
 	var index := 13
 	if bytes.size() < 14:
-		return {"frames": 0, "delays": delays}
+		return {"frames": 0, "delays": delays, "disposals": disposals}
 	var packed := bytes[10]
 	if packed & 0x80:
 		index += 3 * (1 << ((packed & 0x07) + 1))
@@ -336,6 +413,7 @@ func _parse_gif(bytes: PackedByteArray) -> Dictionary:
 				index += 1
 				if size >= 4:
 					delays.append(bytes.decode_u16(index + 1))
+					disposals.append((bytes[index] >> 2) & 0x07)
 				index += size
 				index += 1
 			else:
@@ -353,7 +431,7 @@ func _parse_gif(bytes: PackedByteArray) -> Dictionary:
 			index = _skip_sub_blocks(bytes, index)
 		else:
 			break
-	return {"frames": frames, "delays": delays}
+	return {"frames": frames, "delays": delays, "disposals": disposals}
 
 
 func _skip_sub_blocks(bytes: PackedByteArray, index: int) -> int:
@@ -427,6 +505,27 @@ func _test_render_and_camera() -> void:
 	_check(bool(cancelled.get("cancelled", false)), "cancelled render reports cancellation")
 	_check(not DirAccess.dir_exists_absolute(cancel_dir), "cancelled render leaves no final output")
 
+	var transport := TransportSpyDoc.new()
+	add_child(transport)
+	transport.playing = true
+	transport.time = 0.5
+	var transport_renderer = SequenceRenderer.new()
+	transport_renderer.setup(transport, view)
+	var transport_dir := FIXTURE_DIR.path_join("render_transport")
+	var transport_result: Dictionary = await transport_renderer.render({
+		"width": 32,
+		"height": 32,
+		"fps": 12,
+		"start": 0.0,
+		"end": 0.2,
+		"frame_count": 2,
+		"output_dir": transport_dir,
+	})
+	_check(bool(transport_result.get("ok", false)), "transport-spy render completes")
+	_check(transport.pause_calls == 1, "renderer pauses the sequence clock before exporting")
+	_check(transport.play_calls == 1, "renderer restores the sequence clock after exporting")
+	_check(transport.playing, "renderer leaves a previously playing sequence playing")
+
 	for size in [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440)]:
 		view.sizes.clear()
 		var exact_dir := FIXTURE_DIR.path_join("exact_%dx%d" % [size.x, size.y])
@@ -451,7 +550,7 @@ func _test_render_and_camera() -> void:
 	var exporter = CameraExport.new()
 	exporter.setup(_doc)
 	var camera_path := FIXTURE_DIR.path_join("camera.json")
-	var exported: Dictionary = exporter.export(camera_path, camera_id, 24, 1.0)
+	var exported: Dictionary = await exporter.export(camera_path, camera_id, 24, 1.0)
 	_check(bool(exported.get("ok", false)), "camera track exports")
 	_check(FileAccess.file_exists(camera_path), "camera JSON exists")
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(camera_path))
@@ -473,6 +572,19 @@ func _test_render_and_camera() -> void:
 	var expected := Quaternion(Vector3.UP, 0.5)
 	_check(absf(quat.dot(expected)) > 0.999, "camera rotation roundtrips")
 
+	transport.reset_transport()
+	transport.playing = true
+	transport.time = 0.5
+	var spy_exporter = CameraExport.new()
+	spy_exporter.setup(transport)
+	var spy_camera_path := FIXTURE_DIR.path_join("camera_spy.json")
+	var spy_exported: Dictionary = await spy_exporter.export(spy_camera_path, "cam", 12, 0.5)
+	_check(bool(spy_exported.get("ok", false)), "camera export with a transport spy completes")
+	_check(transport.pause_calls == 1, "camera export pauses the sequence clock")
+	_check(transport.play_calls == 1, "camera export restores the sequence clock")
+	_check(transport.playing, "camera export leaves a playing sequence playing")
+	_check(_near(transport.time, 0.5), "camera export restores the original sequence time")
+
 
 class FakeView:
 	extends Node
@@ -490,6 +602,48 @@ class CancelSpy:
 	func should_cancel() -> bool:
 		calls += 1
 		return calls >= 2
+
+
+class TransportSpyDoc:
+	extends Node
+	var playing := false
+	var time := 0.0
+	var current_time := 0.0
+	var pause_calls := 0
+	var play_calls := 0
+	var seek_calls := 0
+	var rig_system = null
+	var objects: Array = [{"id": "cam", "kind": "camera", "name": "Spy camera", "camera_fov": 45.0}]
+	var nodes: Dictionary = {"cam": Node3D.new()}
+
+	func sequence_time() -> float:
+		return time
+
+	func seek_sequence(value: float, _silent := true) -> void:
+		time = value
+		seek_calls += 1
+
+	func play_sequence() -> void:
+		playing = true
+		play_calls += 1
+
+	func pause_sequence() -> void:
+		playing = false
+		pause_calls += 1
+
+	func is_sequence_playing() -> bool:
+		return playing
+
+	func get_object(id: String) -> Dictionary:
+		for obj in objects:
+			if str(obj.get("id", "")) == id:
+				return obj
+		return {}
+
+	func reset_transport() -> void:
+		pause_calls = 0
+		play_calls = 0
+		seek_calls = 0
 
 
 # -------------------------------------------------------------------------
@@ -530,6 +684,12 @@ func _test_android_backend() -> void:
 		"frame_dir": "/tmp/frames", "audio": [],
 	})
 	_check(JSON.parse_string(json) is Dictionary, "manifest JSON parses")
+	var relative: Dictionary = backend.build_manifest({
+		"width": 1280, "height": 720, "fps": 24, "start": 0.0, "end": 1.0,
+		"frame_dir": "/tmp/frames", "project_dir": "/tmp/kinema_project",
+		"audio": [{"file": "audio/step.wav"}],
+	})
+	_check(str(Array(relative.get("audio", []))[0].get("path", "")) == "/tmp/kinema_project/audio/step.wav", "manifest resolves relative audio paths against the project")
 
 	var encoded: Dictionary = backend.encode(manifest, "/tmp/out.mp4")
 	_check(not bool(encoded.get("ok", true)), "encode refuses on Linux")
@@ -562,6 +722,13 @@ func _test_android_backend() -> void:
 	_check(frames_source.contains("public static String extract("), "KinemaVideoFrames declares extract")
 	_check(frames_source.contains("MediaMetadataRetriever"), "KinemaVideoFrames uses MediaMetadataRetriever")
 	_check(frames_source.contains("reference.json"), "KinemaVideoFrames writes reference.json")
+	_check(frames_source.contains("OPTION_CLOSEST)"), "KinemaVideoFrames requests the closest frame, not only sync frames")
+	_check(encoder_source.contains("colorFormats"), "KinemaVideoEncoder inspects codec color formats")
+	_check(encoder_source.contains("COLOR_FormatYUV420SemiPlanar"), "KinemaVideoEncoder supports NV12/SemiPlanar")
+	_check(encoder_source.contains("fillNV12"), "KinemaVideoEncoder converts I420 to NV12 when needed")
+	_check(encoder_source.contains("getSupportedSampleRates"), "KinemaVideoEncoder reads AAC sample rates from codec capabilities")
+	_check(encoder_source.contains("idle"), "KinemaVideoEncoder bounds the end-of-stream drain")
+	_check(encoder_source.contains("if (!RUNNING.compareAndSet(false, true)) {\n            return;"), "a second encode does not corrupt the running encode state")
 
 
 # -------------------------------------------------------------------------
@@ -592,6 +759,12 @@ func _test_ui() -> void:
 	_check(lanes.audio_row_count() == 1, "audio lane shows the track row")
 	_check(lanes.video_row_count() == 1, "video lane shows the reference row")
 	_check(_all_controls_44(lanes), "media lane controls keep the 44 dp floor")
+	var dragged_events: Array = []
+	lanes.video_dragged.connect(func(id: String, patch: Dictionary) -> void: dragged_events.append({"id": id, "patch": patch}))
+	lanes.drag_video("ui_ref", 0.5)
+	var dragged: Dictionary = _doc.media_system.video_reference("ui_ref")
+	_check(_near(float(dragged.get("start", -1.0)), 0.5), "video lane drag changes the reference start")
+	_check(dragged_events.size() == 1 and _near(float(dragged_events[0]["patch"].get("start", -1.0)), 0.5), "video lane drag emits the start patch")
 
 	var audio_sheet = AudioSheet.new()
 	audio_sheet.setup(_doc.media_system)
@@ -602,6 +775,11 @@ func _test_ui() -> void:
 	_check(audio_sheet.waveform_status().begins_with("Waveform"), "WAV audio sheet shows a real waveform")
 	_check(audio_sheet.has_delete_confirm(), "audio sheet has a delete action")
 	_check(_all_controls_44(audio_sheet), "audio sheet controls keep the 44 dp floor")
+	var audio_slider := _find_slider(audio_sheet)
+	_check(audio_slider != null, "audio sheet has a volume slider")
+	if audio_slider != null:
+		audio_slider.value = 0.5
+		_check(audio_sheet.volume_text() == "50%", "audio volume label follows the slider")
 
 	var video_panel = VideoReferencePanel.new()
 	video_panel.setup(_doc.media_system)
@@ -612,6 +790,15 @@ func _test_ui() -> void:
 	_check(video_panel.delete_warning().contains("cannot be undone"), "video panel warns that deletion cannot be undone")
 	_check(video_panel.frame_text().contains("fps"), "video panel reports the frame proxy rate")
 	_check(_all_controls_44(video_panel), "video panel controls keep the 44 dp floor")
+	var opacity_slider := _find_slider(video_panel)
+	_check(opacity_slider != null, "video panel has an opacity slider")
+	if opacity_slider != null:
+		opacity_slider.value = 80.0
+		_check(video_panel.opacity_text() == "80%", "video opacity label follows the slider")
+	_check(not video_panel.request_delete(), "first delete press only arms confirmation")
+	_check(not _doc.media_system.video_references().is_empty(), "first delete press keeps the reference")
+	_check(video_panel.request_delete(), "second delete press confirms deletion")
+	_check(_doc.media_system.video_references().is_empty(), "confirmed delete removes the reference")
 
 	var export_sheet = MediaExportSheet.new()
 	export_sheet.setup(_doc, null)
@@ -626,6 +813,15 @@ func _test_ui() -> void:
 	_check(export_sheet.progress_text("verifying", 0, 0) == "Verifying", "export progress shows the verifying phase")
 	_check(export_sheet.format_ids() == ["png", "gif", "mp4"], "export sheet offers PNG, GIF and MP4")
 	_check(_all_controls_44(export_sheet), "export sheet controls keep the 44 dp floor")
+	_check(_all_primary_96(export_sheet), "export primary action is 96 dp wide")
+	export_sheet.set_output_path("user://exports/custom.png")
+	_check(export_sheet.build_options().get("output_path", "") == "user://exports/custom.png", "export sheet uses the typed output path")
+	export_sheet.set_format("gif")
+	await get_tree().process_frame
+	_check(str(export_sheet.build_options().get("output_path", "")).ends_with(".gif"), "format change keeps a valid output extension")
+	_check(export_sheet.gif_width_options() == [320, 480, 640, 720], "export sheet offers the GIF width presets")
+	_check(export_sheet.gif_reason_visible(), "GIF 60 fps reason is visible as a caption")
+	_check(export_sheet.gif_reason_text() == "GIF timing is centisecond-based; 60 fps cannot be represented", "GIF reason caption uses the exact text")
 
 	var import_sheet = MediaImportSheet.new()
 	import_sheet.setup(_doc)
@@ -636,6 +832,11 @@ func _test_ui() -> void:
 	_check(import_sheet.unsupported_reason("mp4").contains("Android"), "import sheet explains MP4 extraction is Android-only")
 	_check(import_sheet.unsupported_reason("ogv").contains("VideoStreamPlayer"), "import sheet explains the OGV direct-play path")
 	_check(_all_controls_44(import_sheet), "import sheet controls keep the 44 dp floor")
+	_check(_all_primary_96(import_sheet), "import primary actions are 96 dp wide")
+	import_sheet.set_video_path("clip.mp4")
+	_check(not import_sheet.video_import_enabled(), "MP4 import button is disabled on Linux")
+	import_sheet.set_video_path("clip.ogv")
+	_check(import_sheet.video_import_enabled(), "OGV import button stays enabled")
 
 
 func _prepare_ui_media() -> Dictionary:
@@ -674,6 +875,29 @@ func _all_controls_44(node: Node) -> bool:
 		if not _all_controls_44(child):
 			ok = false
 	return ok
+
+
+func _all_primary_96(node: Node) -> bool:
+	var ok := true
+	for child in node.get_children():
+		if child is Button and str(child.text) in ["Export", "Import audio", "Import video"]:
+			var button: Button = child
+			if button.get_combined_minimum_size().x < 95.5:
+				printerr("MEDIA: primary action narrower than 96 dp: %s %.1f" % [button.text, button.get_combined_minimum_size().x])
+				ok = false
+		if not _all_primary_96(child):
+			ok = false
+	return ok
+
+
+func _find_slider(node: Node) -> HSlider:
+	for child in node.get_children():
+		if child is HSlider:
+			return child
+		var found := _find_slider(child)
+		if found != null:
+			return found
+	return null
 
 
 # -------------------------------------------------------------------------

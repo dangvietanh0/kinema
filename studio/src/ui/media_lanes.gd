@@ -7,6 +7,7 @@ extends VBoxContainer
 
 signal audio_selected(id: String)
 signal video_selected(id: String)
+signal video_dragged(id: String, patch: Dictionary)
 signal add_audio_requested
 signal add_video_requested
 signal collapsed_changed(collapsed: bool)
@@ -14,6 +15,7 @@ signal collapsed_changed(collapsed: bool)
 const AUDIO_ROW_HEIGHT := 48.0
 const VIDEO_ROW_HEIGHT := 40.0
 const HEADER_HEIGHT := 44.0
+const PIXELS_PER_SECOND := 80.0
 
 var _doc = null
 var _body: VBoxContainer
@@ -23,6 +25,9 @@ var _audio_rows: Array[Control] = []
 var _video_rows: Array[Control] = []
 var _collapsed := false
 var _connected := false
+var _dragging_id := ""
+var _drag_origin_x := 0.0
+var _drag_origin_start := 0.0
 
 
 func setup(doc) -> void:
@@ -160,8 +165,17 @@ func _build_video() -> void:
 		box.add_child(info)
 		var id := str(ref.get("id", ""))
 		row.gui_input.connect(func(event: InputEvent) -> void:
-			if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-				_select_video(id, row)
+			if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+				if event.pressed:
+					_select_video(id, row)
+					_dragging_id = id
+					_drag_origin_x = event.position.x
+					_drag_origin_start = float(ref.get("start", 0.0))
+				else:
+					_dragging_id = ""
+			elif event is InputEventMouseMotion and _dragging_id == id:
+				var delta: float = (event.position.x - _drag_origin_x) / PIXELS_PER_SECOND
+				_apply_video_drag(id, delta, _drag_origin_start)
 		)
 		_body.add_child(row)
 		_video_rows.append(row)
@@ -181,5 +195,25 @@ func _select_video(id: String, row: Control) -> void:
 	video_selected.emit(id)
 
 
+## Public drag hook used by the timeline and the tests. `delta_seconds` is the
+## horizontal distance converted to sequence seconds; start is clamped at zero.
+func drag_video(id: String, delta_seconds: float) -> void:
+	var ref: Dictionary = _doc.media_system.video_reference(id) if _doc != null else {}
+	if ref.is_empty():
+		return
+	_dragging_id = id
+	_apply_video_drag(id, delta_seconds, float(ref.get("start", 0.0)))
+	_dragging_id = ""
+
+
+func _apply_video_drag(id: String, delta_seconds: float, base_start: float) -> void:
+	var start := maxf(0.0, base_start + delta_seconds)
+	var patch := {"start": start}
+	_doc.media_system.update_video_reference(id, patch)
+	video_dragged.emit(id, patch)
+
+
 func _on_media_changed() -> void:
+	if _dragging_id != "":
+		return
 	refresh()

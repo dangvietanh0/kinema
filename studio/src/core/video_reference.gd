@@ -13,6 +13,10 @@ const DEFAULT_START := 0.0
 const DEFAULT_SCALE := 1.0
 const VIDEO_EXTENSIONS := ["mp4", "m4v", "mov"]
 const OGV_EXTENSION := "ogv"
+const PROXY_FPS_PRESETS := [12, 24]
+const PROXY_FPS_DEFAULT := 12
+const PROXY_WIDTH_PRESETS := [640, 960, 1280, 1920]
+const PROXY_WIDTH_DEFAULT := 1280
 
 
 static func source_kind(path: String) -> String:
@@ -127,7 +131,11 @@ static func frame_path(project_dir: String, ref: Dictionary, index: int) -> Stri
 	var loaded := manifest_for(project_dir, ref)
 	if not bool(loaded.get("ok", false)):
 		return ""
-	var frames: Array = loaded["manifest"].get("frames", [])
+	return frame_path_for_manifest(project_dir, ref, loaded["manifest"], index)
+
+
+static func frame_path_for_manifest(project_dir: String, ref: Dictionary, manifest: Dictionary, index: int) -> String:
+	var frames: Array = manifest.get("frames", [])
 	if index < 0 or index >= frames.size():
 		return ""
 	var base := reference_dir(project_dir, ref)
