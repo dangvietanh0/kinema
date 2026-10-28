@@ -425,6 +425,10 @@ func text_button(text_value: String, icon_name: String = "", primary: bool = fal
 		b.icon = icon_texture(icon_name)
 		b.add_theme_constant_override("icon_max_width", 15)
 	b.custom_minimum_size = Vector2(ACTION_MIN_WIDTH, Tokens.HIT) if primary else Vector2(Tokens.HIT, Tokens.HIT)
+	if primary:
+		# A primary action is a landscape 96x44 box, not a full-width banner.
+		# Callers that put it in a VBox must not let FILL stretch it.
+		b.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	b.add_theme_constant_override("h_separation", 6)
 	if primary:
 		b.theme_type_variation = "PrimaryButton"

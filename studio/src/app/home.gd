@@ -163,7 +163,6 @@ func _build_page_header(parent: Control) -> void:
 	titles.add_child(Kit.label("Local projects on this device", Kit.TYPE_BODY, Kit.TEXT_MUTED))
 
 	var new_button := Kit.text_button("New project", "plus", true)
-	new_button.custom_minimum_size = Vector2(148, 44)
 	new_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	new_button.pressed.connect(_open_new_project_sheet)
 	row.add_child(new_button)

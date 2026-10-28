@@ -1529,12 +1529,10 @@ func _open_render_sheet() -> void:
 	still_actions.add_theme_constant_override("separation", 8)
 	body.add_child(still_actions)
 	_render_still_button = Kit.text_button("Quick still", "camera", true, true)
-	_render_still_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_render_still_button.tooltip_text = "Capture now and save in app storage"
 	_render_still_button.pressed.connect(_quick_still)
 	still_actions.add_child(_render_still_button)
 	_render_save_button = Kit.text_button("Save still…", "download", false, true)
-	_render_save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_render_save_button.pressed.connect(_render_still)
 	still_actions.add_child(_render_save_button)
 
