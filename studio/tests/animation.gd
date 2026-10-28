@@ -172,6 +172,14 @@ func _test_mixer() -> void:
 	var w_pos: Vector3 = w.get("objects", {}).get("obj_1", {}).get("position", Vector3.ZERO)
 	_check(_vec_approx(w_pos, Vector3(1, 0, 0)), "override layer weight 0.5 blends from the base pose")
 
+	# Strip weight and fade are applied once, not squared by the layer pass.
+	var half_strip := [_layer("base", [_strip("a", 0.0, 0.0, 2.0, {"weight": 0.5})])]
+	var half_pos: Vector3 = _mixer_eval({"a": _constant_position_anim(Vector3(2, 0, 0))}, half_strip, 1.0).get("objects", {}).get("obj_1", {}).get("position", Vector3.ZERO)
+	_check(_vec_approx(half_pos, Vector3(1, 0, 0)), "strip weight 0.5 blends exactly half from the base pose")
+	var fade_mid_strip := [_layer("base", [_strip("a", 0.0, 0.0, 2.0, {"fade_in": 0.5})])]
+	var fade_mid_pos: Vector3 = _mixer_eval({"a": _constant_position_anim(Vector3(2, 0, 0))}, fade_mid_strip, 0.25).get("objects", {}).get("obj_1", {}).get("position", Vector3.ZERO)
+	_check(_vec_approx(fade_mid_pos, Vector3(1, 0, 0)), "fade midpoint applies the smoothstep weight exactly once")
+
 	# Additive position, rotation and scale.
 	var additive := [_layer("base", [_strip("a", 0.0, 0.0, 2.0)], {"blend": "additive"})]
 	var add_anim := Animation.new()
@@ -387,6 +395,14 @@ func _test_model() -> void:
 		var key_value: Vector3 = round_anim.track_get_key_value(0, 1)
 		_check(_vec_approx(key_value, Vector3(1, 0, 0)), "v2 roundtrip keeps key values")
 	_check(str(round_anim.track_get_path(0)) == "Object_1:position", "v2 roundtrip keeps track paths")
+	var loaded_strip_ids: Array[String] = []
+	for layer in sys2.layers():
+		for strip in layer.get("strips", []):
+			loaded_strip_ids.append(str(strip.get("id", "")))
+	var loaded_layer_id: String = str(sys2.layers()[0].get("id", ""))
+	var loaded_clip_id: String = str(sys2.clip_ids()[0])
+	var added_after_load: String = sys2.add_strip(loaded_layer_id, loaded_clip_id, 1.0)
+	_check(added_after_load != "" and added_after_load not in loaded_strip_ids, "a strip added after v2 load gets a unique id")
 	await _free_doc(doc2)
 
 	# Clip CRUD and independent duplicates.
@@ -475,6 +491,16 @@ func _test_model() -> void:
 	seq.play_sequence()
 	seq.play()
 	_check(not seq.is_sequence_playing() and not seqsys.is_sequence_playing(), "clip play stops sequence playback")
+
+	# Switching strips during sequence playback must publish the new active clip.
+	var seq_clip_b: String = seqsys.create_clip("Sequence B", 1.0)
+	seqsys.add_strip(str(seqsys.layers()[0].get("id", "")), seq_clip_b, 1.0)
+	var switched: Array[String] = []
+	seq.active_clip_changed.connect(func(id: String) -> void: switched.append(id))
+	seq.play_sequence()
+	seqsys.advance(1.2)
+	_check(switched.has(seq_clip_b), "sequence clip switching emits active_clip_changed")
+
 	seq.stop_sequence()
 	_check(_approx(seq.sequence_time(), 0.0), "stop_sequence rewinds the sequence")
 	await _free_doc(seq)
@@ -606,6 +632,7 @@ func _test_ui() -> void:
 	doc.new_project("Lane", "blank")
 	doc.set_process(false)
 	var sys = doc.animation_system
+	var default_strip_id: String = str(sys.layers()[0].get("strips", [])[0].get("id", ""))
 	var clip_b: String = sys.create_clip("Second", 3.0)
 	var layer_b: String = sys.add_layer("Overlay")
 	var strip_b: String = sys.add_strip(layer_b, clip_b, 0.5)
@@ -633,6 +660,24 @@ func _test_ui() -> void:
 	_check(lane.strip_block_count() == 2, "clip lane draws one block per strip")
 	_check(lane.play_sequence_button() != null and lane.play_sequence_button().custom_minimum_size.y >= 44.0, "clip lane has a 44 dp Play sequence button")
 	_check(lane.play_sequence_button().custom_minimum_size.x >= 44.0, "Play sequence keeps a 44 dp width")
+	_check(lane.fade_handle_rects().is_empty(), "zero-fade strips expose no fade handles")
+	var default_rect: Rect2 = lane.strip_rect(default_strip_id)
+	var default_edge_hit: Dictionary = lane._hit_at(Vector2(default_rect.position.x + 2.0, default_rect.position.y + 22.0))
+	_check(str(default_edge_hit.get("kind", "")) == "trim", "a default strip edge reaches the trim handle, not a zero-width fade")
+
+	var zoom_before: float = lane._zoom
+	var wheel := InputEventMouseButton.new()
+	wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+	wheel.pressed = true
+	wheel.position = Vector2(400, 60)
+	lane._lane_input(wheel, lane._canvas)
+	_check(lane._zoom > zoom_before, "the mouse wheel zooms the clip lane")
+	lane._on_fit()
+	_check(_approx(lane._zoom, 1.0), "Fit restores the full-sequence zoom")
+
+	sys.update_strip(strip_b, {"fade_in": 0.5, "fade_out": 0.5})
+	lane.refresh()
+	await get_tree().process_frame
 	var rect: Rect2 = lane.strip_rect(strip_b)
 	_check(rect.size.y >= 44.0, "strip blocks are 44 dp tall")
 	var fade_rects: Array = lane.fade_handle_rects()
@@ -648,6 +693,19 @@ func _test_ui() -> void:
 	_check(_ui_signal_count == 1 and _ui_selected_strip == strip_b, "tapping a strip emits strip_selected")
 	_check(_ui_sheet != null, "tapping a strip builds a strip sheet")
 
+	# A short strip keeps a narrow visual block but still gets a 44x44 hit target.
+	var far_clip: String = sys.create_clip("Far", 2.0)
+	sys.add_strip(layer_b, far_clip, 98.0)
+	lane.refresh()
+	await get_tree().process_frame
+	var narrow_rect: Rect2 = lane.strip_rect(strip_b)
+	var narrow_hit := Rect2()
+	for hit in lane._strip_hits:
+		if str(hit.get("strip_id", "")) == strip_b:
+			narrow_hit = hit.get("hit_rect", Rect2())
+	_check(narrow_rect.size.x < 44.0, "a short strip keeps its narrow visual block")
+	_check(narrow_hit.size.x >= 44.0 and narrow_hit.size.y >= 44.0, "a narrow strip keeps a 44x44 hit target")
+
 	var clip_sheet_script = load(CLIP_SHEET_PATH)
 	_check(clip_sheet_script != null, "clip_sheet.gd exists")
 	if clip_sheet_script != null:
@@ -659,6 +717,8 @@ func _test_ui() -> void:
 		_check(clip_sheet.clip_row_count() == sys.clip_ids().size(), "clip sheet lists every clip")
 		_check(clip_sheet.new_button().custom_minimum_size.y >= 44.0, "clip sheet New is a 44 dp target")
 		_check(clip_sheet.duplicate_button().custom_minimum_size.y >= 44.0, "clip sheet Duplicate is a 44 dp target")
+		clip_sheet._on_delete()
+		_check(clip_sheet._error_label.visible and str(clip_sheet._error_label.text) != "", "clip sheet keeps the delete-refusal reason visible")
 		clip_sheet.queue_free()
 
 	var layer_sheet_script = load(LAYER_SHEET_PATH)
@@ -686,5 +746,19 @@ func _test_ui() -> void:
 		_check(strip_sheet.field("fade_in") != null, "strip sheet exposes fade in")
 		_check(strip_sheet.field("fade_out") != null, "strip sheet exposes fade out")
 		strip_sheet.queue_free()
+
+	# The last layer cannot be deleted; the sheet must keep the reason visible.
+	if layer_sheet_script != null:
+		var one_doc := await _new_doc()
+		one_doc.new_project("One layer", "blank")
+		var one_sheet: Control = layer_sheet_script.new()
+		host.add_child(one_sheet)
+		one_sheet.setup(one_doc)
+		one_sheet.open(one_doc.animation_system.active_layer_id())
+		await get_tree().process_frame
+		one_sheet._on_delete()
+		_check(one_sheet._error_label.visible and str(one_sheet._error_label.text) != "", "layer sheet keeps the delete-refusal reason visible")
+		one_sheet.queue_free()
+		await _free_doc(one_doc)
 
 	await _free_doc(doc)
