@@ -73,8 +73,15 @@ static func transform_vertices(vertices: PackedVector3Array, xform: Transform3D)
 	return out
 
 
-static func sidecar_hash(rig_id: String, mesh_id: String, vertex_count: int, bone_names: Array) -> String:
-	var seed := "%s|%s|%d|%s" % [rig_id, mesh_id, vertex_count, str(bone_names)]
+static func sidecar_hash(rig_id: String, mesh_id: String, vertex_count: int, bone_names: Array, bones: PackedInt32Array, weights: PackedFloat32Array) -> String:
+	# Include a weight digest so a rebind with changed weights writes a new
+	# generation and leaves the old sidecar for undo until save-time GC.
+	var digest := 17
+	for value in bones:
+		digest = (digest * 31 + int(value)) & 0x7fffffff
+	for value in weights:
+		digest = (digest * 31 + int(round(float(value) * 100000.0))) & 0x7fffffff
+	var seed := "%s|%s|%d|%s|%d" % [rig_id, mesh_id, vertex_count, str(bone_names), digest]
 	return seed.md5_text().substr(0, 6)
 
 

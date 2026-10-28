@@ -334,7 +334,7 @@ func _rig_for_object(object_id: String) -> Dictionary:
 
 func add_bone(rig_id: String, name: String, parent: String, rest: Dictionary) -> int:
 	var rig := _rig_for_object(rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or bool(rig.get("imported", false)):
 		return -1
 	var clean := name.strip_edges()
 	if clean == "" or _bone_index(rig, clean) >= 0:
@@ -345,8 +345,10 @@ func add_bone(rig_id: String, name: String, parent: String, rest: Dictionary) ->
 		if parent_index < 0:
 			return -1
 	var normalized := _normalize_rest(rest, parent_index)
+	_begin("Add bone")
 	(rig["bones"] as Array).append(normalized.merged({"name": clean, "parent": parent_index}, true))
 	_rebuild_skeleton(rig)
+	_end()
 	_emit_rigs()
 	return (rig["bones"] as Array).size() - 1
 
@@ -365,7 +367,7 @@ func _normalize_rest(rest: Dictionary, parent: int) -> Dictionary:
 
 func remove_bone(rig_id: String, name: String) -> bool:
 	var rig := _rig_for_object(rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or bool(rig.get("imported", false)):
 		return false
 	var index := _bone_index(rig, name)
 	if index < 0:
@@ -383,6 +385,7 @@ func remove_bone(rig_id: String, name: String) -> bool:
 	for pose in rig.get("poses", []):
 		if (pose.get("bones", {}) as Dictionary).has(name):
 			return false
+	_begin("Remove bone")
 	bones.remove_at(index)
 	for bone in bones:
 		var parent := int(bone.get("parent", -1))
@@ -391,6 +394,7 @@ func remove_bone(rig_id: String, name: String) -> bool:
 	if str(rig.get("active_bone", "")) == name:
 		rig["active_bone"] = str(bones[0].get("name", "")) if not bones.is_empty() else ""
 	_rebuild_skeleton(rig)
+	_end()
 	_emit_rigs()
 	return true
 
@@ -403,17 +407,19 @@ func set_bone_rest(rig_id: String, name: String, rest: Dictionary) -> void:
 	if bone.is_empty():
 		return
 	var normalized := _normalize_rest(rest, int(bone.get("parent", -1)))
+	_begin("Edit bone rest")
 	bone["p"] = normalized["p"]
 	bone["r"] = normalized["r"]
 	bone["s"] = normalized["s"]
 	bone["length"] = normalized["length"]
 	_rebuild_skeleton(rig)
+	_end()
 	_emit_rigs()
 
 
 func set_bone_parent(rig_id: String, name: String, parent: String) -> bool:
 	var rig := _rig_for_object(rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or bool(rig.get("imported", false)):
 		return false
 	var index := _bone_index(rig, name)
 	if index < 0:
@@ -431,12 +437,14 @@ func set_bone_parent(rig_id: String, name: String, parent: String) -> bool:
 		parent_global = _bone_global_rest(rig, parent_index)
 	var local := parent_global.affine_inverse() * global_before
 	var bone: Dictionary = (rig["bones"] as Array)[index]
+	_begin("Reparent bone")
 	bone["parent"] = parent_index
 	bone["p"] = local.origin
 	bone["r"] = local.basis.get_rotation_quaternion().normalized()
 	bone["s"] = local.basis.get_scale()
 	_sort_bones_parent_first(rig)
 	_rebuild_skeleton(rig)
+	_end()
 	_emit_rigs()
 	return true
 
@@ -456,13 +464,15 @@ func set_bone_influence_scale(rig_id: String, bone_name: String, scale: float) -
 	var bone := _bone(rig, bone_name)
 	if bone.is_empty():
 		return
+	_begin("Change bone influence")
 	bone["influence_scale"] = maxf(0.0, scale)
+	_end()
 	_emit_rigs()
 
 
 func rename_bone(rig_id: String, old_name: String, new_name: String) -> bool:
 	var rig := _rig_for_object(rig_id)
-	if rig.is_empty():
+	if rig.is_empty() or bool(rig.get("imported", false)):
 		return false
 	var clean := new_name.strip_edges()
 	if clean == "" or clean == old_name or _bone_index(rig, clean) >= 0:
@@ -470,6 +480,7 @@ func rename_bone(rig_id: String, old_name: String, new_name: String) -> bool:
 	var bone := _bone(rig, old_name)
 	if bone.is_empty():
 		return false
+	_begin("Rename bone")
 	bone["name"] = clean
 	if str(rig.get("active_bone", "")) == old_name:
 		rig["active_bone"] = clean
@@ -490,6 +501,7 @@ func rename_bone(rig_id: String, old_name: String, new_name: String) -> bool:
 			pose_bones.erase(old_name)
 	_rename_bone_tracks(rig_id, old_name, clean)
 	_rebuild_skeleton(rig)
+	_end()
 	_emit_rigs()
 	return true
 
@@ -718,7 +730,20 @@ func start_bind(rig_id: String, mesh_object_id: String, _options: Dictionary) ->
 		return job_id
 	var rig_node: Node3D = _document.nodes.get(rig_id)
 	var rig_space := rig_node.global_transform.affine_inverse() * mesh_node.global_transform
-	var source := _mesh_source(_document.get_object(mesh_object_id), mesh_node.transform)
+	# A rebind happens after the mesh was locked to the rig. Keep the source
+	# transform captured by the first bind so Unbind can restore it.
+	var source := {}
+	var bind_transform := _transform_to_array(rig_node.global_transform)
+	for skin in rig.get("skins", []):
+		if str(skin.get("mesh_object_id", "")) != mesh_object_id:
+			continue
+		if skin.get("source", {}) is Dictionary:
+			source = (skin["source"] as Dictionary).duplicate(true)
+		if skin.get("bind_transform", null) is Array:
+			bind_transform = (skin["bind_transform"] as Array).duplicate()
+		break
+	if source.is_empty():
+		source = _mesh_source(_document.get_object(mesh_object_id), mesh_node.transform)
 	_jobs[job_id] = {
 		"id": job_id,
 		"state": "running",
@@ -740,6 +765,7 @@ func start_bind(rig_id: String, mesh_object_id: String, _options: Dictionary) ->
 		"segments": _bone_segments(rig),
 		"bone_names": _bone_names(rig),
 		"source": source,
+		"bind_transform": bind_transform,
 		"current_bones": PackedInt32Array(),
 		"current_weights": PackedFloat32Array(),
 		"all_bones": PackedInt32Array(),
@@ -834,13 +860,14 @@ func _finish_bind(job: Dictionary) -> void:
 	var rig: Dictionary = job["rig"]
 	var mesh_id := str(job["mesh_id"])
 	var bone_names: Array = job["bone_names"]
-	var hash := Skinning.sidecar_hash(str(rig.get("id", "")), mesh_id, int(job["total"]), bone_names)
+	var hash := Skinning.sidecar_hash(str(rig.get("id", "")), mesh_id, int(job["total"]), bone_names, job["all_bones"], job["all_weights"])
 	var file := "skins/%s_%s_%s.bin" % [str(rig.get("id", "")), mesh_id, hash]
 	var sidecar := _sidecar_path(file)
 	if not Skinning.write_sidecar(sidecar, job["all_bones"], job["all_weights"], int(job["total"]), Skinning.MAX_INFLUENCES):
 		job["state"] = "error"
 		job["error"] = "Could not write the skin sidecar."
 		return
+	_begin("Bind mesh")
 	var mesh: ArrayMesh = ArrayMesh.new()
 	for surface in job["surfaces"]:
 		var arrays: Array = surface["arrays"]
@@ -865,7 +892,7 @@ func _finish_bind(job: Dictionary) -> void:
 		"influences": Skinning.MAX_INFLUENCES,
 		"bone_names": bone_names.duplicate(),
 		"source": job["source"],
-		"bind_transform": _transform_to_array(rig_node.global_transform),
+		"bind_transform": job["bind_transform"],
 		"surface_counts": (job["surface_counts"] as Array).duplicate(),
 	}
 	var skins: Array = rig.get("skins", [])
@@ -884,6 +911,7 @@ func _finish_bind(job: Dictionary) -> void:
 	}
 	job["state"] = "done"
 	job["progress"] = 1.0
+	_end()
 	_emit_rigs()
 
 
@@ -1131,6 +1159,7 @@ func add_ik_chain(rig_id: String, root: String, end: String, target_object_id: S
 		return ""
 	var chain_id := "ik_%d" % _next_ik
 	_next_ik += 1
+	_begin("Add IK chain")
 	(rig["ik"] as Array).append({
 		"id": chain_id,
 		"name": "IK %d" % (_next_ik - 1),
@@ -1142,6 +1171,7 @@ func add_ik_chain(rig_id: String, root: String, end: String, target_object_id: S
 		"pole_angle": 0.0,
 		"enabled": true,
 	})
+	_end()
 	_emit_rigs()
 	return chain_id
 
@@ -1153,6 +1183,7 @@ func update_ik_chain(rig_id: String, chain_id: String, patch: Dictionary) -> voi
 	for chain in rig.get("ik", []):
 		if str(chain.get("id", "")) != chain_id:
 			continue
+		_begin("Update IK chain")
 		for key in ["name", "root", "end", "target_object_id"]:
 			if patch.has(key):
 				chain[key] = str(patch[key])
@@ -1164,6 +1195,7 @@ func update_ik_chain(rig_id: String, chain_id: String, patch: Dictionary) -> voi
 			chain["pole_angle"] = float(patch["pole_angle"])
 		if patch.has("enabled"):
 			chain["enabled"] = bool(patch["enabled"])
+		_end()
 		_emit_rigs()
 		return
 
@@ -1175,8 +1207,10 @@ func delete_ik_chain(rig_id: String, chain_id: String) -> void:
 	var chains: Array = rig.get("ik", [])
 	for i in range(chains.size() - 1, -1, -1):
 		if str(chains[i].get("id", "")) == chain_id:
+			_begin("Delete IK chain")
 			chains.remove_at(i)
 			rig["ik"] = chains
+			_end()
 			_emit_rigs()
 			return
 
@@ -1279,12 +1313,14 @@ func save_pose(rig_id: String, name: String) -> String:
 	var captured := PoseLibrary.capture(skeleton, node)
 	var pose_id := "pose_%d" % _next_pose
 	_next_pose += 1
+	_begin("Save pose")
 	(rig["poses"] as Array).append({
 		"id": pose_id,
 		"name": clean,
 		"bones": captured["bones"],
 		"root_position": captured["root_position"],
 	})
+	_end()
 	_emit_rigs()
 	return pose_id
 
@@ -1300,7 +1336,9 @@ func apply_pose(rig_id: String, pose_id: String) -> void:
 	var skeleton: Skeleton3D = null
 	if node != null:
 		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	_begin("Apply pose")
 	PoseLibrary.apply(skeleton, node, pose)
+	_end()
 	_emit_rigs()
 
 
@@ -1320,6 +1358,7 @@ func reset_pose(rig_id: String, bone_name: String = "") -> void:
 			names.append(str(bone.get("name", "")))
 	else:
 		names.append(bone_name)
+	_begin("Reset pose")
 	for name in names:
 		var index := skeleton.find_bone(str(name))
 		if index < 0:
@@ -1327,6 +1366,7 @@ func reset_pose(rig_id: String, bone_name: String = "") -> void:
 		skeleton.set_bone_pose_position(index, Vector3.ZERO)
 		skeleton.set_bone_pose_rotation(index, Quaternion.IDENTITY)
 		skeleton.set_bone_pose_scale(index, Vector3.ONE)
+	_end()
 	_emit_rigs()
 
 
@@ -1354,8 +1394,10 @@ func delete_pose(rig_id: String, pose_id: String) -> void:
 	var poses: Array = rig.get("poses", [])
 	for i in range(poses.size() - 1, -1, -1):
 		if str(poses[i].get("id", "")) == pose_id:
+			_begin("Delete pose")
 			poses.remove_at(i)
 			rig["poses"] = poses
+			_end()
 			_emit_rigs()
 			return
 
@@ -1368,7 +1410,9 @@ func rename_pose(rig_id: String, pose_id: String, name: String) -> bool:
 	var pose := _find_pose(rig, pose_id)
 	if pose.is_empty():
 		return false
+	_begin("Rename pose")
 	pose["name"] = clean
+	_end()
 	_emit_rigs()
 	return true
 
@@ -1383,7 +1427,9 @@ func duplicate_pose(rig_id: String, pose_id: String) -> String:
 	_next_pose += 1
 	copy["id"] = new_id
 	copy["name"] = str(pose.get("name", "Pose")) + " Copy"
+	_begin("Duplicate pose")
 	(rig["poses"] as Array).append(copy)
+	_end()
 	_emit_rigs()
 	return new_id
 
