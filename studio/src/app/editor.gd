@@ -33,6 +33,19 @@ const WorkspaceSheetScript = preload("res://src/ui/workspace_sheet.gd")
 const LayoutMathScript = preload("res://src/app/layout_math.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
+const ClipLaneScript = preload("res://src/ui/clip_lane.gd")
+const MediaLanesScript = preload("res://src/ui/media_lanes.gd")
+const RigPanelScript = preload("res://src/ui/rig_panel.gd")
+const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
+const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overlay.gd")
+const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
+const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
+const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
+const VideoReferencePanelScript = preload("res://src/ui/video_reference_panel.gd")
+const SequenceRendererScript = preload("res://src/core/sequence_renderer.gd")
+const CameraExportScript = preload("res://src/core/camera_export.gd")
+const AndroidVideo = preload("res://src/core/android_video.gd")
+const GifEncoder = preload("res://src/core/gif_encoder.gd")
 
 const AUTOSAVE_SECONDS := 30.0
 const WIDE_MIN_WIDTH := 720.0
@@ -64,8 +77,13 @@ var _view_header: PanelContainer
 var _viewport_host: Control
 var _view: Control
 var _perf_overlay: PanelContainer
+var _rig_overlay: Control
+var _video_overlay: Control
 var _timeline_panel: PanelContainer
+var _timeline_stack: VBoxContainer
+var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
+var _media_lanes: VBoxContainer
 var _dock_slot: Control
 var _dock: PanelContainer
 var _dock_box: VBoxContainer
@@ -77,6 +95,9 @@ var _outliner_panel: PanelContainer
 var _inspector_panel: PanelContainer
 var _outliner: VBoxContainer
 var _inspector: VBoxContainer
+var _rig_frame: PanelContainer
+var _rig_panel: VBoxContainer
+var _drawer_rig_tab: Button
 var _drawer_scrim: ColorRect
 var _overlay: Control
 var _autosave: Timer
@@ -97,6 +118,16 @@ var workbench_mode := "studio"
 var _timeline_visible := true
 var _closing := false
 var _last_save_auto := false
+
+## Two-clock rule bookkeeping: while a sequence runs, the last clip-local
+## playhead seen on `.playback_changed` is kept here so the clip lane button
+## can put the clip transport back where it was.
+var _sequence_was_playing := false
+var _clip_time_before_sequence := 0.0
+
+var _media_busy := false
+var _media_cancel := false
+var _media_export: Control
 
 var _color_sheet_active := false
 var _color_id := ""
@@ -241,6 +272,20 @@ func _build_body() -> void:
 	_perf_overlay = PerfOverlayScript.new()
 	_viewport_host.add_child(_perf_overlay)
 
+	# Rig mode lives on its own overlay: it draws bones over the image and
+	# takes the pointer only while the Rig tab is the active dock page.
+	_rig_overlay = RigOverlayScript.new()
+	_viewport_host.add_child(_rig_overlay)
+
+	# The rotoscope layer sits on the preview surface itself: above the 3D
+	# texture (which renders behind its parent) and below the HUD layer, so
+	# buttons stay on top of the reference image.
+	_video_overlay = VideoReferenceOverlayScript.new()
+	_view.add_child(_video_overlay)
+	_video_overlay.setup(doc, _view)
+	if _view._hud_root != null:
+		_view.move_child(_video_overlay, _view._hud_root.get_index())
+
 	_build_timeline()
 
 	_dock_slot = Control.new()
@@ -267,12 +312,70 @@ func _build_timeline() -> void:
 	_timeline_panel.add_theme_stylebox_override("panel", style)
 	_center.add_child(_timeline_panel)
 
+	# The timeline area is now three stacked surfaces: the sequence clip lane
+	# on top, the single-object dope sheet below it and the media lanes under
+	# that. One stack keeps the folding maths in one place.
+	_timeline_stack = VBoxContainer.new()
+	_timeline_stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_timeline_stack.add_theme_constant_override("separation", int(Kit.GUTTER))
+	_timeline_panel.add_child(_timeline_stack)
+
+	_clip_lane = ClipLaneScript.new()
+	_clip_lane.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_clip_lane.notice.connect(_on_timeline_notice)
+	_clip_lane.sheet_requested.connect(_on_lane_sheet_requested)
+	_timeline_stack.add_child(_clip_lane)
+
 	_timeline = TimelineScript.new()
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.close_requested.connect(_on_timeline_close_requested)
 	_timeline.mode_changed.connect(_on_timeline_mode_changed)
-	_timeline_panel.add_child(_timeline)
+	_timeline_stack.add_child(_timeline)
+
+	_media_lanes = MediaLanesScript.new()
+	_media_lanes.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_media_lanes.audio_selected.connect(_open_audio_sheet)
+	_media_lanes.video_selected.connect(_open_video_reference_sheet)
+	_media_lanes.video_dragged.connect(_on_media_video_dragged)
+	_media_lanes.add_audio_requested.connect(_open_media_import_sheet)
+	_media_lanes.add_video_requested.connect(_open_media_import_sheet)
+	# Media stays out of the way until imported media exists; an expanded
+	#igraphy row would eat dope-sheet height for nothing.
+	_media_lanes.set_collapsed(true)
+	if doc != null:
+		_media_lanes.setup(doc)
+	_timeline_stack.add_child(_media_lanes)
+
+func _on_lane_sheet_requested(body: Control, title: String, subtitle: String) -> void:
+	_overlay.show_sheet(title, subtitle, body, [
+		{"text": "Close", "compact": true},
+	])
+
+func _open_audio_sheet(id: String) -> void:
+	if doc == null:
+		return
+	var sheet := AudioSheetScript.new()
+	sheet.setup(doc.media_system)
+	sheet.open(id)
+	_overlay.show_sheet("Audio track", "Start, trim, fades and mute.", sheet, [
+		{"text": "Close", "compact": true},
+	])
+
+func _open_video_reference_sheet(id: String) -> void:
+	if doc == null:
+		return
+	var sheet := VideoReferencePanelScript.new()
+	sheet.setup(doc.media_system)
+	sheet.open(id)
+	_overlay.show_sheet("Video reference", "Opacity, fit, offset, scale and flip.", sheet, [
+		{"text": "Close", "compact": true},
+	])
+
+func _on_media_video_dragged(id: String, patch: Dictionary) -> void:
+	if doc == null:
+		return
+	doc.media_system.update_video_reference(id, patch)
 
 func _build_dock() -> void:
 	_dock = PanelContainer.new()
@@ -316,6 +419,10 @@ func _build_dock() -> void:
 	_drawer_props_tab.custom_minimum_size.y = 44
 	_drawer_props_tab.pressed.connect(func() -> void: _set_compact_tab("inspector"))
 	tabs.add_child(_drawer_props_tab)
+	_drawer_rig_tab = Kit.text_toggle("Rig", "bone", true)
+	_drawer_rig_tab.custom_minimum_size.y = 44
+	_drawer_rig_tab.pressed.connect(func() -> void: _set_compact_tab("rig"))
+	tabs.add_child(_drawer_rig_tab)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -352,6 +459,17 @@ func _build_dock() -> void:
 		_set_section_collapsed("inspector", collapsed)
 	)
 	_inspector_panel.add_child(_inspector)
+
+	_rig_frame = PanelContainer.new()
+	_rig_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_rig_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0))
+	_dock_box.add_child(_rig_frame)
+
+	_rig_panel = RigPanelScript.new()
+	_rig_panel.rig_mode_changed.connect(_on_rig_mode_changed)
+	_rig_frame.add_child(_rig_panel)
+	if doc != null:
+		_rig_panel.setup(doc)
 
 func _build_render_hud() -> void:
 	_render_hud = PanelContainer.new()
@@ -578,13 +696,31 @@ func _adopt_document(document: Node3D) -> void:
 	_outliner.setup(doc)
 	_inspector.setup(doc)
 	_timeline.setup(doc)
+	_clip_lane.setup(doc)
+	var lane_play: Button = _clip_lane.play_sequence_button()
+	if lane_play != null and not lane_play.pressed.is_connected(_on_clip_lane_play_pressed):
+		lane_play.pressed.connect(_on_clip_lane_play_pressed)
+	_media_lanes.setup(doc)
+	_rig_panel.setup(doc)
+	if _video_overlay != null:
+		_video_overlay.setup(doc, _view)
+	if _rig_overlay != null:
+		_rig_overlay.setup(doc, _view, doc.rig_system)
 	doc.scene_changed.connect(_on_document_scene_changed)
+	if not doc.rigs_changed.is_connected(_on_document_rigs_changed):
+		doc.rigs_changed.connect(_on_document_rigs_changed)
 	doc.selection_changed.connect(_on_document_selection_changed)
 	doc.dirty_changed.connect(_on_document_dirty_changed)
 	doc.history_changed.connect(_on_document_history_changed)
 	if not doc.playback_changed.is_connected(_on_document_playback_changed):
 		doc.playback_changed.connect(_on_document_playback_changed)
 	doc.seek(doc.current_time, true)
+	if _rig_overlay != null:
+		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
+		_sync_rig_overlay()
+	if _video_overlay != null:
+		_video_overlay.refresh()
+	_sync_sequence_transport()
 	_update_header()
 	_update_history_buttons()
 	_select_tool(_tool)
@@ -594,6 +730,27 @@ func _adopt_document(document: Node3D) -> void:
 
 func _on_document_scene_changed() -> void:
 	_update_header()
+
+func _on_document_rigs_changed() -> void:
+	if doc != null and _rig_overlay != null:
+		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
+	_sync_rig_overlay()
+
+func _on_rig_mode_changed(_enabled: bool) -> void:
+	_sync_rig_overlay()
+
+func _sync_rig_overlay() -> void:
+	if _rig_overlay == null:
+		return
+	# Rig mode is a workbench viewport layer: it follows the mounted rig panel
+	# (always present) and the preference, not the transient dock page. The
+	# tab only decides where the controls live.
+	var enabled: bool = _rig_panel != null and _rig_panel.visible
+	enabled = enabled and bool(Prefs.get_value("rig.show_overlay", true))
+	enabled = enabled and not _render_mode
+	if doc == null:
+		enabled = false
+	_rig_overlay.set_enabled(enabled)
 
 func _on_graphics_changed() -> void:
 	if doc != null:
@@ -954,6 +1111,10 @@ func _apply_shell() -> void:
 		_top_bar.set_panels_open(_drawer_open)
 	_outliner_panel.visible = not tabs_only or _compact_tab == "scene"
 	_inspector_panel.visible = not tabs_only or _compact_tab == "inspector"
+	var rig_tabbed := not tabs_only or _compact_tab == "rig"
+	_rig_frame.visible = rig_tabbed
+	# The panel stays mounted and reachable; only its dock frame follows tabs.
+	_rig_panel.visible = true
 	var outliner_collapsed: bool = _outliner != null and _outliner.collapsed
 	var inspector_collapsed: bool = _inspector != null and _inspector.collapsed
 	if outliner_collapsed:
@@ -1095,12 +1256,18 @@ func _set_section_collapsed(section: String, collapsed: bool, persist: bool = tr
 
 
 func _sync_timeline_visibility() -> void:
-	if _timeline_panel == null:
+	if _timeline_panel == null or _timeline == null:
 		return
 	# The transport row is always present; only the dope sheet folds away, so
 	# a phone keeps the 3D view height until the sheet is asked for.
 	var sheet := _timeline_should_show()
 	_timeline.set_sheet_visible(sheet)
+	var lane_min := 0.0
+	if _clip_lane != null:
+		lane_min = _clip_lane.get_combined_minimum_size().y
+	var media_min := 0.0
+	if _media_lanes != null:
+		media_min = _media_lanes.get_combined_minimum_size().y
 	# Landscape phones are a first-class surface: the dope sheet gives back
 	# height on short screens so the viewport keeps a usable working area.
 	match workbench_mode:
@@ -1114,14 +1281,49 @@ func _sync_timeline_visibility() -> void:
 			_timeline_panel.custom_minimum_size.y = 156.0 if _short else 180.0
 			if not sheet:
 				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
-	if sheet:
-		var extra: float = _timeline.graph_height_hint()
-		if _short:
-			extra = minf(extra, 40.0)
-		_timeline_panel.custom_minimum_size.y += extra
+	var extra: float = _timeline.graph_height_hint() if sheet else 0.0
+	var show_media := _media_lanes != null and media_min > 0.0
+	var show_lane := _clip_lane != null and lane_min > 0.0
+	var base: float = _timeline_panel.custom_minimum_size.y
+	if _short:
+		# The viewport keeps a 96 dp floor; the two 1 px gutters between the
+		# header, the viewport and the sheet come out of the sheet, not the
+		# stage. Media lanes fold away first, then the clip lane, and the
+		# graph hint shrinks before the clip lane disappears.
+		var chrome: float = float(_top_bar.custom_minimum_size.y) if _top_bar != null else 44.0
+		var budget := maxf(190.0, size.y - chrome - 96.0 - float(Kit.GUTTER) * 2.0)
+		# 1. The collapsed media lanes are the least used surface here.
+		if base + lane_min + media_min + extra > budget and show_media:
+			show_media = false
+		# 2. The graph hint yields before either lane disappears.
+		if base + (lane_min if show_lane else 0.0) + (media_min if show_media else 0.0) + extra > budget and extra > 40.0:
+			extra = 40.0
+		# 3. Only then does the clip lane fold with the dope sheet.
+		if base + (lane_min if show_lane else 0.0) + (media_min if show_media else 0.0) + extra > budget and show_lane:
+			show_lane = false
+			extra = minf(extra, maxf(0.0, budget - base))
+	if _media_lanes != null:
+		_media_lanes.visible = show_media
+	if _clip_lane != null:
+		_clip_lane.visible = show_lane
+	# The panel reserves the real stack height: transport, the optional clip
+	# lane, the optional media lanes and the graph hint.
+	var lane_part := lane_min if show_lane else 0.0
+	var media_part := media_min if show_media else 0.0
+	_timeline_panel.custom_minimum_size.y = base + lane_part + media_part + (extra if sheet else 0.0)
 
 func _on_timeline_mode_changed(_mode: String) -> void:
 	_sync_timeline_visibility()
+
+## Runs after the clip lane's own toggle on the play-sequence button.
+func _on_clip_lane_play_pressed() -> void:
+	if doc == null:
+		return
+	if _sequence_was_playing and not doc.is_sequence_playing():
+		# This press paused a running sequence: put the clip playhead back
+		# where the clip was when the sequence took over.
+		doc.seek(_clip_time_before_sequence, true)
+		_sequence_was_playing = false
 
 func _toggle_drawer(tab: String) -> void:
 	if not _dock_overlay_mode():
@@ -1171,12 +1373,16 @@ func _compact_shell() -> bool:
 
 
 func _set_compact_tab(tab: String) -> void:
-	_compact_tab = tab if tab in ["scene", "inspector"] else "scene"
+	_compact_tab = tab if tab in ["scene", "inspector", "rig"] else "scene"
 	if (_dock_overlay_mode() or _short) and _dock != null:
 		_outliner_panel.visible = _compact_tab == "scene"
 		_inspector_panel.visible = _compact_tab == "inspector"
+		var tabbed := _dock_overlay_mode() or _short
+		_rig_frame.visible = not tabbed or _compact_tab == "rig"
+		_rig_panel.visible = true
 	_update_drawer_tabs()
 	_update_bottom_bar()
+	_sync_rig_overlay()
 
 func _update_drawer_tabs() -> void:
 	if _drawer_scene_tab == null:
@@ -1184,6 +1390,8 @@ func _update_drawer_tabs() -> void:
 	var tabbed := _dock_overlay_mode() or _short
 	_drawer_scene_tab.set_pressed_no_signal(tabbed and _compact_tab == "scene")
 	_drawer_props_tab.set_pressed_no_signal(tabbed and _compact_tab == "inspector")
+	if _drawer_rig_tab != null:
+		_drawer_rig_tab.set_pressed_no_signal(tabbed and _compact_tab == "rig")
 	if _top_bar != null:
 		_top_bar.set_panels_open(_drawer_open)
 
@@ -1340,7 +1548,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	match key.keycode:
 		KEY_SPACE:
 			if doc != null:
-				doc.toggle_play()
+				if doc.is_sequence_playing():
+					doc.pause_sequence()
+				else:
+					doc.toggle_play()
 			get_viewport().set_input_as_handled()
 		KEY_F:
 			_focus_selection()
@@ -1372,7 +1583,7 @@ func _open_add_sheet() -> void:
 	if _drawer_open:
 		_close_drawer()
 	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 8)
+	body.add_theme_constant_override("separation", 6)
 
 	body.add_child(Kit.section_label("Geometry"))
 	var geometry := GridContainer.new()
@@ -1398,23 +1609,27 @@ func _open_add_sheet() -> void:
 	scene_grid.add_child(_sheet_button("Camera", "camera", _add_camera))
 	scene_grid.add_child(_sheet_button("Key light", "sun", _add_directional_light))
 	scene_grid.add_child(_sheet_button("Omni light", "lightbulb", _add_omni_light))
+	scene_grid.add_child(_sheet_button("Rig", "bone", _add_rig))
 
 	body.add_child(Kit.vsep())
 	body.add_child(Kit.section_label("Assets"))
-	body.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
+	var asset_grid := GridContainer.new()
+	asset_grid.columns = 2
+	asset_grid.add_theme_constant_override("h_separation", 5)
+	asset_grid.add_theme_constant_override("v_separation", 5)
+	body.add_child(asset_grid)
+	asset_grid.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
+	asset_grid.add_child(_sheet_button("Audio", "audio-wave", _add_audio_entry))
+	asset_grid.add_child(_sheet_button("Video reference", "film", _add_video_reference_entry))
 
-	var hint := Kit.label("Primitives are placed on the ground at the center of the current view.", 9, Kit.TEXT_DIM)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(hint)
-
-	_overlay.show_modal("Add object", "Scene elements are independent and can be keyed immediately.", body, [
+	_overlay.show_modal("Add object", "Scene elements are independent and can be keyed immediately. Primitives are placed on the ground at the center of the current view.", body, [
 		{"text": "Close", "compact": true},
 	])
 
 func _sheet_button(text_value: String, icon_name: String, action: Callable) -> Button:
 	var button := Kit.text_button(text_value, icon_name, false, true)
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, Kit.FIELD)
+	button.custom_minimum_size = Vector2(44, Kit.FIELD)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.pressed.connect(func() -> void:
 		_overlay.close_modal()
@@ -1460,6 +1675,67 @@ func _add_omni_light() -> void:
 		return
 	doc.add_light("omni", _spawn_point() + Vector3(1.4, 2.4, 1.2))
 	_overlay.toast("Omni light added", "lightbulb", Kit.SUCCESS)
+
+func _add_rig() -> void:
+	if doc == null:
+		return
+	doc.rig_system.create_rig("Rig", _spawn_point())
+	_overlay.toast("Rig added", "check", Kit.SUCCESS)
+	_focus_selection()
+
+func _add_audio_entry() -> void:
+	_open_media_import_sheet()
+
+func _add_video_reference_entry() -> void:
+	_open_media_import_sheet()
+
+func _open_media_import_sheet() -> void:
+	if doc == null:
+		return
+	if _drawer_open:
+		_close_drawer()
+	var sheet := MediaImportSheetScript.new()
+	sheet.setup(doc)
+	sheet.audio_import_requested.connect(_on_media_import_audio)
+	sheet.video_import_requested.connect(_on_media_import_video)
+	_overlay.show_sheet("Add media", "Audio and video references are copied into the project folder.", sheet, [
+		{"text": "Close", "compact": true},
+	])
+
+func _on_media_import_audio(uri: String) -> void:
+	if doc == null:
+		return
+	var media = doc.media_system
+	var result: Dictionary = media.import_audio(uri)
+	if not bool(result.get("ok", false)):
+		_overlay.toast(str(result.get("error", "The audio could not be imported")), "triangle-alert", Kit.DANGER)
+		return
+	var track_id: String = media.add_audio_track(str(result.get("rel_path", "")), 0.0)
+	if track_id == "":
+		_overlay.toast("The audio track could not be added", "triangle-alert", Kit.DANGER)
+		return
+	_overlay.toast("Audio track added", "check", Kit.SUCCESS)
+
+func _on_media_import_video(uri: String, options: Dictionary) -> void:
+	if doc == null:
+		return
+	var proxy: Dictionary = {
+		"fps": int(Prefs.get_value("media.proxy_fps", 12)),
+		"max_width": int(Prefs.get_value("media.proxy_max_width", 1280)),
+	}
+	for key in options:
+		proxy[key] = options[key]
+	# Sheet options already carry the proxy the user confirmed; the Prefs
+	# values above only seed the defaults for a plain import.
+	var result: Dictionary = doc.media_system.import_video_reference(uri, proxy)
+	if not bool(result.get("ok", false)):
+		_overlay.toast(str(result.get("error", "The video reference could not be imported")), "triangle-alert", Kit.DANGER)
+		return
+	var note := str(result.get("note", ""))
+	if note != "":
+		_overlay.toast(note, "info", Kit.TIME)
+	else:
+		_overlay.toast("Video reference added", "check", Kit.SUCCESS)
 
 # -------------------------------------------------------------------------
 # Import and still rendering
@@ -1591,13 +1867,18 @@ func _open_render_sheet() -> void:
 	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	progress_box.add_child(_render_status)
 
-	var note := Kit.label(
-		"Captures use the live 3D renderer, including lights, shadows and materials. " +
-		"Sequences are saved as a ZIP of numbered PNG frames; MP4 encoding is not available in this build.",
-		9, Kit.TEXT_DIM
-	)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(note)
+	_media_export = MediaExportSheetScript.new()
+	_media_export.setup(doc, _view)
+	_media_export.export_requested.connect(_run_media_export)
+	_media_export.cancel_requested.connect(func() -> void: _media_cancel = true)
+	body.add_child(Kit.vsep())
+	body.add_child(Kit.section_label("Formats"))
+	var format_note := Kit.label(
+		"GIF encodes in the app. MP4 uses the Android encoder; on this platform it reports unavailable. Captures keep the reviewing renderer, IK included.",
+		9, Kit.TEXT_DIM)
+	format_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(format_note)
+	body.add_child(_media_export)
 
 	_overlay.show_modal("Render", "Real engine captures, saved as image files.", body, [
 		{"text": "Done", "primary": true},
@@ -1617,6 +1898,253 @@ func _quick_still() -> void:
 		return
 	_save_still_internal(image)
 	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
+
+# -------------------------------------------------------------------------
+# Media export sheet (PNG sequence / GIF / MP4 / camera). The quick still and
+# quick PNG sequence actions above keep their own one-tap paths.
+# -------------------------------------------------------------------------
+
+func _run_media_export(options: Dictionary) -> void:
+	if doc == null or _view == null or _media_export == null or _media_busy or _render_busy:
+		return
+	_media_busy = true
+	_media_cancel = false
+	match str(options.get("format", "png")):
+		"png", "png_sequence":
+			await _export_png_sequence(options)
+		"gif":
+			await _export_gif(options)
+		"mp4":
+			await _export_mp4(options)
+		"camera":
+			await _export_camera(options)
+		_:
+			_export_failed("Unsupported export format: %s" % str(options.get("format", "")))
+	_media_busy = false
+
+func _export_failed(message: String) -> void:
+	if _media_export != null:
+		_media_export.set_progress("error")
+		_media_export.set_result("", 0, 0.0, message)
+	_overlay.toast(message, "triangle-alert", Kit.DANGER)
+
+func _export_progress(kind: String) -> Callable:
+	return func(done: int, total: int) -> void:
+		if _media_export != null:
+			_media_export.set_progress(kind, done, total)
+
+func _export_cancelled() -> Callable:
+	return func() -> bool:
+		return _media_cancel
+
+func _export_png_sequence(options: Dictionary) -> void:
+	var renderer := SequenceRendererScript.new()
+	renderer.setup(doc, _view)
+	var result: Dictionary = await renderer.render(options, _export_progress("frames"), _export_cancelled())
+	var frames_dir := str(result.get("frames_dir", ""))
+	if not bool(result.get("ok", false)):
+		_export_failed(str(result.get("error", "The PNG sequence could not be rendered.")))
+		return
+	if _media_cancel:
+		if frames_dir != "":
+			_clean_dir(frames_dir)
+		_export_failed("Export cancelled.")
+		return
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = RenderExport.sequence_dir() + ".zip"
+	elif not output.ends_with(".zip"):
+		output = output.get_basename() + ".zip"
+	if not RenderExport.zip_directory(frames_dir, output):
+		_export_failed("The ZIP archive could not be written.")
+		return
+	_clean_dir(frames_dir)
+	var duration: float = float(options.get("end", doc.sequence_duration())) - float(options.get("start", 0.0))
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "%d PNG frames" % int(result.get("frame_count", 0)))
+	_overlay.toast("PNG sequence exported", "check", Kit.SUCCESS)
+
+func _export_gif(options: Dictionary) -> void:
+	var fps := maxi(1, int(options.get("fps", 24)))
+	if not GifEncoder.can_encode(fps):
+		_export_failed(GifEncoder.unsupported_reason(fps))
+		return
+	var width := int(options.get("width", GifEncoder.widths()[0]))
+	var height := GifEncoder.height_for_width(width)
+	var renderer := SequenceRendererScript.new()
+	renderer.setup(doc, _view)
+	var frame_options: Dictionary = {
+		"width": width,
+		"height": height,
+		"fps": fps,
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", doc.sequence_duration())),
+	}
+	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
+	var frames_dir := str(result.get("frames_dir", ""))
+	if not bool(result.get("ok", false)):
+		_export_failed(str(result.get("error", "The GIF frames could not be rendered.")))
+		return
+	var frames: Array = []
+	var dir := DirAccess.open(frames_dir)
+	if dir != null:
+		var names: Array = []
+		dir.list_dir_begin()
+		var file := dir.get_next()
+		while file != "":
+			if file.ends_with(".png"):
+				names.append(file)
+			file = dir.get_next()
+		dir.list_dir_end()
+		names.sort()
+		for file_name in names:
+			var image := Image.new()
+			if image.load(frames_dir.path_join(file_name)) == OK:
+				frames.append(image)
+	_clean_dir(frames_dir)
+	if _media_cancel:
+		_export_failed("Export cancelled.")
+		return
+	if frames.is_empty():
+		_export_failed("The GIF could not be encoded because no frames were captured.")
+		return
+	var bytes := GifEncoder.encode(frames, fps, true)
+	if bytes.is_empty():
+		_export_failed("The GIF encoder returned no data.")
+		return
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = "user://export.gif"
+	elif not output.ends_with(".gif"):
+		output = output.get_basename() + ".gif"
+	var writer := FileAccess.open(output, FileAccess.WRITE)
+	if writer == null:
+		_export_failed("The GIF file could not be written.")
+		return
+	writer.store_buffer(bytes)
+	writer.close()
+	var duration: float = float(frame_options["end"]) - float(frame_options["start"])
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "%d GIF frames" % frames.size())
+	_overlay.toast("GIF exported", "check", Kit.SUCCESS)
+
+func _export_mp4(options: Dictionary) -> void:
+	var backend = AndroidVideo.new()
+	if not bool(backend.available()):
+		# Never fake MP4: report the exact backend reason on this platform.
+		_export_failed(AndroidVideo.REASON)
+		return
+	var width := int(options.get("width", 1280))
+	var height := int(options.get("height", 720))
+	var renderer := SequenceRendererScript.new()
+	renderer.setup(doc, _view)
+	var frame_options: Dictionary = {
+		"width": width,
+		"height": height,
+		"fps": int(options.get("fps", 24)),
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", doc.sequence_duration())),
+	}
+	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
+	var frames_dir := str(result.get("frames_dir", ""))
+	if not bool(result.get("ok", false)):
+		_export_failed(str(result.get("error", "The MP4 frames could not be rendered.")))
+		return
+	var audio: Array = []
+	if bool(options.get("include_audio", true)):
+		for track in doc.media_system.audio_tracks():
+			audio.append(track)
+	var manifest: Dictionary = backend.build_manifest({
+		"project_dir": doc.project_dir,
+		"width": width,
+		"height": height,
+		"fps": int(options.get("fps", 24)),
+		"bitrate": int(options.get("bitrate", 12000000)),
+		"frame_dir": frames_dir,
+		"audio": audio,
+	})
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = "user://export.mp4"
+	elif not output.ends_with(".mp4"):
+		output = output.get_basename() + ".mp4"
+	var started: Dictionary = backend.encode(manifest, output)
+	if not bool(started.get("ok", false)):
+		_clean_dir(frames_dir)
+		_export_failed(str(started.get("error", AndroidVideo.REASON)))
+		return
+	while true:
+		var poll: Dictionary = backend.poll()
+		if _media_export != null:
+			_media_export.set_progress("encoding", int(round(float(poll.get("progress", 0.0)) * 100.0)), 100)
+		if bool(poll.get("done", false)) and str(poll.get("state", "")) == "done":
+			break
+		if bool(poll.get("done", false)) or str(poll.get("error", "")) != "":
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed(str(poll.get("error", "The MP4 encode failed.")))
+			return
+		if _media_cancel:
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed("Export cancelled.")
+			return
+		await get_tree().create_timer(0.05).timeout
+	_clean_dir(frames_dir)
+	var verified: Dictionary = backend.verify(output, not audio.is_empty(), int(options.get("fps", 24)), float(frame_options["end"]) - float(frame_options["start"]))
+	if not bool(verified.get("ok", false)):
+		_export_failed(str(verified.get("error", "The MP4 file could not be verified.")))
+		return
+	var duration: float = float(frame_options["end"]) - float(frame_options["start"])
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "%d audio tracks" % audio.size() if not audio.is_empty() else "no audio")
+	_overlay.toast("MP4 exported", "check", Kit.SUCCESS)
+
+func _export_camera(options: Dictionary) -> void:
+	var exporter := CameraExportScript.new()
+	exporter.setup(doc)
+	var fps := maxi(1, int(options.get("fps", 24)))
+	var duration: float = float(options.get("end", doc.sequence_duration())) - float(options.get("start", 0.0))
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = "user://camera_track.json"
+	elif not output.ends_with(".json"):
+		output = output.get_basename() + ".json"
+	var result: Dictionary = await exporter.export(
+		output,
+		str(options.get("camera_id", "")),
+		fps,
+		duration)
+	if not bool(result.get("ok", false)):
+		_export_failed(str(result.get("error", "The camera export failed.")))
+		return
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "camera track")
+	_overlay.toast("Camera track exported", "check", Kit.SUCCESS)
+
+func _clean_dir(path: String) -> void:
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		dir.remove(name)
+		name = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(path)
+
+func _file_size(path: String) -> int:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return 0
+	var size := int(file.get_length())
+	file.close()
+	return size
 
 ## Quick render is the review loop: the editor becomes a live, full-quality
 ## playback surface instead of showing a static capture of the current frame.
@@ -1698,6 +2226,27 @@ func _sync_render_hud() -> void:
 func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 	if _render_mode:
 		_sync_render_hud()
+	_sync_sequence_transport()
+	if doc == null:
+		return
+	if doc.is_sequence_playing():
+		_sequence_was_playing = true
+	elif not _playing and not _sequence_was_playing:
+		# An ordinary clip pause/seek keeps the saved playhead current so a
+		# later sequence run restores exactly where the clip was.
+		_clip_time_before_sequence = float(doc.current_time)
+	# The flag clears on the clip lane button (where the playhead restoration
+	# belongs), not on every stop emit: KEY_SPACE and doc.play must not rewrite
+	# it.
+
+func _sync_sequence_transport() -> void:
+	if doc == null:
+		return
+	if _timeline != null and _timeline._play_button != null:
+		var sequence_running := doc.is_sequence_playing()
+		_timeline._play_button.disabled = sequence_running
+		_timeline._play_button.tooltip_text = (
+			"Stop the sequence first" if sequence_running else "Play / pause")
 
 
 func _capture_render_chrome() -> void:
@@ -1713,6 +2262,7 @@ func _capture_render_chrome() -> void:
 		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
 		"perf": _perf_overlay != null and _perf_overlay.visible,
 		"drawer": _drawer_open,
+		"video": _video_overlay != null and _video_overlay.visible,
 	}
 
 
@@ -1737,6 +2287,12 @@ func _set_render_chrome_hidden() -> void:
 		_dock_slot.visible = false
 	if _drawer_scrim != null:
 		_drawer_scrim.visible = false
+	# Neither overlay may draw over the review image: the rig handles and the
+	# rotoscope layer belong to the workbench, not to the render.
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(true)
+	if _rig_overlay != null:
+		_rig_overlay.set_enabled(false)
 
 
 func _restore_render_chrome() -> void:
@@ -1754,10 +2310,13 @@ func _restore_render_chrome() -> void:
 		_timeline_panel.visible = bool(_render_ui_state.get("timeline", true))
 	if _perf_overlay != null:
 		_perf_overlay.visible = bool(_render_ui_state.get("perf", false))
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(false)
 	# The drawer only exists in Compact. _apply_shell reads _drawer_open and
 	# re-shows the dock and scrim together, so restore the flag, not the nodes.
 	_drawer_open = bool(_render_ui_state.get("drawer", false)) and workbench_mode == "compact"
 	_render_ui_state.clear()
+	_sync_rig_overlay()
 
 func _render_still() -> void:
 	if doc == null or _view == null or _render_busy:
@@ -2221,6 +2780,8 @@ func _on_settings_pref_changed(key: String) -> void:
 		"editor.timeline_default":
 			if _timeline != null:
 				_timeline.set_mode(str(Prefs.get_value("editor.timeline_default", "dope")))
+		"rig.show_overlay":
+			_sync_rig_overlay()
 		"display.keep_screen_on":
 			DisplayServer.screen_set_keep_on(bool(Prefs.get_value("display.keep_screen_on", true)))
 		"display.fullscreen":
