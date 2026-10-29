@@ -32,7 +32,30 @@ var _status_label: Label
 
 func setup(doc) -> void:
 	_doc = doc
+	_seed_proxy_defaults()
 	_rebuild()
+
+
+func _seed_proxy_defaults() -> void:
+	# Feed the sheet's selections from the persisted prefs, snapped to the
+	# presets this sheet offers (the prefs allow 6 fps; the proxy presets
+	# currently shipped are 12/24).
+	var fps := int(Prefs.get_value("media.proxy_fps", 12))
+	if not (fps in PROXY_FPS):
+		var best: int = int(PROXY_FPS[0])
+		for fps_option in PROXY_FPS:
+			if absi(int(fps_option) - fps) < absi(best - fps):
+				best = int(fps_option)
+		fps = best
+	_proxy_fps = fps
+	var width := int(Prefs.get_value("media.proxy_max_width", 1280))
+	if not (width in MAX_WIDTHS):
+		var best_width: int = int(MAX_WIDTHS[0])
+		for width_option in MAX_WIDTHS:
+			if absi(int(width_option) - width) < absi(best_width - width):
+				best_width = int(width_option)
+		width = best_width
+	_max_width = width
 
 
 func proxy_fps_options() -> Array:
@@ -172,6 +195,7 @@ func _proxy_fps_option() -> OptionButton:
 			option.selected = option.item_count - 1
 	option.item_selected.connect(func(index: int) -> void:
 		_proxy_fps = int(PROXY_FPS[index])
+		Prefs.set_value("media.proxy_fps", _proxy_fps)
 	)
 	return option
 
@@ -186,6 +210,7 @@ func _max_width_option() -> OptionButton:
 			option.selected = option.item_count - 1
 	option.item_selected.connect(func(index: int) -> void:
 		_max_width = int(MAX_WIDTHS[index])
+		Prefs.set_value("media.proxy_max_width", _max_width)
 	)
 	return option
 

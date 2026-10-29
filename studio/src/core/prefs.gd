@@ -48,6 +48,9 @@ const DEFAULTS := {
 	"import.scale": 1.0,
 	"import.materials": true,
 	"import.textures": true,
+	"media.proxy_fps": 12,
+	"media.proxy_max_width": 1280,
+	"rig.show_overlay": true,
 }
 
 const ENUMS := {
@@ -59,6 +62,8 @@ const ENUMS := {
 	"performance.overlay": ["off", "compact", "full"],
 	"performance.preview_update": ["on_demand", "always"],
 	"render.mode": ["still", "sequence", "preview"],
+	"media.proxy_fps": [6, 12, 24],
+	"media.proxy_max_width": [640, 960, 1280, 1920],
 }
 
 const RANGES := {
@@ -77,6 +82,8 @@ const RANGES := {
 	"render.start_frame": Vector2(0, 1000000),
 	"render.end_frame": Vector2(-1, 1000000),
 	"import.scale": Vector2(0.001, 1000.0),
+	"media.proxy_fps": Vector2(6, 24),
+	"media.proxy_max_width": Vector2(640, 1920),
 }
 
 var settings_path := "user://settings.json"
