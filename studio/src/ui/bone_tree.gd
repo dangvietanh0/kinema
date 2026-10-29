@@ -83,17 +83,17 @@ func _build() -> void:
 	add_child(actions)
 	_rename_button = Kit.text_button("Rename", "", false, true)
 	_rename_button.name = "RenameBoneButton"
-	_rename_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_rename_button.custom_minimum_size = Vector2(44, ROW_HEIGHT)
 	_rename_button.pressed.connect(_show_rename)
 	actions.add_child(_rename_button)
 	_reparent_button = Kit.text_button("Reparent", "", false, true)
 	_reparent_button.name = "ReparentBoneButton"
-	_reparent_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_reparent_button.custom_minimum_size = Vector2(44, ROW_HEIGHT)
 	_reparent_button.pressed.connect(_show_reparent)
 	actions.add_child(_reparent_button)
 	_delete_button = Kit.text_button("Delete", "trash-2", false, true)
 	_delete_button.name = "DeleteBoneButton"
-	_delete_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_delete_button.custom_minimum_size = Vector2(44, ROW_HEIGHT)
 	_delete_button.pressed.connect(_on_delete)
 	actions.add_child(_delete_button)
 

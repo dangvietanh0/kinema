@@ -149,7 +149,7 @@ func _build_shell() -> void:
 	_sections.add_child(rig_row)
 	_rig_picker = OptionButton.new()
 	_rig_picker.name = "RigPicker"
-	_rig_picker.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_rig_picker.custom_minimum_size = Vector2(44, ROW_HEIGHT)
 	_rig_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_rig_picker.item_selected.connect(_on_rig_picked)
 	rig_row.add_child(_rig_picker)
@@ -266,12 +266,12 @@ func _build_bind() -> void:
 	row.add_child(_bind_button)
 	_rebind_button = Kit.text_button("Rebind", "", false, true)
 	_rebind_button.name = "RebindButton"
-	_rebind_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_rebind_button.custom_minimum_size = Vector2(44, ROW_HEIGHT)
 	_rebind_button.pressed.connect(func() -> void: bind_selected_mesh())
 	row.add_child(_rebind_button)
 	_unbind_button = Kit.text_button("Unbind", "", false, true)
 	_unbind_button.name = "UnbindButton"
-	_unbind_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_unbind_button.custom_minimum_size = Vector2(44, ROW_HEIGHT)
 	_unbind_button.pressed.connect(_on_unbind)
 	row.add_child(_unbind_button)
 
