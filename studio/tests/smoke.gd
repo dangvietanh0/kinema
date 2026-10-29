@@ -684,7 +684,12 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._short, "915x412 resolves as a short landscape shell")
 	_check(not editor._timeline_visible, "short landscape starts with the dope sheet folded")
-	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "folded landscape timeline keeps a 56 dp transport")
+	var folded_stack := 56.0
+	if editor.get("_clip_lane") != null and editor.get("_media_lanes") != null:
+		var lane_min: float = editor.get("_clip_lane").get_combined_minimum_size().y
+		var media_min: float = editor.get("_media_lanes").get_combined_minimum_size().y
+		folded_stack = 56.0 + lane_min + media_min
+	_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_stack) < 0.5, "folded landscape timeline keeps transport, clip lane and media lanes")
 	_check(editor._dock_slot.custom_minimum_size.x >= 240.0 and editor._dock_slot.custom_minimum_size.x <= 300.0, "landscape dock leaves the viewport in charge")
 	editor._timeline.set_sheet_visible(true)
 	await get_tree().process_frame
@@ -738,12 +743,153 @@ func _ready() -> void:
 	editor._timeline_visible = false
 	editor._sync_timeline_visibility()
 
+	print("SMOKE STEP: sequence shell wiring")
+	editor.size = Vector2(412.0, 915.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var lane = editor.get("_clip_lane")
+	_check(lane != null, "the clip lane mounts above the dope sheet")
+	var media_lanes = editor.get("_media_lanes")
+	_check(media_lanes != null, "media lanes mount below the dope sheet")
+	var stack = editor.get("_timeline_stack")
+	_check(stack != null, "the timeline panel stacks clip lane, dope sheet and media lanes")
+	if lane != null and media_lanes != null and stack != null:
+		var stack_kids: Array = stack.get_children()
+		_check(stack_kids.has(lane) and stack_kids.has(editor._timeline) and stack_kids.has(media_lanes),
+			"clip lane, dope sheet and media lanes share one stack")
+		var lane_at: int = stack_kids.find(lane)
+		var sheet_at: int = stack_kids.find(editor._timeline)
+		var media_at: int = stack_kids.find(media_lanes)
+		_check(lane_at < sheet_at and sheet_at < media_at, "clip lane sits above the sheet and media lanes below it")
+		_check(lane.doc == doc, "the clip lane reads the adopted document")
+		_check(media_lanes._doc == doc, "media lanes read the adopted document")
+	if lane != null:
+		_check(lane.get_combined_minimum_size().y >= 44.0, "the clip lane keeps a real row height")
+	if media_lanes != null:
+		_check(media_lanes.is_collapsed(), "media lanes start collapsed")
+		_check(absf(media_lanes.get_combined_minimum_size().y - 44.0) < 0.5, "collapsed media lanes cost a 44 dp header")
+		if lane != null:
+			var folded_total: float = 56.0 + lane.get_combined_minimum_size().y + media_lanes.get_combined_minimum_size().y
+			_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_total) < 0.5,
+				"the folded sheet keeps transport, clip lane and collapsed media lanes")
+
+	var tl_play: Button = editor._timeline._play_button
+	_check(tl_play != null, "the dope sheet keeps a clip transport")
+	if lane == null or tl_play == null:
+		_check(false, "the clip lane runs the sequence clock and the timeline runs the clip clock")
+		_check(false, "stopping the sequence restores the saved clip time")
+	if lane != null and tl_play != null:
+		doc.seek(1.0)
+		var lane_play: Button = lane.play_sequence_button()
+		_check(lane_play != null and lane_play.custom_minimum_size.y >= 44.0, "the clip lane keeps a 44 dp transport")
+		lane_play.pressed.emit()
+		_check(doc.is_sequence_playing(), "the clip lane button plays the sequence clock")
+		_check(not doc.is_playing, "the sequence does not run both clocks")
+		_check(tl_play.disabled, "timeline clip transport is disabled while the sequence plays")
+		lane_play.pressed.emit()
+		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
+		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
+		tl_play.pressed.emit()
+		_check(doc.is_playing and not doc.is_sequence_playing(), "the timeline transport plays the clip clock")
+		_check(not tl_play.disabled, "timeline clip transport re-enables when the sequence stops")
+		doc.pause()
+		doc.seek(0.0)
+		await get_tree().process_frame
+
+	var rig_panel = editor.get("_rig_panel")
+	_check(rig_panel != null, "a rig panel is docked next to scene and properties")
+	_check(editor.get("_drawer_rig_tab") != null, "the drawer exposes a rig tab")
+	var rig_overlay = editor.get("_rig_overlay")
+	_check(rig_overlay != null, "a rig overlay floats over the viewport")
+	if rig_panel == null or editor.get("_drawer_rig_tab") == null:
+		_check(false, "the rig tab shows an honest empty state")
+		_check(false, "the rig overlay follows the active rig tab")
+		_check(false, "the drawer exposes a visible rig tab")
+	if rig_panel != null and editor._drawer_rig_tab != null:
+		_check(editor._drawer_rig_tab.visible, "the rig tab is visible on tabbed shells")
+		_check(editor.get("_rig_panel") != null and editor.get("_rig_panel").visible, "the rig tab keeps the panel reachable")
+		if rig_overlay != null:
+			_check(rig_overlay.is_enabled(), "the rig overlay follows the active rig tab")
+		_check(rig_panel.empty_state_visible(), "the rig tab shows an honest empty state")
+		var rig_id := ""
+		rig_id = doc.rig_system.create_rig("Smoke Rig", Vector3.ZERO)
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(rig_id != "" and not rig_panel.empty_state_visible(), "creating a rig clears the empty state")
+		if rig_overlay != null and rig_id != "":
+			_check(str(rig_overlay._rig_id) == doc.rig_system.active_rig_id(), "the rig overlay tracks the active rig")
+		doc.rig_system.delete_rig(rig_id)
+		await get_tree().process_frame
+		_check(rig_panel.empty_state_visible(), "deleting the rig restores the empty state")
+		if rig_overlay != null:
+			_check(str(rig_overlay._rig_id) == "", "the rig overlay clears with the last rig")
+		editor._set_compact_tab("scene")
+		await get_tree().process_frame
+
+	var video_overlay = editor.get("_video_overlay")
+	_check(video_overlay != null, "a video reference overlay sits behind the HUD")
+	if video_overlay != null:
+		_check(video_overlay.get_parent() == editor._view, "the video overlay lives on the viewport")
+		var view_kids: Array = editor._view.get_children()
+		_check(view_kids[view_kids.size() - 1] == editor._view._hud_root, "the HUD stays the top viewport layer")
+		_check(view_kids.find(video_overlay) < view_kids.find(editor._view._hud_root), "the video overlay draws below the HUD")
+		_check(view_kids.find(video_overlay) > view_kids.find(editor._view._surface), "the video overlay draws over the 3D surface")
+		_check(video_overlay.mouse_filter == Control.MOUSE_FILTER_IGNORE, "the video overlay ignores every pointer")
+		_check(not video_overlay.visible, "the video overlay hides without a visible reference")
+
+	if editor._drawer_open:
+		editor._close_drawer()
+	editor._enter_render_mode()
+	_check(editor._render_mode, "render preview engages")
+	if video_overlay != null:
+		_check(not video_overlay.visible, "render mode hides the video overlay")
+	if rig_overlay != null:
+		_check(not rig_overlay.is_enabled(), "render mode disables the rig overlay")
+	editor._exit_render_mode()
+	if video_overlay != null:
+		_check(editor._render_mode == false, "render mode exits cleanly")
+	doc.pause()
+	doc.seek(0.0)
+
+	editor._open_add_sheet()
+	await get_tree().process_frame
+	var add_texts := {}
+	for button in _buttons_under(editor._overlay):
+		add_texts[button.text] = true
+	_check(add_texts.has("Rig"), "the Add sheet offers a rig")
+	_check(add_texts.has("Audio"), "the Add sheet offers an audio track")
+	_check(add_texts.has("Video reference"), "the Add sheet offers a video reference")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	var media_export = editor.get("_media_export")
+	editor._open_render_sheet()
+	await get_tree().process_frame
+	media_export = editor.get("_media_export")
+	_check(editor._overlay.has_modal(), "the render sheet opens")
+	_check(media_export != null, "the render sheet embeds the media export sheet")
+	_check(editor._render_sequence_button != null, "the render sheet keeps the PNG sequence action")
+	_check(editor._render_still_button != null, "the render sheet keeps the quick still action")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	# The following step expects the sheet left folded by the fold contract.
+	editor._timeline_visible = false
+	editor._sync_timeline_visibility()
+
 	print("SMOKE STEP: graph fold contract")
 	editor._timeline.set_mode("graph")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(not editor._timeline_visible, "graph mode does not reopen a folded sheet")
-	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "folded graph keeps the transport-only height")
+	var folded_graph := 56.0
+	if editor.get("_clip_lane") != null and editor.get("_media_lanes") != null:
+		var lane_min_graph: float = editor.get("_clip_lane").get_combined_minimum_size().y
+		var media_min_graph: float = editor.get("_media_lanes").get_combined_minimum_size().y
+		folded_graph = 56.0 + lane_min_graph + media_min_graph
+	_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_graph) < 0.5, "folded graph keeps transport, clip lane and media lanes")
 	editor._timeline_visible = true
 	editor._sync_timeline_visibility()
 	editor._timeline.set_mode("dope")
@@ -896,7 +1042,7 @@ func _ready() -> void:
 		await get_tree().process_frame
 		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
 		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
-		_check(editor._timeline_panel.size.y <= 212.0, "915x412 graph sheet stays within the short budget")
+		_check(editor._timeline_panel.size.y <= 270.0, "915x412 graph sheet stays within the short budget")
 		_check(
 			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
 			"915x412 graph does not overflow the center column"
@@ -991,7 +1137,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor._overlay.has_modal(), "settings opens")
-	_check(editor._settings_panel.categories() == ["general", "editor", "display", "graphics", "performance", "render", "import", "about"], "settings categories are complete")
+	_check(editor._settings_panel.categories() == ["general", "editor", "display", "graphics", "performance", "render", "import", "media", "rig", "about"], "settings categories are complete")
 	_check(editor._preset_buttons.size() == 5, "graphics has preset controls plus custom and reset")
 	var original_preset: String = Gfx.preset
 	Gfx.preset = "custom"
