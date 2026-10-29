@@ -341,7 +341,7 @@ func _build_timeline() -> void:
 	_media_lanes.add_audio_requested.connect(_open_media_import_sheet)
 	_media_lanes.add_video_requested.connect(_open_media_import_sheet)
 	# Media stays out of the way until imported media exists; an expanded
-	#igraphy row would eat dope-sheet height for nothing.
+	# media row would eat dope-sheet height for nothing.
 	_media_lanes.set_collapsed(true)
 	if doc != null:
 		_media_lanes.setup(doc)
