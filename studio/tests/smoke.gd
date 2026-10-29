@@ -747,6 +747,10 @@ func _ready() -> void:
 	editor.size = Vector2(412.0, 915.0)
 	editor.set_workspace_mode("studio")
 	editor._apply_shell()
+	# A mode switch reopens the default sheet; this step is about the folded
+	# stack, so fold explicitly first.
+	editor._timeline_visible = false
+	editor._sync_timeline_visibility()
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var lane = editor.get("_clip_lane")
