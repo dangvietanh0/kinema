@@ -56,11 +56,26 @@ var _drag: Dictionary = {}
 var _touches: Dictionary = {}
 var _pinch: Dictionary = {}
 var _built := false
+var _narrow := false
 
 
 func _ready() -> void:
 	_ensure_built()
+	resized.connect(_sync_narrow)
 	set_process(true)
+
+
+## The sequence toolbar has to fit the center column on a phone. When the lane
+## is narrow the time readout folds away and the play action uses its short
+## label, so four real 44 dp targets still fit.
+func _sync_narrow() -> void:
+	var narrow := size.x < 420.0
+	if narrow == _narrow:
+		return
+	_narrow = narrow
+	if _time_label != null:
+		_time_label.visible = not narrow
+	_sync_play_button()
 
 
 func setup(document) -> void:
@@ -340,7 +355,10 @@ func _sync_play_button() -> void:
 	if _play_button == null or doc == null:
 		return
 	var playing: bool = doc.is_sequence_playing()
-	_play_button.text = "Pause" if playing else "Play sequence"
+	if _narrow:
+		_play_button.text = "Pause" if playing else "Play"
+	else:
+		_play_button.text = "Pause" if playing else "Play sequence"
 	Kit.set_icon(_play_button, "pause" if playing else "play")
 
 
