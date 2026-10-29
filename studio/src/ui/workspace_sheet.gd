@@ -152,7 +152,8 @@ func _rebuild() -> void:
 		add_child(_studio_shortcut)
 	else:
 		var note := Kit.label(
-			"Auto picks a mode from the screen. Compact, Studio and Desktop stay selected even when they do not match the window; Desktop shrinks to fit.",
+			"Auto picks a mode from the screen. Compact, Studio and Desktop stay selected even when they do not match the window; Desktop shrinks to fit. " +
+			"Studio and Desktop keep the clip lane above the dope sheet, media lanes below it and the Rig tab in the dock; Compact folds the sheet to the transport.",
 			Kit.TYPE_CAPTION,
 			Kit.TEXT_DIM
 		)

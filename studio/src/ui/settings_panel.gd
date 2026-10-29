@@ -1,7 +1,7 @@
 extends VBoxContainer
 ## Device and application settings.
 ##
-## One screen, eight categories. Wide workbenches get a fixed navigation column;
+## One screen, ten categories. Wide workbenches get a fixed navigation column;
 ## compact screens get a category list followed by a detail page with Back.
 ## Every control maps to a real Prefs key or a real Godot API. Options the
 ## current platform or renderer cannot honour are disabled with a reason rather
@@ -12,7 +12,7 @@ signal orientation_requested(value: String)
 signal open_render_requested
 signal open_import_requested
 
-const CATEGORIES := ["general", "editor", "display", "graphics", "performance", "render", "import", "about"]
+const CATEGORIES := ["general", "editor", "display", "graphics", "performance", "render", "import", "media", "rig", "about"]
 const LABELS := {
 	"general": "General",
 	"editor": "Editor",
@@ -21,6 +21,8 @@ const LABELS := {
 	"performance": "Performance",
 	"render": "Render",
 	"import": "Import",
+	"media": "Media",
+	"rig": "Rig",
 	"about": "About",
 }
 const ICONS := {
@@ -31,6 +33,8 @@ const ICONS := {
 	"performance": "timer",
 	"render": "camera",
 	"import": "upload",
+	"media": "film",
+	"rig": "bone",
 	"about": "info",
 }
 const PACKAGE_NAME := "studio.kinema.app"
@@ -230,6 +234,8 @@ func _build_category(parent: Control, category: String) -> void:
 		"performance": _performance(parent)
 		"render": _render(parent)
 		"import": _import(parent)
+		"media": _media(parent)
+		"rig": _rig(parent)
 		"about": _about(parent)
 
 
@@ -242,6 +248,8 @@ func _subtitle_for(category: String) -> String:
 		"performance": return "Preview policy and live engine monitors."
 		"render": return "Real PNG stills and PNG sequences. No video encoder."
 		"import": return "glTF, GLB and OBJ. Binary FBX is not supported."
+		"media": return "Video reference proxies. MP4 needs the Android encoder."
+		"rig": return "Skeleton overlay, bone handles and rig display."
 		"about": return "Build information and open-source licenses."
 	return ""
 
@@ -839,6 +847,55 @@ func _import(parent: Control) -> void:
 	var saf := Kit.label("On Android, the system file picker may not grant access to an OBJ's sibling .mtl and texture files. Copy the whole model folder into app storage or select a GLB with embedded materials.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	saf.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(saf)
+
+
+# -------------------------------------------------------------------------
+# Media
+# -------------------------------------------------------------------------
+
+func _media(parent: Control) -> void:
+	parent.add_child(Kit.section_label("Video reference proxy"))
+	var note := Kit.label("Imported video becomes a frame proxy for rotoscoping. The proxy keeps the source aspect at the chosen width; scrubbing reads frames, it never plays video in the viewport.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(note)
+	_choice_row(parent, "Proxy fps", "frames per second", [
+		{"label": "6", "value": 6},
+		{"label": "12", "value": 12},
+		{"label": "24", "value": 24},
+	], int(Prefs.get_value("media.proxy_fps", 12)), func(value: Variant) -> void:
+		set_option("media.proxy_fps", value)
+	)
+	_choice_row(parent, "Proxy width", "max px", [
+		{"label": "640", "value": 640},
+		{"label": "960", "value": 960},
+		{"label": "1280", "value": 1280},
+		{"label": "1920", "value": 1920},
+	], int(Prefs.get_value("media.proxy_max_width", 1280)), func(value: Variant) -> void:
+		set_option("media.proxy_max_width", value)
+	)
+
+	parent.add_child(Kit.vsep())
+	parent.add_child(Kit.section_label("Encoding"))
+	_info_line(parent, "PNG still / sequence", "Every platform")
+	_info_line(parent, "GIF", "Encoded in the app")
+	_info_line(parent, "MP4", "Android encoder only")
+	var mp4 := Kit.label("On this platform MP4 reports unavailable; Kinema never fakes an encoder. Export PNG frames or a GIF instead.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	mp4.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(mp4)
+
+
+# -------------------------------------------------------------------------
+# Rig
+# -------------------------------------------------------------------------
+
+func _rig(parent: Control) -> void:
+	parent.add_child(Kit.section_label("Viewport"))
+	_toggle_row(parent, "Show overlay", "Bones and IK handles over the viewport", bool(Prefs.get_value("rig.show_overlay", true)), func(value: bool) -> void:
+		set_option("rig.show_overlay", value)
+	)
+	var note := Kit.label("The rig tab always stays available. With no rig in the project it shows an empty state instead of placeholder bones.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(note)
 
 
 # -------------------------------------------------------------------------
