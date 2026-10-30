@@ -809,6 +809,8 @@ func _ready() -> void:
 		_check(doc.is_sequence_playing(), "the clip lane button plays the sequence clock")
 		_check(not doc.is_playing, "the sequence does not run both clocks")
 		_check(tl_play.disabled, "timeline clip transport is disabled while the sequence plays")
+		_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
+			"the timeline shows the active strip's local time while the sequence runs")
 		lane_play.pressed.emit()
 		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
 		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
@@ -897,6 +899,29 @@ func _ready() -> void:
 				"clip mode previews the active strip's sequence time")
 			anim_sys.update_strip(strip_id, {"start": 0.0})
 			doc.seek(0.0)
+
+	# The viewport header is the view's control surface: Perspective, Add,
+	# Grid and Frame must reach the real view, not a duplicate control.
+	var header = editor.get("_view_header")
+	_check(header != null, "the viewport header is mounted")
+	if header != null:
+		_check(header.grid_button() != null and header.frame_button() != null,
+			"the viewport header exposes grid and frame actions")
+		var prior_view: String = editor._view.view_preset()
+		header.view_requested.emit("Front")
+		_check(editor._view.view_preset() == "Front", "the header perspective menu drives the view")
+		header.view_requested.emit(prior_view)
+		var prior_grid: bool = editor._view.grid_enabled()
+		header.grid_toggled.emit(not prior_grid)
+		_check(editor._view.grid_enabled() == (not prior_grid), "the header grid action drives the view")
+		header.grid_toggled.emit(prior_grid)
+		header.add_requested.emit()
+		await get_tree().process_frame
+		_check(editor._overlay.has_modal(), "the header Add action opens the add sheet")
+		editor._overlay.close_modal()
+		await get_tree().process_frame
+		# Frame selection is a no-op without a selection, but must be wired.
+		header.frame_requested.emit()
 
 	if editor._drawer_open:
 		editor._close_drawer()
