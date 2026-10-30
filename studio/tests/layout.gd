@@ -98,6 +98,47 @@ func _ready() -> void:
 				_check(editor.fit_percent() < 100.0, label + ": the editor reports the fit percentage")
 			print("LAYOUT OK: " + label)
 
+	# The expansion surfaces: clip lane, media lanes and the rig tab. They are
+	# laid out at the three sizes the expansion targets, in the two touch
+	# arrangements, with the lanes open and the rig page active.
+	for size in [Vector2i(412, 915), Vector2i(915, 412), Vector2i(1440, 900)]:
+		await _resize(main, size)
+		for mode in ["compact", "studio"]:
+			editor.set_workspace_mode(mode)
+			await get_tree().process_frame
+			await get_tree().process_frame
+			main.refresh_layout_scale()
+			await get_tree().process_frame
+			var label := "%dx%d %s expansion" % [size.x, size.y, mode]
+			var clip_lane = editor.get("_clip_lane")
+			var media_lanes = editor.get("_media_lanes")
+			var rig_panel = editor.get("_rig_panel")
+			_check(clip_lane != null and media_lanes != null and rig_panel != null,
+				label + ": clip lane, media lanes and rig panel are mounted")
+			editor._timeline_visible = true
+			editor._sync_timeline_visibility()
+			if media_lanes != null:
+				media_lanes.set_collapsed(false)
+			editor._set_compact_tab("rig")
+			if editor._dock_overlay_mode():
+				editor._open_drawer()
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_check(rig_panel != null and rig_panel.is_visible_in_tree(),
+				label + ": the rig tab shows its panel")
+			_check_no_overflow(editor, label)
+			_check_no_overflow(main, label)
+			_check_hit_targets(editor, mode, label)
+			print("LAYOUT OK: " + label)
+			if media_lanes != null:
+				media_lanes.set_collapsed(true)
+			if editor._drawer_open:
+				editor._close_drawer()
+			editor._set_compact_tab("scene")
+			editor._timeline_visible = false
+			editor._sync_timeline_visibility()
+			await get_tree().process_frame
+
 	# Desktop on a portrait phone must stay Desktop, never fall back to Studio.
 	for phone in [Vector2i(360, 640), Vector2i(412, 915)]:
 		await _resize(main, phone)
