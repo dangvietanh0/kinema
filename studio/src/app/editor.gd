@@ -340,6 +340,7 @@ func _build_timeline() -> void:
 	_media_lanes.video_dragged.connect(_on_media_video_dragged)
 	_media_lanes.add_audio_requested.connect(_open_media_import_sheet)
 	_media_lanes.add_video_requested.connect(_open_media_import_sheet)
+	_media_lanes.collapsed_changed.connect(_on_media_lanes_collapsed_changed)
 	# Media stays out of the way until imported media exists; an expanded
 	# media row would eat dope-sheet height for nothing.
 	_media_lanes.set_collapsed(true)
@@ -742,10 +743,10 @@ func _on_rig_mode_changed(_enabled: bool) -> void:
 func _sync_rig_overlay() -> void:
 	if _rig_overlay == null:
 		return
-	# Rig mode is a workbench viewport layer: it follows the mounted rig panel
-	# (always present) and the preference, not the transient dock page. The
-	# tab only decides where the controls live.
-	var enabled: bool = _rig_panel != null and _rig_panel.visible
+	# Rig mode is a workbench viewport layer: it follows the rig tab being the
+	# visible dock page (RigPanel reports the same via rig_mode_changed), gated
+	# by the preference and suppressed in render mode.
+	var enabled: bool = _rig_panel != null and _rig_panel.is_visible_in_tree()
 	enabled = enabled and bool(Prefs.get_value("rig.show_overlay", true))
 	enabled = enabled and not _render_mode
 	if doc == null:
@@ -1315,15 +1316,23 @@ func _sync_timeline_visibility() -> void:
 func _on_timeline_mode_changed(_mode: String) -> void:
 	_sync_timeline_visibility()
 
+func _on_media_lanes_collapsed_changed(_collapsed: bool) -> void:
+	# Folding media is a layout change only; the document and its media are
+	# untouched. The panel must reserve the new stack height immediately.
+	_sync_timeline_visibility()
+
+## Puts the clip clock back where the sequence took over. Called after the
+## sequence is paused, never while it runs.
+func _restore_clip_after_sequence() -> void:
+	if doc == null or not _sequence_was_playing or doc.is_sequence_playing():
+		return
+	_sequence_was_playing = false
+	# Not silent: the dope sheet and clip lane must show the restored playhead.
+	doc.seek(_clip_time_before_sequence)
+
 ## Runs after the clip lane's own toggle on the play-sequence button.
 func _on_clip_lane_play_pressed() -> void:
-	if doc == null:
-		return
-	if _sequence_was_playing and not doc.is_sequence_playing():
-		# This press paused a running sequence: put the clip playhead back
-		# where the clip was when the sequence took over.
-		doc.seek(_clip_time_before_sequence, true)
-		_sequence_was_playing = false
+	_restore_clip_after_sequence()
 
 func _toggle_drawer(tab: String) -> void:
 	if not _dock_overlay_mode():
@@ -1550,6 +1559,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if doc != null:
 				if doc.is_sequence_playing():
 					doc.pause_sequence()
+					_restore_clip_after_sequence()
 				else:
 					doc.toggle_play()
 			get_viewport().set_input_as_handled()
@@ -2235,9 +2245,9 @@ func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 		# An ordinary clip pause/seek keeps the saved playhead current so a
 		# later sequence run restores exactly where the clip was.
 		_clip_time_before_sequence = float(doc.current_time)
-	# The flag clears on the clip lane button (where the playhead restoration
-	# belongs), not on every stop emit: KEY_SPACE and doc.play must not rewrite
-	# it.
+	# The flag clears in the explicit transports that pause a sequence (the
+	# clip lane button and Space), where restoring the playhead belongs. A
+	# bare stop emit or doc.play must not rewrite it.
 
 func _sync_sequence_transport() -> void:
 	if doc == null:

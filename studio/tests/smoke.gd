@@ -778,6 +778,23 @@ func _ready() -> void:
 			var folded_total: float = 56.0 + lane.get_combined_minimum_size().y + media_lanes.get_combined_minimum_size().y
 			_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_total) < 0.5,
 				"the folded sheet keeps transport, clip lane and collapsed media lanes")
+		# Collapsing is a layout concern only: the panel must reserve the real
+		# height as the body opens, and give it back when the lanes fold.
+		editor._timeline_visible = true
+		editor._sync_timeline_visibility()
+		await get_tree().process_frame
+		var folded_panel: float = editor._timeline_panel.custom_minimum_size.y
+		media_lanes.set_collapsed(false)
+		await get_tree().process_frame
+		_check(not media_lanes.is_collapsed(), "media lanes expand on request")
+		_check(editor._timeline_panel.custom_minimum_size.y > folded_panel,
+			"expanding media lanes grows the timeline panel")
+		media_lanes.set_collapsed(true)
+		await get_tree().process_frame
+		_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_panel) < 0.5,
+			"collapsing media lanes restores the timeline height")
+		editor._timeline_visible = false
+		editor._sync_timeline_visibility()
 
 	var tl_play: Button = editor._timeline._play_button
 	_check(tl_play != null, "the dope sheet keeps a clip transport")
@@ -795,6 +812,17 @@ func _ready() -> void:
 		lane_play.pressed.emit()
 		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
 		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
+		# Space is the other transport: pausing the sequence with it must also
+		# put the clip clock back where the sequence took over.
+		doc.seek(1.0)
+		lane_play.pressed.emit()
+		_check(doc.is_sequence_playing(), "the sequence restarts from the lane button")
+		var space := InputEventKey.new()
+		space.keycode = KEY_SPACE
+		space.pressed = true
+		editor._unhandled_key_input(space)
+		_check(not doc.is_sequence_playing(), "space pauses the sequence clock")
+		_check(is_equal_approx(doc.current_time, 1.0), "space restores the saved clip time")
 		tl_play.pressed.emit()
 		_check(doc.is_playing and not doc.is_sequence_playing(), "the timeline transport plays the clip clock")
 		_check(not tl_play.disabled, "timeline clip transport re-enables when the sequence stops")
@@ -815,7 +843,20 @@ func _ready() -> void:
 		_check(editor._drawer_rig_tab.visible, "the rig tab is visible on tabbed shells")
 		_check(editor.get("_rig_panel") != null and editor.get("_rig_panel").visible, "the rig tab keeps the panel reachable")
 		if rig_overlay != null:
+			# Rig mode follows the active dock page: on the Rig tab the overlay
+			# engages; hiding that page or switching tabs disengages it.
+			editor._set_compact_tab("rig")
+			if editor._dock_overlay_mode():
+				editor._open_drawer()
+			await get_tree().process_frame
 			_check(rig_overlay.is_enabled(), "the rig overlay follows the active rig tab")
+			if editor._dock_overlay_mode():
+				editor._close_drawer()
+				await get_tree().process_frame
+				_check(not rig_overlay.is_enabled(), "the rig overlay yields when its page is dismissed")
+			editor._set_compact_tab("scene")
+			await get_tree().process_frame
+			_check(not rig_overlay.is_enabled(), "the rig overlay yields when another tab is active")
 		_check(rig_panel.empty_state_visible(), "the rig tab shows an honest empty state")
 		var rig_id := ""
 		rig_id = doc.rig_system.create_rig("Smoke Rig", Vector3.ZERO)
@@ -842,6 +883,20 @@ func _ready() -> void:
 		_check(view_kids.find(video_overlay) > view_kids.find(editor._view._surface), "the video overlay draws over the 3D surface")
 		_check(video_overlay.mouse_filter == Control.MOUSE_FILTER_IGNORE, "the video overlay ignores every pointer")
 		_check(not video_overlay.visible, "the video overlay hides without a visible reference")
+		# Clip mode reads the active strip's start; the sequence clock is used
+		# only while a sequence actually runs.
+		var anim_sys = doc.animation_system
+		var base_layers: Array = anim_sys.layers()
+		if not base_layers.is_empty() and not (base_layers[0]["strips"] as Array).is_empty():
+			var base_layer: Dictionary = base_layers[0]
+			var strip_id := str(base_layer["strips"][0]["id"])
+			anim_sys.set_active_layer(str(base_layer["id"]))
+			anim_sys.update_strip(strip_id, {"start": 3.0})
+			doc.seek(0.5)
+			_check(is_equal_approx(video_overlay._overlay_time(), 3.5),
+				"clip mode previews the active strip's sequence time")
+			anim_sys.update_strip(strip_id, {"start": 0.0})
+			doc.seek(0.0)
 
 	if editor._drawer_open:
 		editor._close_drawer()

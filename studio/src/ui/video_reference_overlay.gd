@@ -78,10 +78,28 @@ func _reference_id() -> String:
 func _overlay_time() -> float:
 	if doc.is_sequence_playing():
 		return doc.sequence_time()
-	var strip: Dictionary = {}
-	if doc.animation != null and doc.animation.has_method("strip_at"):
-		strip = doc.animation.strip_at(doc.current_time)
-	return VideoReference.clip_preview_time(strip, doc.current_time)
+	return VideoReference.clip_preview_time(_active_strip(), doc.current_time)
+
+
+## The strip that carries the active clip on the active layer. Clip editing is
+## preview only: this is the strip whose start offsets the clip-local time.
+func _active_strip() -> Dictionary:
+	if doc == null or doc.animation_system == null:
+		return {}
+	var system = doc.animation_system
+	var layer_id := str(system.active_layer_id())
+	var clip_id := str(doc.active_clip_id()) if doc.has_method("active_clip_id") else ""
+	if layer_id == "" or clip_id == "":
+		return {}
+	for raw_layer in system.layers():
+		var layer: Dictionary = raw_layer
+		if str(layer.get("id", "")) != layer_id:
+			continue
+		for raw_strip in layer.get("strips", []):
+			var strip: Dictionary = raw_strip
+			if str(strip.get("clip", "")) == clip_id:
+				return strip
+	return {}
 
 
 func _process(_delta: float) -> void:
