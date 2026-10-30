@@ -2065,12 +2065,16 @@ func _export_mp4(options: Dictionary) -> void:
 	var audio: Array = []
 	if bool(options.get("include_audio", true)):
 		for track in doc.media_system.audio_tracks():
-			audio.append(track)
+			if not bool(track.get("muted", false)):
+				audio.append(track)
 	var manifest: Dictionary = backend.build_manifest({
 		"project_dir": doc.project_dir,
 		"width": width,
 		"height": height,
 		"fps": int(options.get("fps", 24)),
+		"start": float(frame_options["start"]),
+		"end": float(frame_options["end"]),
+		"frame_count": int(result.get("frame_count", 0)),
 		"bitrate": int(options.get("bitrate", 12000000)),
 		"frame_dir": frames_dir,
 		"audio": audio,
