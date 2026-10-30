@@ -120,10 +120,11 @@ var _closing := false
 var _last_save_auto := false
 
 ## Two-clock rule bookkeeping: while a sequence runs, the last clip-local
-## playhead seen on `.playback_changed` is kept here so the clip lane button
-## can put the clip transport back where it was.
+## playhead seen on `.playback_changed` is kept here so the clip transport can
+## return to it when the sequence stops.
 var _sequence_was_playing := false
 var _clip_time_before_sequence := 0.0
+var _restoring_clip := false
 
 var _media_busy := false
 var _media_cancel := false
@@ -698,9 +699,6 @@ func _adopt_document(document: Node3D) -> void:
 	_inspector.setup(doc)
 	_timeline.setup(doc)
 	_clip_lane.setup(doc)
-	var lane_play: Button = _clip_lane.play_sequence_button()
-	if lane_play != null and not lane_play.pressed.is_connected(_on_clip_lane_play_pressed):
-		lane_play.pressed.connect(_on_clip_lane_play_pressed)
 	_media_lanes.setup(doc)
 	_rig_panel.setup(doc)
 	if _video_overlay != null:
@@ -1321,18 +1319,17 @@ func _on_media_lanes_collapsed_changed(_collapsed: bool) -> void:
 	# untouched. The panel must reserve the new stack height immediately.
 	_sync_timeline_visibility()
 
-## Puts the clip clock back where the sequence took over. Called after the
-## sequence is paused, never while it runs.
+## Puts the clip clock back where the sequence took over. Runs on the actual
+## sequence stop (lane pause, Space, natural end or stop_sequence), never while
+## it still runs.
 func _restore_clip_after_sequence() -> void:
-	if doc == null or not _sequence_was_playing or doc.is_sequence_playing():
+	if doc == null or not _sequence_was_playing or doc.is_sequence_playing() or _restoring_clip:
 		return
 	_sequence_was_playing = false
+	_restoring_clip = true
 	# Not silent: the dope sheet and clip lane must show the restored playhead.
 	doc.seek(_clip_time_before_sequence)
-
-## Runs after the clip lane's own toggle on the play-sequence button.
-func _on_clip_lane_play_pressed() -> void:
-	_restore_clip_after_sequence()
+	_restoring_clip = false
 
 func _toggle_drawer(tab: String) -> void:
 	if not _dock_overlay_mode():
@@ -1559,7 +1556,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if doc != null:
 				if doc.is_sequence_playing():
 					doc.pause_sequence()
-					_restore_clip_after_sequence()
 				else:
 					doc.toggle_play()
 			get_viewport().set_input_as_handled()
@@ -2169,6 +2165,10 @@ func _enter_render_mode() -> void:
 		return
 	if _overlay != null and _overlay.has_modal():
 		_overlay.close_modal()
+	# Render preview runs the clip clock. Stop a sequence first so its stop
+	# handler restores the clip playhead before we save it.
+	if doc.is_sequence_playing():
+		doc.pause_sequence()
 	_render_mode = true
 	_render_saved_time = doc.current_time
 	_render_was_playing = doc.is_playing
@@ -2241,17 +2241,18 @@ func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 	if _render_mode:
 		_sync_render_hud()
 	_sync_sequence_transport()
-	if doc == null:
+	if doc == null or _restoring_clip:
 		return
 	if doc.is_sequence_playing():
 		_sequence_was_playing = true
-	elif not _playing and not _sequence_was_playing:
+	elif _sequence_was_playing:
+		# Every stop path (lane pause, Space, natural end, stop_sequence) goes
+		# through here, so the clip clock always returns to its saved playhead.
+		_restore_clip_after_sequence()
+	elif not _playing:
 		# An ordinary clip pause/seek keeps the saved playhead current so a
 		# later sequence run restores exactly where the clip was.
 		_clip_time_before_sequence = float(doc.current_time)
-	# The flag clears in the explicit transports that pause a sequence (the
-	# clip lane button and Space), where restoring the playhead belongs. A
-	# bare stop emit or doc.play must not rewrite it.
 
 func _sync_sequence_transport() -> void:
 	if doc == null:

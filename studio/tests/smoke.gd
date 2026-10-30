@@ -814,6 +814,11 @@ func _ready() -> void:
 		lane_play.pressed.emit()
 		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
 		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
+		doc.seek(1.0)
+		lane_play.pressed.emit()
+		doc.stop_sequence()
+		_check(not doc.is_sequence_playing(), "stop_sequence stops the sequence clock")
+		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
 		# Space is the other transport: pausing the sequence with it must also
 		# put the clip clock back where the sequence took over.
 		doc.seek(1.0)
@@ -925,8 +930,15 @@ func _ready() -> void:
 
 	if editor._drawer_open:
 		editor._close_drawer()
+	# Render preview is a clip-clock surface: a running sequence must stop
+	# first, and its saved clip playhead must survive the round trip.
+	doc.seek(1.0)
+	editor._clip_lane.play_sequence_button().pressed.emit()
+	_check(doc.is_sequence_playing(), "the sequence can run before render preview")
 	editor._enter_render_mode()
 	_check(editor._render_mode, "render preview engages")
+	_check(not doc.is_sequence_playing(), "render preview stops the sequence clock")
+	_check(doc.is_playing, "render preview plays the clip clock")
 	if video_overlay != null:
 		_check(not video_overlay.visible, "render mode hides the video overlay")
 	if rig_overlay != null:
