@@ -960,10 +960,9 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
-	var media_export = editor.get("_media_export")
 	editor._open_render_sheet()
 	await get_tree().process_frame
-	media_export = editor.get("_media_export")
+	var media_export = editor.get("_media_export")
 	_check(editor._overlay.has_modal(), "the render sheet opens")
 	_check(media_export != null, "the render sheet embeds the media export sheet")
 	_check(editor._render_sequence_button != null, "the render sheet keeps the PNG sequence action")

@@ -2245,10 +2245,15 @@ func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 		return
 	if doc.is_sequence_playing():
 		_sequence_was_playing = true
-	elif _sequence_was_playing:
+	elif _sequence_was_playing and not _playing:
 		# Every stop path (lane pause, Space, natural end, stop_sequence) goes
 		# through here, so the clip clock always returns to its saved playhead.
 		_restore_clip_after_sequence()
+	elif _sequence_was_playing:
+		# A clip play superseded the sequence without a stop emit; drop the
+		# stale flag so the next clip pause does not rewind the new run.
+		_sequence_was_playing = false
+		_clip_time_before_sequence = float(doc.current_time)
 	elif not _playing:
 		# An ordinary clip pause/seek keeps the saved playhead current so a
 		# later sequence run restores exactly where the clip was.
