@@ -1232,6 +1232,27 @@ func _ready() -> void:
 		_check(action_rect.end.y <= scroll_rect.end.y + 0.5, "render sequence action is above the fold in the desktop modal")
 	_check(editor._sequence_frame_count() == 144, "sequence frame count follows duration and fps")
 	_check(not editor._render_busy, "render sheet is idle on open")
+
+	print("SMOKE STEP: export output directories")
+	# Headless cannot wait for frame_post_draw, so exercise the writer seam
+	# directly: the GIF writer must create a missing parent directory, and the
+	# MP4 handoff must ensure its output folder exists.
+	var gif_output := "user://export_dir_fixture/nested/kinema.gif"
+	var stale_dir := "user://export_dir_fixture"
+	if DirAccess.dir_exists_absolute(stale_dir):
+		_remove_tree(stale_dir)
+	_check(editor.has_method("_write_gif_file"), "the editor exposes the GIF writer seam")
+	if editor.has_method("_write_gif_file"):
+		var gif_bytes := PackedByteArray([71, 73, 70, 56, 57, 97])
+		_check(editor._write_gif_file(gif_output, gif_bytes), "the GIF writer creates a missing output directory")
+		_check(FileAccess.file_exists(gif_output), "the GIF lands below the created directory")
+		var mp4_output := "user://export_dir_fixture/mp4/nested/kinema.mp4"
+		if editor.has_method("_ensure_output_dir"):
+			_check(editor._ensure_output_dir(mp4_output), "the MP4 output directory can be created")
+			_check(DirAccess.dir_exists_absolute(mp4_output.get_base_dir()), "the MP4 parent directory exists")
+		else:
+			_check(false, "the editor exposes an output directory helper")
+	_remove_tree(stale_dir)
 	editor._overlay.close_modal()
 	editor._overlay.set_layout_mode(previous_layout)
 	await get_tree().process_frame
@@ -1636,6 +1657,24 @@ func _write_test_text(path: String, text: String) -> void:
 	if file != null:
 		file.store_string(text)
 		file.close()
+
+
+func _remove_tree(path: String) -> void:
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := path.path_join(name)
+			if dir.current_is_dir():
+				_remove_tree(child)
+			else:
+				DirAccess.remove_absolute(child)
+		name = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(path)
 
 func _contrast(a: Color, b: Color) -> float:
 	var high := maxf(_relative_luminance(a), _relative_luminance(b))

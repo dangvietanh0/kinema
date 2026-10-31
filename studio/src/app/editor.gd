@@ -2029,12 +2029,9 @@ func _export_gif(options: Dictionary) -> void:
 		output = "user://export.gif"
 	elif not output.ends_with(".gif"):
 		output = output.get_basename() + ".gif"
-	var writer := FileAccess.open(output, FileAccess.WRITE)
-	if writer == null:
+	if not _write_gif_file(output, bytes):
 		_export_failed("The GIF file could not be written.")
 		return
-	writer.store_buffer(bytes)
-	writer.close()
 	var duration: float = float(frame_options["end"]) - float(frame_options["start"])
 	if _media_export != null:
 		_media_export.set_progress("done")
@@ -2085,6 +2082,10 @@ func _export_mp4(options: Dictionary) -> void:
 		output = "user://export.mp4"
 	elif not output.ends_with(".mp4"):
 		output = output.get_basename() + ".mp4"
+	if not _ensure_output_dir(output):
+		_clean_dir(frames_dir)
+		_export_failed("The MP4 output folder could not be created.")
+		return
 	var started: Dictionary = backend.encode(manifest, output)
 	if not bool(started.get("ok", false)):
 		_clean_dir(frames_dir)
@@ -2140,6 +2141,27 @@ func _export_camera(options: Dictionary) -> void:
 		_media_export.set_progress("done")
 		_media_export.set_result(output, _file_size(output), duration, "camera track")
 	_overlay.toast("Camera track exported", "check", Kit.SUCCESS)
+
+func _write_gif_file(path: String, bytes: PackedByteArray) -> bool:
+	if not _ensure_output_dir(path):
+		return false
+	var writer := FileAccess.open(path, FileAccess.WRITE)
+	if writer == null:
+		return false
+	writer.store_buffer(bytes)
+	writer.close()
+	return true
+
+
+## `FileAccess.open(..., WRITE)` never creates parent directories. Default
+## exports point below `user://exports`, so every writer creates its parent
+## first instead of failing the first time.
+func _ensure_output_dir(path: String) -> bool:
+	var directory := path.get_base_dir()
+	if directory == "" or directory == ".":
+		return true
+	return DirAccess.make_dir_recursive_absolute(directory) == OK
+
 
 func _clean_dir(path: String) -> void:
 	var dir := DirAccess.open(path)
