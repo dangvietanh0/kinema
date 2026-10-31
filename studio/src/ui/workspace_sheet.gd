@@ -36,6 +36,10 @@ var _orientation_track: PanelContainer
 ## control. Side by side, three options plus a label were crushed into a strip
 ## of loose words on a phone and looked cramped even on a 560 dp sheet.
 var _orientation_stacked := false
+## A landscape phone has width to spare and no height: arrangement on the left,
+## orientation and scale on the right, so the scale slider never hides below a
+## prose block.
+var _two_column := false
 
 
 func setup(editor_ref: Node) -> void:
@@ -94,13 +98,29 @@ func _rebuild() -> void:
 	_warning = null
 	_studio_shortcut = null
 	_orientation_track = null
-	_orientation_stacked = editor == null or editor.size.x < 700.0
+	_two_column = editor != null and editor.size.y < 560.0 and editor.size.x >= 780.0
+	_orientation_stacked = editor == null or editor.size.x < 700.0 or _two_column
 	add_theme_constant_override("separation", 12)
 
-	add_child(Kit.section_label("Arrangement"))
+	var primary: VBoxContainer = self
+	var secondary: VBoxContainer = self
+	if _two_column:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 24)
+		add_child(row)
+		primary = VBoxContainer.new()
+		primary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		primary.add_theme_constant_override("separation", 12)
+		row.add_child(primary)
+		secondary = VBoxContainer.new()
+		secondary.custom_minimum_size.x = 280.0
+		secondary.add_theme_constant_override("separation", 8)
+		row.add_child(secondary)
+
+	primary.add_child(Kit.section_label("Arrangement"))
 	var track := PanelContainer.new()
 	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
-	add_child(track)
+	primary.add_child(track)
 	var strip := HBoxContainer.new()
 	strip.add_theme_constant_override("separation", 2)
 	track.add_child(strip)
@@ -127,14 +147,14 @@ func _rebuild() -> void:
 		Kit.TYPE_CAPTION,
 		Kit.TEXT_MUTED
 	)
-	add_child(resolved)
+	primary.add_child(resolved)
 	if fit_percent < 99.9:
 		_fit_label = Kit.label(
 			"Desktop fit %d%% · UI scale still applies" % int(round(fit_percent)),
 			Kit.TYPE_CAPTION,
 			Kit.TEXT
 		)
-		add_child(_fit_label)
+		primary.add_child(_fit_label)
 	if clamped or fit_percent < 60.0:
 		_warning = Kit.label(
 			"Small UI. Desktop stays selected and the whole canvas shrinks to fit. " +
@@ -143,7 +163,7 @@ func _rebuild() -> void:
 			Kit.TEXT_MUTED
 		)
 		_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		add_child(_warning)
+		primary.add_child(_warning)
 		_studio_shortcut = Kit.text_button("Switch to Studio", "monitor", false, true)
 		_studio_shortcut.custom_minimum_size.y = 44.0
 		_studio_shortcut.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -151,19 +171,19 @@ func _rebuild() -> void:
 			current_mode = "studio"
 			layout_selected.emit("studio")
 		)
-		add_child(_studio_shortcut)
+		primary.add_child(_studio_shortcut)
 	else:
 		var note := Kit.label(
-			"Auto picks a mode from the screen. Compact, Studio and Desktop stay selected even when they do not match the window; Desktop shrinks to fit. " +
-			"Studio and Desktop keep the clip lane above the dope sheet, media lanes below it and the Rig tab in the dock; Compact folds the sheet to the transport.",
+			"Auto follows the screen. Studio and Desktop keep the dope sheet open with its media lanes; Compact folds it to the transport.",
 			Kit.TYPE_CAPTION,
 			Kit.TEXT_DIM
 		)
 		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		add_child(note)
+		primary.add_child(note)
 
-	add_child(Kit.vsep())
-	add_child(Kit.section_label("Orientation"))
+	if not _two_column:
+		secondary.add_child(Kit.vsep())
+	secondary.add_child(Kit.section_label("Orientation"))
 	var orientation_supported := DisplayServer.has_feature(DisplayServer.FEATURE_ORIENTATION)
 	var orientation_labels := VBoxContainer.new()
 	orientation_labels.add_theme_constant_override("separation", 1)
@@ -183,14 +203,24 @@ func _rebuild() -> void:
 	orientation_strip.add_theme_constant_override("separation", 2)
 	orientation_track.add_child(orientation_strip)
 
-	if _orientation_stacked:
-		add_child(orientation_labels)
-		add_child(Kit.gap(0, 4))
-		add_child(orientation_track)
+	if _two_column:
+		# The section title already names the control; a second "Screen
+		# orientation" row only pushed the scale slider past the fold.
+		secondary.add_child(orientation_track)
+		if not orientation_supported:
+			secondary.add_child(Kit.label(
+				"Orientation is fixed by this platform",
+				Kit.TYPE_CAPTION,
+				Kit.TEXT_DIM
+			))
+	elif _orientation_stacked:
+		secondary.add_child(orientation_labels)
+		secondary.add_child(Kit.gap(0, 4))
+		secondary.add_child(orientation_track)
 	else:
 		var orientation_row := HBoxContainer.new()
 		orientation_row.add_theme_constant_override("separation", 8)
-		add_child(orientation_row)
+		secondary.add_child(orientation_row)
 		orientation_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		orientation_row.add_child(orientation_labels)
 		orientation_track.custom_minimum_size.x = 280.0
@@ -220,23 +250,29 @@ func _rebuild() -> void:
 		)
 		orientation_strip.add_child(button)
 
-	add_child(Kit.vsep())
-	add_child(Kit.section_label("Interface scale"))
-	var scale_row := HBoxContainer.new()
-	scale_row.add_theme_constant_override("separation", 8)
-	add_child(scale_row)
-	var scale_labels := VBoxContainer.new()
-	scale_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scale_labels.add_theme_constant_override("separation", 1)
-	scale_row.add_child(scale_labels)
-	scale_labels.add_child(Kit.label("UI scale", Kit.TYPE_BODY, Kit.TEXT))
+	if not _two_column:
+		secondary.add_child(Kit.vsep())
+	secondary.add_child(Kit.section_label("Interface scale"))
 	var scale_hint := Kit.label(
+		"50-200%, applies to the whole workbench." if _two_column else
 		"Applies to the whole workbench. Below 85% controls render under the 44 dp touch floor.",
 		Kit.TYPE_CAPTION,
 		Kit.TEXT_DIM
 	)
 	scale_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	scale_labels.add_child(scale_hint)
+	var scale_row: HBoxContainer = null
+	if _two_column:
+		secondary.add_child(scale_hint)
+	else:
+		scale_row = HBoxContainer.new()
+		scale_row.add_theme_constant_override("separation", 8)
+		secondary.add_child(scale_row)
+		var scale_labels := VBoxContainer.new()
+		scale_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		scale_labels.add_theme_constant_override("separation", 1)
+		scale_row.add_child(scale_labels)
+		scale_labels.add_child(Kit.label("UI scale", Kit.TYPE_BODY, Kit.TEXT))
+		scale_labels.add_child(scale_hint)
 	_scale_control = ScaleSliderScript.new()
 	_scale_control.custom_minimum_size.y = 44.0
 	_scale_control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -245,7 +281,10 @@ func _rebuild() -> void:
 		Prefs.set_value("display.user_scale", value)
 		ui_scale_changed.emit(value)
 	)
-	scale_row.add_child(_scale_control)
+	if _two_column:
+		secondary.add_child(_scale_control)
+	else:
+		scale_row.add_child(_scale_control)
 
 
 func _select_mode(mode: String) -> void:

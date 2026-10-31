@@ -163,6 +163,26 @@ func _ready() -> void:
 			_check_no_overflow(editor, label)
 			_check_no_overflow(main, label)
 			_check_hit_targets(editor, mode, label)
+			if size == Vector2i(915, 412) and mode == "studio":
+				# The scale slider is the point of this sheet; a landscape
+				# phone must not hide it below a prose block and a scroll.
+				editor._open_workspace_sheet()
+				for _i in 6:
+					await get_tree().process_frame
+				var workspace = editor._workspace_sheet
+				_check(workspace != null, label + ": workspace sheet opens")
+				_check(workspace.get("_two_column") == true,
+					label + ": workspace keeps two columns on a landscape phone")
+				var slider = workspace._scale_control.slider
+				var body: Rect2 = editor._overlay._body_scroll.get_global_rect()
+				var slider_rect: Rect2 = slider.get_global_rect()
+				_check(editor._overlay._body_scroll.scroll_vertical == 0,
+					label + ": workspace does not need scrolling")
+				_check(body.encloses(slider_rect),
+					label + ": the UI scale slider is fully visible without scrolling")
+				editor._overlay.close_modal(true)
+				for _i in 2:
+					await get_tree().process_frame
 			print("LAYOUT OK: " + label)
 			if media_lanes != null:
 				media_lanes.set_collapsed(true)

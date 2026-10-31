@@ -2873,12 +2873,18 @@ func _open_workspace_sheet() -> void:
 		_fit_user_scale_enabled,
 		_fit_clamped
 	)
+	# A landscape phone has width to spare, so the sheet opens wide enough for
+	# two columns and the scale slider stays above the fold. Portrait keeps the
+	# single 560 dp column.
+	var sheet_width := 560.0
+	if size.y < 560.0 and size.x >= 780.0:
+		sheet_width = clampf(size.x - 120.0, 620.0, 760.0)
 	_overlay.show_sheet(
 		"Workspace",
 		"Choose an arrangement. Desktop shrinks to fit instead of falling back.",
 		sheet,
 		[{"text": "Done", "primary": true}],
-		{"width": 560.0}
+		{"width": sheet_width}
 	)
 
 
