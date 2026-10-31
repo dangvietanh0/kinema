@@ -1554,8 +1554,53 @@ func _ready() -> void:
 		DirAccess.remove_absolute(fixture.path_join("tex.png"))
 		DirAccess.remove_absolute(fixture)
 
+	print("SMOKE STEP: sequence clock snapshots")
+	# The clip playhead is the document's own state, not the last clip event.
+	# A project loaded at t=3 must still be at 3 after a sequence run, and a
+	# clip that advanced while playing must be restored, not the last pause.
+	var reopen: Dictionary = Store.load_project(doc.project_id)
+	_check(not reopen.is_empty(), "the project reopens for the clock snapshots")
+	if not reopen.is_empty():
+		var reopen_data: Dictionary = reopen.get("data", {}).duplicate(true)
+		reopen_data["current_time"] = 3.0
+		editor.open_loaded(reopen.get("meta", {}), reopen_data)
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var clock_doc = editor.doc
+		_check(is_equal_approx(clock_doc.current_time, 3.0), "a loaded project keeps its saved playhead")
+		clock_doc.play_sequence()
+		_check(clock_doc.is_sequence_playing(), "the loaded project can run its sequence")
+		clock_doc.pause_sequence()
+		_check(is_equal_approx(clock_doc.current_time, 3.0),
+			"stopping a sequence restores the loaded playhead")
+
+		clock_doc.seek(0.5)
+		clock_doc.play()
+		await get_tree().create_timer(0.15).timeout
+		var advanced_clip: float = clock_doc.current_time
+		_check(advanced_clip > 0.55, "the clip clock advanced before the sequence")
+		clock_doc.play_sequence()
+		clock_doc.pause_sequence()
+		_check(is_equal_approx(clock_doc.current_time, advanced_clip),
+			"a sequence restores the clip time that was playing")
+
+		clock_doc.pause()
+		clock_doc.seek(0.5)
+		clock_doc.play()
+		await get_tree().create_timer(0.15).timeout
+		var preview_clip: float = clock_doc.current_time
+		editor._enter_render_mode()
+		_check(editor._render_mode, "the render preview opens for the snapshot test")
+		editor._exit_render_mode()
+		await get_tree().process_frame
+		clock_doc.play_sequence()
+		clock_doc.pause_sequence()
+		_check(is_equal_approx(clock_doc.current_time, preview_clip),
+			"a silent render-exit restore becomes the saved clip playhead")
+		clock_doc.pause()
+
 	# Leave and clean up the temporary project.
-	var project_id: String = doc.project_id
+	var project_id: String = editor.doc.project_id
 	editor._leave(false)
 	await get_tree().process_frame
 	await get_tree().process_frame

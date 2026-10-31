@@ -714,6 +714,10 @@ func _adopt_document(document: Node3D) -> void:
 	if not doc.playback_changed.is_connected(_on_document_playback_changed):
 		doc.playback_changed.connect(_on_document_playback_changed)
 	doc.seek(doc.current_time, true)
+	# A load restores the playhead with a silent seek, so no playback event can
+	# carry it into the sequence snapshot. Adopt it explicitly.
+	_clip_time_before_sequence = float(doc.current_time)
+	_sequence_was_playing = false
 	if _rig_overlay != null:
 		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
 		_sync_rig_overlay()
@@ -1329,6 +1333,7 @@ func _restore_clip_after_sequence() -> void:
 	_restoring_clip = true
 	# Not silent: the dope sheet and clip lane must show the restored playhead.
 	doc.seek(_clip_time_before_sequence)
+	_clip_time_before_sequence = float(doc.current_time)
 	_restoring_clip = false
 
 func _toggle_drawer(tab: String) -> void:
@@ -2197,6 +2202,9 @@ func _exit_render_mode() -> void:
 	if doc != null:
 		doc.pause()
 		doc.seek(_render_saved_time, true)
+		# The restore is silent, so the sequence snapshot must be told about it
+		# here; otherwise a later sequence stop rewinds to a stale clip time.
+		_clip_time_before_sequence = float(doc.current_time)
 		if _render_was_playing:
 			doc.play()
 	if _view != null:
@@ -2245,19 +2253,22 @@ func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 		return
 	if doc.is_sequence_playing():
 		_sequence_was_playing = true
-	elif _sequence_was_playing and not _playing:
+		return
+	if _sequence_was_playing and not _playing:
 		# Every stop path (lane pause, Space, natural end, stop_sequence) goes
 		# through here, so the clip clock always returns to its saved playhead.
+		# Do not snapshot the sequence's local time over the saved clip time.
 		_restore_clip_after_sequence()
-	elif _sequence_was_playing:
+		return
+	# Every other non-sequence event is clip time, including while the clip
+	# plays. `play_sequence()` overwrites `current_time` without a preceding
+	# clip emit, so this snapshot must already be current when the lane takes
+	# over.
+	_clip_time_before_sequence = float(doc.current_time)
+	if _sequence_was_playing:
 		# A clip play superseded the sequence without a stop emit; drop the
 		# stale flag so the next clip pause does not rewind the new run.
 		_sequence_was_playing = false
-		_clip_time_before_sequence = float(doc.current_time)
-	elif not _playing:
-		# An ordinary clip pause/seek keeps the saved playhead current so a
-		# later sequence run restores exactly where the clip was.
-		_clip_time_before_sequence = float(doc.current_time)
 
 func _sync_sequence_transport() -> void:
 	if doc == null:
