@@ -175,6 +175,26 @@ func set_progress(kind: String, done: int = 0, total: int = 0) -> void:
 		_status_label.text = "Exporting" if kind in ["frames", "encoding", "verifying"] else progress_text(kind, done, total)
 
 
+func set_status(text: String) -> void:
+	if _status_label != null:
+		_status_label.text = text
+
+
+func status_text() -> String:
+	return _status_label.text if _status_label != null else ""
+
+
+func result_text() -> String:
+	return _result_label.text if _result_label != null else ""
+
+
+func clear_result() -> void:
+	if _result_label == null:
+		return
+	_result_label.text = ""
+	_result_label.visible = false
+
+
 func set_result(path: String, size_bytes: int, duration: float, tracks: String) -> void:
 	if _result_label == null:
 		return

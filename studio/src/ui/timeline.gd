@@ -38,6 +38,7 @@ var _sheet: Control
 var _time_label: Label
 var _frame_label: Label
 var _play_button: Button
+var _clip_transport_enabled := true
 var _loop_button: Button
 var _auto_button: Button
 var _snap_button: Button
@@ -517,13 +518,36 @@ func _style_flag_button(button: Button, active: bool) -> void:
 		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
 		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 
+## The clip transport is disabled while the sequence clock owns time. The
+## timeline owns the disabled flag and its reason so a playback refresh cannot
+## overwrite the shell's tooltip.
+func set_clip_transport_enabled(enabled: bool) -> void:
+	_clip_transport_enabled = enabled
+	_sync_play_control()
+
+
+func clip_transport_enabled() -> bool:
+	return _clip_transport_enabled
+
+
+func _sync_play_control() -> void:
+	if _play_button == null:
+		return
+	_play_button.disabled = not _clip_transport_enabled
+	if not _clip_transport_enabled:
+		_play_button.tooltip_text = "Stop the sequence first"
+	else:
+		var playing: bool = doc != null and doc.is_playing
+		_play_button.tooltip_text = "Pause" if playing else "Play"
+
+
 func _refresh_transport(time: float, playing: bool) -> void:
 	if doc == null:
 		return
 	_time_label.text = doc.format_timecode(time)
 	_frame_label.text = "F %d · %dfps" % [doc.time_to_frame(time), doc.fps]
 	_play_button.icon = Kit.icon_texture("pause" if playing else "play")
-	_play_button.tooltip_text = "Pause" if playing else "Play"
+	_sync_play_control()
 	var has_key := _selected_index >= 0 and _selected_data_id == doc.selected_id
 	_delete_button.disabled = not has_key
 	if _compact_delete_button != null:
@@ -586,7 +610,7 @@ func _on_next_key() -> void:
 	doc.seek(doc.nearest_key_time(1))
 
 func _on_play() -> void:
-	if doc != null:
+	if doc != null and _clip_transport_enabled:
 		doc.toggle_play()
 
 func _on_loop_toggled(enabled: bool) -> void:

@@ -809,6 +809,10 @@ func _ready() -> void:
 		_check(doc.is_sequence_playing(), "the clip lane button plays the sequence clock")
 		_check(not doc.is_playing, "the sequence does not run both clocks")
 		_check(tl_play.disabled, "timeline clip transport is disabled while the sequence plays")
+		_check(editor._timeline.has_method("set_clip_transport_enabled"),
+			"the timeline owns the clip transport state")
+		_check(tl_play.tooltip_text == "Stop the sequence first",
+			"the timeline owns the disabled transport reason")
 		_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
 			"the timeline shows the active strip's local time while the sequence runs")
 		lane_play.pressed.emit()
@@ -1232,6 +1236,16 @@ func _ready() -> void:
 		_check(action_rect.end.y <= scroll_rect.end.y + 0.5, "render sequence action is above the fold in the desktop modal")
 	_check(editor._sequence_frame_count() == 144, "sequence frame count follows duration and fps")
 	_check(not editor._render_busy, "render sheet is idle on open")
+
+	print("SMOKE STEP: export error reporting")
+	media_export = editor.get("_media_export")
+	_check(media_export != null and media_export.has_method("status_text"),
+		"the media export sheet exposes its status line")
+	if media_export != null and media_export.has_method("status_text"):
+		editor._export_failed("Fixture export failure")
+		_check(media_export.status_text() == "Fixture export failure",
+			"export errors live in the status line")
+		_check(media_export.result_text() == "", "export errors are not result metadata")
 
 	print("SMOKE STEP: export output directories")
 	# Headless cannot wait for frame_post_draw, so exercise the writer seam

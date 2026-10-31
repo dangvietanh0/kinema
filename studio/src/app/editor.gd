@@ -1936,7 +1936,10 @@ func _run_media_export(options: Dictionary) -> void:
 func _export_failed(message: String) -> void:
 	if _media_export != null:
 		_media_export.set_progress("error")
-		_media_export.set_result("", 0, 0.0, message)
+		# Errors are a status, not a result row: a result renders as
+		# "path · size · duration · tracks", which is meaningless here.
+		_media_export.clear_result()
+		_media_export.set_status(message)
 	_overlay.toast(message, "triangle-alert", Kit.DANGER)
 
 func _export_progress(kind: String) -> Callable:
@@ -2295,11 +2298,10 @@ func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 func _sync_sequence_transport() -> void:
 	if doc == null:
 		return
-	if _timeline != null and _timeline._play_button != null:
-		var sequence_running := doc.is_sequence_playing()
-		_timeline._play_button.disabled = sequence_running
-		_timeline._play_button.tooltip_text = (
-			"Stop the sequence first" if sequence_running else "Play / pause")
+	if _timeline != null:
+		# The timeline owns its disabled flag and reason; the shell only says
+		# whether the clip clock may run.
+		_timeline.set_clip_transport_enabled(not doc.is_sequence_playing())
 
 
 func _capture_render_chrome() -> void:
