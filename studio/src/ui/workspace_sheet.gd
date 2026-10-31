@@ -10,13 +10,14 @@ signal layout_selected(mode: String)
 signal orientation_selected(value: String)
 signal ui_scale_changed(value: float)
 
+const ScaleSliderScript = preload("res://src/ui/components/scale_slider.gd")
+
 const MODES := [
 	{"label": "Auto", "value": "auto"},
 	{"label": "Compact", "value": "compact"},
 	{"label": "Studio", "value": "studio"},
 	{"label": "Desktop", "value": "desktop"},
 ]
-const SCALE_VALUES := [0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
 
 var editor: Node = null
 var current_mode := "studio"
@@ -25,7 +26,7 @@ var fit_percent := 100.0
 var user_scale_enabled := true
 var clamped := false
 
-var _scale_control: OptionButton
+var _scale_control: ScaleSliderScript
 var _fit_label: Label
 var _warning: Label
 var _studio_shortcut: Button
@@ -71,9 +72,10 @@ func refresh_fit(percent: float, enabled: bool, is_clamped: bool) -> void:
 		_rebuild()
 		return
 	if _fit_label != null:
-		_fit_label.text = "Desktop fit %d%%" % int(round(fit_percent))
+		_fit_label.text = "Desktop fit %d%% · UI scale still applies" % int(round(fit_percent))
 	if _scale_control != null:
-		_scale_control.disabled = fit_percent < 99.9 or not user_scale_enabled
+		# A fit change never takes the scale away from the user.
+		_scale_control.slider.editable = true
 
 
 func _resolved_mode() -> String:
@@ -128,7 +130,7 @@ func _rebuild() -> void:
 	add_child(resolved)
 	if fit_percent < 99.9:
 		_fit_label = Kit.label(
-			"Desktop fit %d%%" % int(round(fit_percent)),
+			"Desktop fit %d%% · UI scale still applies" % int(round(fit_percent)),
 			Kit.TYPE_CAPTION,
 			Kit.TEXT
 		)
@@ -229,42 +231,17 @@ func _rebuild() -> void:
 	scale_row.add_child(scale_labels)
 	scale_labels.add_child(Kit.label("UI scale", Kit.TYPE_BODY, Kit.TEXT))
 	var scale_hint := Kit.label(
-		"Locked while Desktop shrinks to fit" if fit_percent < 99.9 else "Applies to the whole workbench",
+		"Applies to the whole workbench. Below 85% controls render under the 44 dp touch floor.",
 		Kit.TYPE_CAPTION,
 		Kit.TEXT_DIM
 	)
 	scale_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	scale_labels.add_child(scale_hint)
-	_scale_control = OptionButton.new()
-	_scale_control.custom_minimum_size = Vector2(132, 44)
-	_scale_control.focus_mode = Control.FOCUS_NONE
-	_scale_control.add_theme_font_override("font", Kit.font_medium)
-	_scale_control.add_theme_font_size_override("font_size", Kit.TYPE_BODY)
-	_scale_control.add_theme_color_override("font_color", Kit.TEXT)
-	_scale_control.add_theme_color_override("font_disabled_color", Kit.TEXT_DIM)
-	for state in ["normal", "hover", "pressed", "focus"]:
-		var fill := Kit.SURFACE_2
-		if state == "hover":
-			fill = Kit.SURFACE_HOVER
-		elif state == "pressed":
-			fill = Kit.SURFACE_ACTIVE
-		_scale_control.add_theme_stylebox_override(
-			state,
-			Kit.flat_style(fill, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
-		)
-	_scale_control.add_theme_stylebox_override("disabled", Kit.flat_style(Kit.SURFACE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
-	var selected := 0
-	var current_scale := float(Prefs.get_value("display.user_scale", 1.0))
-	for i in range(SCALE_VALUES.size()):
-		var value := float(SCALE_VALUES[i])
-		_scale_control.add_item("%d%%" % int(round(value * 100.0)), i)
-		_scale_control.set_item_metadata(i, value)
-		if is_equal_approx(value, current_scale):
-			selected = i
-	_scale_control.selected = selected
-	_scale_control.disabled = fit_percent < 99.9 or not user_scale_enabled
-	_scale_control.item_selected.connect(func(index: int) -> void:
-		var value := float(_scale_control.get_item_metadata(index))
+	_scale_control = ScaleSliderScript.new()
+	_scale_control.custom_minimum_size.y = 44.0
+	_scale_control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_scale_control.set_percent_value(float(Prefs.get_value("display.user_scale", 1.0)) * 100.0)
+	_scale_control.value_changed.connect(func(value: float) -> void:
 		Prefs.set_value("display.user_scale", value)
 		ui_scale_changed.emit(value)
 	)

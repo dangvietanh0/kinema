@@ -81,6 +81,40 @@ func _ready() -> void:
 			var info: Dictionary = main.layout
 			_check(editor.workspace_mode() == mode, label + ": the workbench mode applies")
 			_check(str(info.get("mode", "")) == mode, label + ": the resolved layout reports the mode")
+			_check(not editor._timeline_visible, label + ": the dope sheet starts folded")
+			var panel_rail = editor.get("_panel_rail")
+			var rail_expected: bool = mode != "compact" and editor.size.x >= 480.0
+			if mode == "compact":
+				_check(panel_rail == null or not panel_rail.visible,
+					label + ": compact uses the bottom bar instead of a panel rail")
+				_check(not editor._top_bar._panels_button.visible,
+					label + ": compact keeps panels in the bottom bar")
+			elif rail_expected:
+				_check(panel_rail != null and panel_rail.visible,
+					label + ": the stage keeps a right panel rail")
+				_check(not editor._top_bar._panels_button.visible,
+					label + ": the rail replaces the top-bar panel toggle")
+				if panel_rail != null:
+					_check(absf(panel_rail.size.x - 44.0) < 1.0,
+						label + ": the panel rail is 44 dp wide")
+			else:
+				_check(panel_rail == null or not panel_rail.visible,
+					label + ": a sub-minimum stage folds the rail into the top bar")
+				if mode == "studio":
+					_check(editor._top_bar._panels_button.visible,
+						label + ": the top-bar toggle still opens the flyout")
+				else:
+					# Headless cannot apply the Desktop fit, so this is a 412 dp
+					# Desktop canvas that a real window would scale to 960. The
+					# menu bar keeps the panel routes there.
+					_check(editor._top_bar.mode() == "desktop",
+						label + ": desktop keeps its menu-bar panel routes")
+			if mode != "compact":
+				_check(not editor._drawer_open, label + ": the panel flyout starts closed")
+				_check(editor._view.size.x >= size.x - 160.0,
+					label + ": the viewport owns the dock's former width")
+				_check(editor._view.size.y >= 140.0,
+					label + ": the folded timeline leaves a usable 3D height")
 			# Headless cannot render a scaled Desktop canvas, so its pixel
 			# assertions would be fiction. The fit maths below still run.
 			var scaled_desktop: bool = _headless and mode == "desktop" and float(info.get("fit", 1.0)) < 1.0
@@ -94,7 +128,7 @@ func _ready() -> void:
 				_check(float(info.get("fit", 1.0)) < 1.0, label + ": desktop shrinks to fit")
 				var logical: Vector2 = info.get("logical_after", Vector2.ZERO)
 				_check(logical.x >= 959.0 and logical.y >= 599.0, label + ": desktop keeps a 960x600 logical canvas")
-				_check(not bool(info.get("user_scale_enabled", true)), label + ": desktop fit disables UI scale")
+				_check(bool(info.get("user_scale_enabled", false)), label + ": desktop fit keeps UI scale enabled")
 				_check(editor.fit_percent() < 100.0, label + ": the editor reports the fit percentage")
 			print("LAYOUT OK: " + label)
 

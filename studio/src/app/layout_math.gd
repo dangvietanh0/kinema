@@ -5,10 +5,12 @@ extends RefCounted
 ## prove the maths without a window. The shell only applies its results.
 ##
 ## One UI unit is one dp on Android/iOS. The base scale is the display density,
-## the user scale multiplies it, and Desktop mode additionally shrinks
-## everything uniformly until the logical canvas is at least 960x600. When that
-## fit drops below 100% the user scale is disabled; Desktop never falls back to
-## another mode, it just gets smaller.
+## the user scale (50-200%) multiplies it, and Desktop mode additionally applies
+## a fit so 100% still reaches a 960x600 logical canvas. The fit is computed
+## from density alone, never from the user scale: otherwise a slider step would
+## be cancelled by a matching fit step and the control would look broken. When
+## the chosen scale makes the canvas smaller than the mode minimum, the shell
+## clamps the effective factor and says so; it never rewrites the preference.
 
 const COMPACT_MIN := Vector2(320.0, 480.0)
 ## Landscape-first minimum. A phone on its side is 360-480 dp tall, so the
@@ -19,8 +21,8 @@ const STUDIO_MIN := Vector2(480.0, 320.0)
 const DESKTOP_MIN := Vector2(960.0, 600.0)
 const COMPACT_MAX_DP := 600.0
 const STUDIO_MAX_DP := 1100.0
-const USER_SCALE_MIN := 0.85
-const USER_SCALE_MAX := 1.30
+const USER_SCALE_MIN := 0.50
+const USER_SCALE_MAX := 2.00
 
 
 static func resolve(physical: Vector2i, dpi: float, platform: String, user_scale: float,
@@ -35,14 +37,16 @@ static func resolve(physical: Vector2i, dpi: float, platform: String, user_scale
 	var base_factor := density
 	var logical_before := size / (base_factor * scale)
 	var fit := 1.0
-	var factor := base_factor * scale
+	if mode == "desktop" and fit_desktop:
+		# The fit is a 100% baseline: how much the raw density canvas must
+		# shrink to reach 960x600. User scale multiplies on top so 50-200%
+		# remains a real control even on a phone using the Desktop shell.
+		var baseline := size / base_factor
+		fit = minf(1.0, minf(baseline.x / DESKTOP_MIN.x, baseline.y / DESKTOP_MIN.y))
+		fit = maxf(fit, 0.0001)
+	var factor := base_factor * scale * fit
 	var clamped := false
-	if mode == "desktop":
-		if fit_desktop:
-			fit = minf(1.0, minf(logical_before.x / DESKTOP_MIN.x, logical_before.y / DESKTOP_MIN.y))
-			fit = maxf(fit, 0.0001)
-			factor *= fit
-	else:
+	if mode != "desktop":
 		# Compact and Studio must never overflow the physical canvas: cap the
 		# factor so the logical canvas keeps the mode's own minimum size. The
 		# two modes have different shapes, so they cannot share one minimum.
@@ -51,6 +55,11 @@ static func resolve(physical: Vector2i, dpi: float, platform: String, user_scale
 		if factor > max_factor:
 			factor = maxf(max_factor, 0.0001)
 			clamped = true
+	elif fit_desktop:
+		# Surface the honest case where a large user scale pushes the Desktop
+		# canvas below its 960x600 design. The shell warns; it does not clamp.
+		var logical_at_choice := size / maxf(factor, 0.0001)
+		clamped = logical_at_choice.x < DESKTOP_MIN.x - 0.5 or logical_at_choice.y < DESKTOP_MIN.y - 0.5
 	var logical_after := size / factor
 	return {
 		"mode": mode,
@@ -63,7 +72,7 @@ static func resolve(physical: Vector2i, dpi: float, platform: String, user_scale
 		"factor": factor,
 		"logical_after": logical_after,
 		"clamped": clamped,
-		"user_scale_enabled": fit >= 0.999,
+		"user_scale_enabled": true,
 	}
 
 

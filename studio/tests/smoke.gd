@@ -107,9 +107,20 @@ func _ready() -> void:
 		_check(phone_desktop["mode"] == "desktop", "desktop is selectable on a phone")
 		_check(phone_desktop["fit"] < 1.0, "desktop on a phone shrinks to fit")
 		_check(phone_desktop["logical_after"].x >= 959.0 and phone_desktop["logical_after"].y >= 599.0, "desktop fit keeps 960x600 logical")
-		_check(not phone_desktop["user_scale_enabled"], "desktop fit disables user scale")
+		_check(bool(phone_desktop["user_scale_enabled"]), "desktop fit keeps user scale enabled")
 		var desktop_min = LayoutMathScript.resolve(Vector2i(960, 600), 160.0, "Linux", 1.0, "desktop", true)
 		_check(is_equal_approx(desktop_min["fit"], 1.0), "960x600 desktop has 100 percent fit")
+		var huge_scale = LayoutMathScript.resolve(Vector2i(1440, 900), 160.0, "Linux", 2.0, "desktop", true)
+		_check(is_equal_approx(float(huge_scale["user_scale"]), 2.0), "layout math accepts 200 percent")
+		_check(is_equal_approx(float(huge_scale["factor"]), 2.0), "200 percent doubles the effective factor")
+		_check(huge_scale["logical_after"].x <= 721.0 and huge_scale["logical_after"].y <= 451.0, "200 percent halves the logical canvas")
+		_check(bool(huge_scale["user_scale_enabled"]), "200 percent is never locked out")
+		var tiny_scale = LayoutMathScript.resolve(Vector2i(1440, 900), 160.0, "Linux", 0.5, "desktop", true)
+		_check(is_equal_approx(float(tiny_scale["user_scale"]), 0.5), "layout math accepts 50 percent")
+		_check(is_equal_approx(float(tiny_scale["factor"]), 0.5), "50 percent halves the effective factor")
+		var fit_scale_1 = LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "desktop", true)
+		var fit_scale_2 = LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 2.0, "desktop", true)
+		_check(float(fit_scale_2["factor"]) > float(fit_scale_1["factor"]), "user scale still changes the factor under desktop fit")
 		var scaled_phone = LayoutMathScript.resolve(Vector2i(360, 640), 160.0, "Android", 1.3, "compact", false)
 		_check(scaled_phone["factor"] <= 1.125, "compact scale clamps to keep 320x480")
 		_check(scaled_phone["logical_after"].x >= 319.0 and scaled_phone["logical_after"].y >= 479.0, "compact minimum canvas holds")
@@ -125,11 +136,11 @@ func _ready() -> void:
 		prefs_a.settings_path = test_path
 		prefs_a.load_settings()
 		_check(prefs_a.get_value("display.layout", "") == "auto", "prefs provide display defaults")
-		prefs_a.set_value("display.user_scale", 1.3)
+		prefs_a.set_value("display.user_scale", 1.8)
 		var prefs_b = PrefsScript.new()
 		prefs_b.settings_path = test_path
 		prefs_b.load_settings()
-		_check(is_equal_approx(float(prefs_b.get_value("display.user_scale", 0.0)), 1.3), "prefs persist values")
+		_check(is_equal_approx(float(prefs_b.get_value("display.user_scale", 0.0)), 1.8), "prefs persist values outside the old range")
 		prefs_a.free()
 		prefs_b.free()
 		DirAccess.remove_absolute(test_path)
@@ -603,27 +614,43 @@ func _ready() -> void:
 	editor.get_viewport().push_input(outside_drawer)
 	await get_tree().process_frame
 	_check(not editor._drawer_open, "a tap outside the drawer closes it")
-	# The window is still a portrait phone here, where Studio now uses an
-	# overlay dock. Prove the side-by-side dock on a wide workbench.
+	# The window is still a portrait phone here, where Compact uses its bottom
+	# bar. On a wide workbench the stage keeps a 44 dp panel rail and the dock
+	# opens as an overlay instead of reserving a column.
 	editor.size = Vector2(1280.0, 800.0)
 	editor._apply_shell()
 	editor.set_workspace_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor.workspace_mode() == "studio", "studio mode applies")
-	_check(editor._dock.visible, "studio dock is visible")
+	var wide_rail = editor.get("_panel_rail")
+	_check(wide_rail != null and wide_rail.visible, "studio keeps the right panel rail")
+	if wide_rail != null:
+		_check(absf(wide_rail.size.x - 44.0) < 1.0, "the panel rail is 44 dp wide")
+	_check(not editor._dock.visible, "studio dock starts closed")
 	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
+	var view_before: float = editor._view.size.x
+	editor._toggle_drawer("scene")
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._drawer_open and editor._dock.visible, "studio opens the dock flyout")
+	_check(editor._drawer_scrim.visible, "the flyout dims the stage it covers")
+	_check(absf(editor._view.size.x - view_before) < 1.0, "opening the flyout does not shrink the viewport")
 	_check(absf(editor._dock.get_global_rect().end.y - editor.size.y) <= 1.0, "studio dock reaches the bottom edge")
-	_check(editor._outliner_panel.size.y >= 240.0, "studio scene list gets a usable share of the dock")
+	_check(editor._outliner_panel.size.y >= 320.0, "the scene page owns the flyout height")
 	var outliner = editor._outliner
 	var outliner_overflow: bool = outliner._list.get_combined_minimum_size().y + 16.0 > outliner._scroll.size.y
 	_check(not outliner_overflow or absf(fmod(outliner._scroll.size.y - 6.0, 45.0)) < 0.6, "scene list viewport ends on a whole row")
+	editor._close_drawer()
+	await get_tree().process_frame
 	editor.set_workspace_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor.workspace_mode() == "desktop", "desktop mode applies on any screen")
 	_check(editor._status_bar.visible, "desktop status bar is visible")
 	_check(editor._top_bar.size.y >= 35.0 and editor._top_bar.size.y <= 38.0, "desktop menu bar is 36 dp")
+	_check(editor.get("_panel_rail") != null and editor.get("_panel_rail").visible, "desktop keeps the panel rail")
+	_check(not editor._dock.visible, "desktop dock starts closed")
 	_check(str(Prefs.get_value("display.layout", "")) == "desktop", "workspace mode persists")
 
 	print("SMOKE STEP: editor type and touch floor")
@@ -684,33 +711,47 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._short, "915x412 resolves as a short landscape shell")
 	_check(not editor._timeline_visible, "short landscape starts with the dope sheet folded")
-	var folded_stack := 56.0
-	if editor.get("_clip_lane") != null and editor.get("_media_lanes") != null:
-		var lane_min: float = editor.get("_clip_lane").get_combined_minimum_size().y
-		var media_min: float = editor.get("_media_lanes").get_combined_minimum_size().y
-		folded_stack = 56.0 + lane_min + media_min
-	_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_stack) < 0.5, "folded landscape timeline keeps transport, clip lane and media lanes")
-	_check(editor._dock_slot.custom_minimum_size.x >= 240.0 and editor._dock_slot.custom_minimum_size.x <= 300.0, "landscape dock leaves the viewport in charge")
+	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "the folded landscape stage is a 56 dp transport")
+	var short_lane = editor.get("_clip_lane")
+	var short_media = editor.get("_media_lanes")
+	_check(short_lane != null and not short_lane.visible, "the folded stage hides the sequence lane")
+	_check(short_media != null and not short_media.visible, "the folded stage hides the media headers")
+	var short_rail = editor.get("_panel_rail")
+	_check(short_rail != null and short_rail.visible, "landscape keeps the right panel rail")
+	if short_rail != null:
+		_check(absf(short_rail.size.x - 44.0) < 1.0, "landscape panel rail is 44 dp wide")
+	_check(not editor._dock.visible, "landscape dock starts closed")
+	_check(editor._view.size.x >= 800.0, "landscape viewport reclaims the dock column")
 	editor._timeline.set_sheet_visible(true)
 	await get_tree().process_frame
 	editor._timeline._refresh_compact()
-	_check(editor._timeline._compact_header.visible, "a narrow landscape sheet exposes graph, loop, snap, delete and fold")
-	_check(editor._timeline.get_combined_minimum_size().x <= 591.0, "the landscape transport fits the center column")
+	if editor._timeline._available_width >= 640.0:
+		_check(
+			editor._timeline._loop_button.visible
+			and editor._timeline._mode_button.visible
+			and editor._timeline._snap_button.visible
+			and not editor._timeline._compact_header.visible,
+			"the wide landscape sheet keeps graph, loop and snap in the transport"
+		)
+	else:
+		_check(editor._timeline._compact_header.visible, "a narrow landscape sheet exposes graph, loop, snap, delete and fold")
+	_check(editor._timeline.get_combined_minimum_size().x <= editor._view.size.x + 1.0, "the landscape transport fits the stage width")
 	editor._timeline.set_sheet_visible(false)
 	editor.size = Vector2(412.0, 915.0)
 	editor.set_workspace_mode("studio")
 	editor._apply_shell()
 	_check(not editor._short, "412x915 resolves as a tall studio shell")
-	_check(editor._timeline_visible, "tall studio opens the dope sheet by default")
+	_check(not editor._timeline_visible, "tall studio also starts with the dope sheet folded")
 
 	print("SMOKE STEP: narrow studio drawer")
 	editor._apply_shell()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(not editor._dock_slot.visible, "narrow studio gives the viewport the full width")
+	var narrow_rail = editor.get("_panel_rail")
+	_check(narrow_rail == null or not narrow_rail.visible, "sub-minimum studio falls back to the panel toggle")
 	_check(not editor._dock.visible, "narrow studio dock starts closed")
-	_check(editor._top_bar._panels_button.visible, "narrow studio exposes a panel toggle")
-	_check(editor._view.size.x >= 340.0, "narrow studio viewport keeps a usable width")
+	_check(editor._top_bar._panels_button.visible, "the panel toggle opens the flyout on a 412 dp stage")
+	_check(editor._view.size.x >= 300.0, "narrow studio viewport keeps a usable width")
 	var view_rect: Rect2 = editor._view.get_global_rect()
 	var hud_rect: Rect2 = editor._view._quick_render_button.get_global_rect()
 	_check(view_rect.encloses(hud_rect), "narrow studio HUD stays inside the viewport")
@@ -722,10 +763,11 @@ func _ready() -> void:
 	_check(editor._dock_close_button.visible, "narrow studio drawer can be dismissed")
 	editor._close_drawer()
 	await get_tree().process_frame
-	_check(not editor._dock.visible and not editor._dock_slot.visible, "closing the drawer returns the full width")
+	_check(not editor._dock.visible, "closing the drawer returns the stage to the viewport")
 	editor.set_workspace_mode("compact")
 	await get_tree().process_frame
 	_check(not editor._top_bar._panels_button.visible, "compact uses the bottom bar for panels")
+	_check(editor.get("_panel_rail") == null or not editor.get("_panel_rail").visible, "compact hides the right panel rail")
 	await get_tree().process_frame
 
 	print("SMOKE STEP: timeline fold control")
@@ -771,30 +813,30 @@ func _ready() -> void:
 		_check(media_lanes._doc == doc, "media lanes read the adopted document")
 	if lane != null:
 		_check(lane.get_combined_minimum_size().y >= 44.0, "the clip lane keeps a real row height")
+		_check(not lane.visible, "the folded stage hides the sequence lane")
 	if media_lanes != null:
 		_check(media_lanes.is_collapsed(), "media lanes start collapsed")
 		_check(absf(media_lanes.get_combined_minimum_size().y - 44.0) < 0.5, "collapsed media lanes cost a 44 dp header")
+		_check(not media_lanes.visible, "the folded stage hides the media header")
 		if lane != null:
-			var folded_total: float = 56.0 + lane.get_combined_minimum_size().y + media_lanes.get_combined_minimum_size().y
+			var folded_total: float = 56.0
 			_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_total) < 0.5,
-				"the folded sheet keeps transport, clip lane and collapsed media lanes")
-		# Collapsing is a layout concern only: the panel must reserve the real
-		# height as the body opens, and give it back when the lanes fold.
-		editor._timeline_visible = true
-		editor._sync_timeline_visibility()
-		await get_tree().process_frame
-		var folded_panel: float = editor._timeline_panel.custom_minimum_size.y
-		media_lanes.set_collapsed(false)
-		await get_tree().process_frame
-		_check(not media_lanes.is_collapsed(), "media lanes expand on request")
-		_check(editor._timeline_panel.custom_minimum_size.y > folded_panel,
-			"expanding media lanes grows the timeline panel")
-		media_lanes.set_collapsed(true)
-		await get_tree().process_frame
-		_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_panel) < 0.5,
-			"collapsing media lanes restores the timeline height")
-		editor._timeline_visible = false
-		editor._sync_timeline_visibility()
+				"the folded sheet is a 56 dp transport")
+			editor._timeline_visible = true
+			editor._sync_timeline_visibility()
+			await get_tree().process_frame
+			_check(lane.visible, "opening the stage reveals the sequence lane")
+			_check(media_lanes.visible, "opening the stage reveals the collapsed media header")
+			var folded_panel: float = editor._timeline_panel.custom_minimum_size.y
+			media_lanes.set_collapsed(false)
+			await get_tree().process_frame
+			_check(not media_lanes.is_collapsed(), "media lanes expand on request")
+			_check(editor._timeline_panel.custom_minimum_size.y > folded_panel,
+				"expanding media lanes grows the timeline panel")
+			media_lanes.set_collapsed(true)
+			await get_tree().process_frame
+			_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_panel) < 0.5,
+				"collapsing media lanes restores the timeline height")
 
 	var tl_play: Button = editor._timeline._play_button
 	_check(tl_play != null, "the dope sheet keeps a clip transport")
@@ -847,7 +889,13 @@ func _ready() -> void:
 		_check(false, "the rig overlay follows the active rig tab")
 		_check(false, "the drawer exposes a visible rig tab")
 	if rig_panel != null and editor._drawer_rig_tab != null:
-		_check(editor._drawer_rig_tab.visible, "the rig tab is visible on tabbed shells")
+		var shell_rail = editor.get("_panel_rail")
+		if editor.workspace_mode() == "compact":
+			_check(editor._drawer_rig_tab.visible, "the rig tab is visible on compact shells")
+		elif shell_rail != null and shell_rail.visible:
+			_check(shell_rail.page_button("rig") != null, "the panel rail exposes the rig page on wide shells")
+		else:
+			_check(editor._top_bar._panels_button.visible, "the panel toggle exposes the rig page on a sub-minimum shell")
 		_check(editor.get("_rig_panel") != null and editor.get("_rig_panel").visible, "the rig tab keeps the panel reachable")
 		if rig_overlay != null:
 			# Rig mode follows the active dock page: on the Rig tab the overlay
@@ -980,11 +1028,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(not editor._timeline_visible, "graph mode does not reopen a folded sheet")
 	var folded_graph := 56.0
-	if editor.get("_clip_lane") != null and editor.get("_media_lanes") != null:
-		var lane_min_graph: float = editor.get("_clip_lane").get_combined_minimum_size().y
-		var media_min_graph: float = editor.get("_media_lanes").get_combined_minimum_size().y
-		folded_graph = 56.0 + lane_min_graph + media_min_graph
-	_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_graph) < 0.5, "folded graph keeps transport, clip lane and media lanes")
+	_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_graph) < 0.5, "folded graph keeps only the 56 dp transport")
 	editor._timeline_visible = true
 	editor._sync_timeline_visibility()
 	editor._timeline.set_mode("dope")
@@ -1262,13 +1306,24 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor._settings_panel._resolved_mode() == "Compact", "settings reports the resolved workspace")
+	_check(editor._settings_panel._ui_scale_control != null, "settings exposes the UI scale slider")
+	if editor._settings_panel._ui_scale_control != null:
+		var settings_scale = editor._settings_panel._ui_scale_control.slider
+		_check(is_equal_approx(settings_scale.min_value, 50.0) and is_equal_approx(settings_scale.max_value, 200.0), "settings UI scale spans 50 to 200 percent")
+		_check(settings_scale.step <= 1.0, "settings UI scale is continuous in one-percent steps")
 	editor.apply_fit_info(43.0, false, false)
 	await get_tree().process_frame
-	_check(editor._settings_panel._ui_scale_control.disabled, "UI scale is disabled when Desktop fit is active")
+	_check(editor._settings_panel._ui_scale_control.slider.editable, "UI scale stays editable while Desktop fit is active")
 	_check(editor._settings_panel._fit_label.text.contains("43"), "settings shows the fit percentage")
+	_check(editor._settings_panel._fit_label.text.contains("still applies"), "settings explains the slider still works under fit")
 	editor.apply_fit_info(100.0, true, false)
 	await get_tree().process_frame
-	_check(not editor._settings_panel._ui_scale_control.disabled, "UI scale works at 100 percent fit")
+	_check(editor._settings_panel._ui_scale_control.slider.editable, "UI scale works at 100 percent fit")
+	editor._settings_panel._ui_scale_control.set_percent_value(120.0, true)
+	await get_tree().process_frame
+	_check(is_equal_approx(float(Prefs.get_value("display.user_scale", 0.0)), 1.2),
+		"the settings slider persists a 120 percent scale")
+	editor._settings_panel._ui_scale_control.set_percent_value(100.0, true)
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
@@ -1281,13 +1336,24 @@ func _ready() -> void:
 	_check(editor._workspace_sheet._resolved_mode() == "compact", "workspace reports the resolved mode")
 	_check(editor._workspace_sheet._orientation_stacked, "workspace stacks orientation on a narrow sheet")
 	_check(editor._workspace_sheet._orientation_track != null, "workspace exposes a real orientation control")
+	_check(editor._workspace_sheet._scale_control != null, "workspace exposes the UI scale slider")
+	if editor._workspace_sheet._scale_control != null:
+		var workspace_scale = editor._workspace_sheet._scale_control.slider
+		_check(is_equal_approx(workspace_scale.min_value, 50.0) and is_equal_approx(workspace_scale.max_value, 200.0), "workspace UI scale spans 50 to 200 percent")
 	editor.apply_fit_info(43.0, false, false)
 	await get_tree().process_frame
-	_check(editor._workspace_sheet._scale_control.disabled, "workspace UI scale locks when fit is active")
+	_check(editor._workspace_sheet._scale_control.slider.editable, "workspace UI scale stays editable while fit is active")
 	_check(editor._workspace_sheet._fit_label.text.contains("43"), "workspace reports the live fit percentage")
 	editor.apply_fit_info(100.0, true, false)
 	await get_tree().process_frame
-	_check(not editor._workspace_sheet._scale_control.disabled, "workspace UI scale unlocks at 100 percent")
+	_check(editor._workspace_sheet._scale_control.slider.editable, "workspace UI scale stays editable at 100 percent")
+	editor._workspace_sheet._scale_control.set_percent_value(150.0, true)
+	await get_tree().process_frame
+	_check(is_equal_approx(float(Prefs.get_value("display.user_scale", 0.0)), 1.5),
+		"the workspace slider persists a 150 percent scale")
+	_check(is_equal_approx(editor._workspace_sheet._scale_control.scale_value(), 1.5),
+		"the workspace slider exposes its scale as a factor")
+	editor._workspace_sheet._scale_control.set_percent_value(100.0, true)
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
