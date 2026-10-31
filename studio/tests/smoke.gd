@@ -813,8 +813,15 @@ func _ready() -> void:
 			"the timeline owns the clip transport state")
 		_check(tl_play.tooltip_text == "Stop the sequence first",
 			"the timeline owns the disabled transport reason")
+		var sequence_time_before: float = doc.current_time
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before,
+			"the sequence clock advances while the lane plays")
 		_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
-			"the timeline shows the active strip's local time while the sequence runs")
+			"the timeline follows the advancing sequence time")
+		_check(editor._timeline._time_label.text != doc.format_timecode(sequence_time_before),
+			"the timeline label moved with the sequence")
 		lane_play.pressed.emit()
 		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
 		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
@@ -1164,7 +1171,10 @@ func _ready() -> void:
 		await get_tree().process_frame
 		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
 		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
-		_check(editor._timeline_panel.size.y <= 270.0, "915x412 graph sheet stays within the short budget")
+		var short_budget: float = maxf(190.0,
+			editor.size.y - editor._top_bar.custom_minimum_size.y - 96.0 - float(Kit.GUTTER) * 2.0)
+		_check(editor._timeline_panel.size.y <= short_budget + 1.0,
+			"915x412 graph sheet stays within the computed short budget")
 		_check(
 			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
 			"915x412 graph does not overflow the center column"
@@ -1174,7 +1184,10 @@ func _ready() -> void:
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
-		_check(editor._timeline_panel.size.y <= 212.0, "800x360 graph sheet stays within the short budget")
+		var tiny_budget: float = maxf(190.0,
+			editor.size.y - editor._top_bar.custom_minimum_size.y - 96.0 - float(Kit.GUTTER) * 2.0)
+		_check(editor._timeline_panel.size.y <= tiny_budget + 1.0,
+			"800x360 graph sheet stays within the computed short budget")
 		_check(
 			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
 			"800x360 graph does not overflow the center column"
@@ -1316,6 +1329,31 @@ func _ready() -> void:
 	editor._settings_panel.set_option("editor.show_fps", false)
 	_check(bool(Prefs.get_value("editor.show_fps", true)) == false, "settings write Prefs")
 	editor._settings_panel.set_option("editor.show_fps", true)
+	editor._open_settings("media")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._settings_panel.active_category() == "media", "the media settings page opens")
+	var media_texts: Array[String] = []
+	for label in _labels_under(editor._overlay):
+		media_texts.append(label.text)
+	_check(_label_contains(media_texts, "video reference proxy"), "media settings show the proxy section")
+	_check("Proxy fps" in media_texts, "media settings show the proxy fps control")
+	_check("Proxy width" in media_texts, "media settings show the proxy width control")
+	_check(_button_with_text(editor._overlay, "6") != null, "media settings offer the real 6 fps proxy option")
+	editor._settings_panel.set_option("media.proxy_fps", 6)
+	_check(int(Prefs.get_value("media.proxy_fps", 0)) == 6, "the 6 fps proxy option writes Prefs")
+	editor._open_settings("rig")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._settings_panel.active_category() == "rig", "the rig settings page opens")
+	var rig_texts: Array[String] = []
+	for label in _labels_under(editor._overlay):
+		rig_texts.append(label.text)
+	_check(_label_contains(rig_texts, "viewport"), "rig settings show the viewport section")
+	_check("Show overlay" in rig_texts, "rig settings show the overlay control")
+	editor._settings_panel.set_option("rig.show_overlay", false)
+	_check(bool(Prefs.get_value("rig.show_overlay", true)) == false, "the rig overlay option writes Prefs")
+	editor._settings_panel.set_option("rig.show_overlay", true)
 	editor._open_settings("display")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -1718,6 +1756,13 @@ func _labels_under(root: Node) -> Array[Label]:
 		if node is Label:
 			labels.append(node)
 	return labels
+
+
+func _label_contains(texts: Array[String], needle: String) -> bool:
+	for text in texts:
+		if text.to_lower().contains(needle.to_lower()):
+			return true
+	return false
 
 func _line_edits_under(root: Node) -> Array[LineEdit]:
 	var nodes: Array[Node] = []

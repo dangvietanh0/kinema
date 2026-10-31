@@ -2317,7 +2317,6 @@ func _capture_render_chrome() -> void:
 		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
 		"perf": _perf_overlay != null and _perf_overlay.visible,
 		"drawer": _drawer_open,
-		"video": _video_overlay != null and _video_overlay.visible,
 	}
 
 
