@@ -970,6 +970,29 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
+	print("SMOKE STEP: camera track export")
+	# The camera exporter can only sample a real scene camera. The sheet must
+	# expose the format, select that camera, and build the camera options the
+	# editor routes to CameraExport.
+	var _camera_added: String = doc.add_camera(Vector3(1.0, 2.0, 3.0))
+	var camera_sheet = editor.get("_media_export")
+	_check(camera_sheet != null and camera_sheet.has_method("camera_available"),
+		"the media export sheet exposes a camera format")
+	if camera_sheet != null and camera_sheet.has_method("camera_available"):
+		camera_sheet.setup(doc, editor._view)
+		_check(camera_sheet.format_ids().has("camera"), "the media export sheet offers a camera track")
+		_check(camera_sheet.camera_available(), "a scene camera enables the camera export")
+		camera_sheet.set_format("camera")
+		var camera_options: Dictionary = camera_sheet.build_options()
+		_check(str(camera_options.get("format", "")) == "camera", "camera export builds camera options")
+		var exported_camera := str(camera_options.get("camera_id", ""))
+		var exported_camera_obj: Dictionary = doc.get_object(exported_camera)
+		_check(exported_camera != "" and str(exported_camera_obj.get("kind", "")) == "camera",
+			"camera export targets a real scene camera")
+		_check(str(camera_options.get("output_path", "")).ends_with(".json"), "camera export writes a JSON track")
+		camera_sheet.set_format("png")
+	doc.set_selection("")
+
 	# The following step expects the sheet left folded by the fold contract.
 	editor._timeline_visible = false
 	editor._sync_timeline_visibility()
