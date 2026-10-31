@@ -17,6 +17,9 @@ var doc: DocumentScript = null
 
 var _scroll: ScrollContainer
 var _content: VBoxContainer
+var _footer: MarginContainer
+var _footer_rule: ColorRect
+var _actions_row: HBoxContainer
 var _badge: Label
 var _name_edit: LineEdit
 var _header_margin: MarginContainer
@@ -102,12 +105,29 @@ func _build_shell() -> void:
 	_content.add_theme_constant_override("separation", 10)
 	margin.add_child(_content)
 
+	# Destructive actions stay on screen. Inside the scroll body they could end
+	# a few pixels below the viewport on a 900 dp desktop and look clipped.
+	_footer_rule = Kit.vsep()
+	_footer_rule.visible = false
+	add_child(_footer_rule)
+	_footer = MarginContainer.new()
+	_footer.visible = false
+	_footer.add_theme_constant_override("margin_left", 12)
+	_footer.add_theme_constant_override("margin_right", 12)
+	_footer.add_theme_constant_override("margin_top", 8)
+	_footer.add_theme_constant_override("margin_bottom", 10)
+	add_child(_footer)
+	_actions_row = HBoxContainer.new()
+	_actions_row.add_theme_constant_override("separation", 6)
+	_footer.add_child(_actions_row)
+
 func set_collapsed(value: bool, emit_signal: bool = false) -> void:
 	collapsed = value
 	if _rule != null:
 		_rule.visible = not value
 	if _scroll != null:
 		_scroll.visible = not value
+	_sync_footer_visibility()
 	if _header_margin != null:
 		_header_margin.add_theme_constant_override("margin_top", 0 if value else 10)
 		_header_margin.add_theme_constant_override("margin_bottom", 0 if value else 6)
@@ -116,6 +136,15 @@ func set_collapsed(value: bool, emit_signal: bool = false) -> void:
 		_collapse_button.tooltip_text = "Expand object properties" if value else "Collapse object properties"
 	if emit_signal:
 		collapse_toggled.emit(collapsed)
+
+
+func _sync_footer_visibility() -> void:
+	if _footer == null or _actions_row == null:
+		return
+	var present := not collapsed and _actions_row.get_child_count() > 0
+	_footer.visible = present
+	if _footer_rule != null:
+		_footer_rule.visible = present
 
 
 func _on_selection_changed(_id: String) -> void:
@@ -157,6 +186,11 @@ func _rebuild() -> void:
 	for child in _content.get_children():
 		_content.remove_child(child)
 		child.queue_free()
+	if _actions_row != null:
+		for child in _actions_row.get_children():
+			_actions_row.remove_child(child)
+			child.queue_free()
+	_sync_footer_visibility()
 	_fields = {"position": [], "rotation": [], "scale": []}
 	_scrubs.clear()
 	_scrub_values.clear()
@@ -390,7 +424,7 @@ func _add_scrub(label_text: String, property: String, min_value: float, max_valu
 func _build_actions() -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
-	_content.add_child(row)
+	_actions_row.add_child(row)
 	var duplicate := Kit.text_button("Duplicate", "copy", false, true)
 	duplicate.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	duplicate.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -403,6 +437,7 @@ func _build_actions() -> void:
 	delete.add_theme_color_override("icon_normal_color", Kit.DANGER)
 	delete.pressed.connect(_on_delete)
 	row.add_child(delete)
+	_sync_footer_visibility()
 
 # -------------------------------------------------------------------------
 # Editing

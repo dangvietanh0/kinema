@@ -160,6 +160,16 @@ func _ready() -> void:
 			await get_tree().process_frame
 			_check(rig_panel != null and rig_panel.is_visible_in_tree(),
 				label + ": the rig tab shows its panel")
+			if mode == "studio" and editor._panel_rail != null and editor._panel_rail.visible:
+				_check(editor._dock.get_global_rect().end.x <=
+					editor._panel_rail.get_global_rect().position.x + 0.5,
+					label + ": the flyout leaves the panel rail reachable")
+				editor._panel_rail.page_button("inspector").pressed.emit()
+				await get_tree().process_frame
+				_check(editor._compact_tab == "inspector" and editor._drawer_open,
+					label + ": the rail switches pages while the flyout is open")
+				editor._panel_rail.page_button("rig").pressed.emit()
+				await get_tree().process_frame
 			_check_no_overflow(editor, label)
 			_check_no_overflow(main, label)
 			_check_hit_targets(editor, mode, label)
@@ -206,6 +216,29 @@ func _ready() -> void:
 		_check(str(main.layout.get("mode", "")) == "desktop", label + ": the shell resolves desktop")
 		_check(editor._status_bar.visible, label + ": the desktop status bar stays visible")
 		_check(editor._top_bar.size.y <= 38.0, label + ": the desktop menu bar stays at most 38 dp")
+
+	# Desktop properties keep their actions on screen. The scroll body holds the
+	# fields; Duplicate and Delete belong to a fixed footer, not to content that
+	# can end a few pixels below the viewport.
+	await _resize(main, Vector2i(1440, 900))
+	editor.set_workspace_mode("desktop")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	editor._set_compact_tab("inspector")
+	editor._open_drawer()
+	for _i in 4:
+		await get_tree().process_frame
+	var actions = editor._inspector.get("_actions_row")
+	_check(actions != null, "desktop properties expose their actions")
+	if actions != null:
+		_check(actions.get_parent() == editor._inspector._footer,
+			"desktop properties keep actions in a fixed footer")
+		var inspector_rect: Rect2 = editor._inspector.get_global_rect()
+		_check(inspector_rect.encloses(actions.get_global_rect()),
+			"desktop properties actions stay inside the panel")
+	editor._close_drawer()
+	await get_tree().process_frame
 
 	# Leave the machine as the matrix found it, and the project folder behind.
 	Prefs.set_value("display.layout", "auto")

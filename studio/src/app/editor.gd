@@ -299,6 +299,9 @@ func _build_body() -> void:
 	# The right rail is the only permanent panel chrome. The dock itself is an
 	# overlay, so the stage keeps every pixel the old 320 dp column reserved.
 	_panel_rail = PanelRailScript.new()
+	# The rail stays above the scrim and the flyout: pages are one tap away
+	# while a panel is open, not close-then-reopen.
+	_panel_rail.z_index = 13
 	_panel_rail.page_requested.connect(_toggle_drawer)
 	_body.add_child(_panel_rail)
 
@@ -1166,8 +1169,11 @@ func _apply_shell() -> void:
 		bottom_inset += _status_bar.custom_minimum_size.y
 	if _bottom_bar.visible:
 		bottom_inset += _bottom_bar.custom_minimum_size.y
-	_dock.offset_left = -dock_width
-	_dock.offset_right = 0.0
+	# The flyout stops at the rail instead of covering it. Panel pages stay
+	# switchable while a panel is open.
+	var rail_inset := 44.0 if panel_rail_visible else 0.0
+	_dock.offset_left = -(dock_width + rail_inset)
+	_dock.offset_right = -rail_inset
 	_dock.offset_top = _top_bar.custom_minimum_size.y
 	_dock.offset_bottom = -bottom_inset
 	_drawer_scrim.offset_top = _top_bar.custom_minimum_size.y
