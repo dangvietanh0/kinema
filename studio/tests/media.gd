@@ -256,6 +256,11 @@ func _test_video() -> void:
 		var clamped: Dictionary = _doc.media_system.proxy_options({"fps": 60, "max_width": 99999})
 		_check(int(clamped.get("fps", 0)) == 12, "unsupported proxy fps falls back to 12")
 		_check(int(clamped.get("max_width", 0)) == 1920, "proxy width clamps to the largest preset")
+		var six: Dictionary = _doc.media_system.proxy_options({"fps": 6, "max_width": 640})
+		_check(int(six.get("fps", 0)) == 6, "proxy options keep a 6 fps request")
+		var six_ref: Dictionary = VideoReference.default_ref("six", "Six", "video_refs/six", float(six["fps"]), 1.0, 16, 16)
+		_check(int(six_ref.get("fps", 0)) == 6, "a 6 fps proxy request reaches the reference")
+		_check(VideoReference.PROXY_FPS_PRESETS.has(6), "the proxy preset list includes 6 fps")
 		var custom: Dictionary = _doc.media_system.import_video_reference(FIXTURE_DIR.path_join("clip.mp4"), {"fps": 24, "max_width": 640})
 		_check(str(custom.get("error", "")).contains("Android"), "proxy import accepts explicit fps and width options")
 
@@ -833,7 +838,7 @@ func _test_ui() -> void:
 	import_sheet.setup(_doc)
 	add_child(import_sheet)
 	await get_tree().process_frame
-	_check(import_sheet.proxy_fps_options() == [12, 24], "import proxy fps options are 12/24")
+	_check(import_sheet.proxy_fps_options() == [6, 12, 24], "import proxy fps options are 6/12/24")
 	_check(import_sheet.max_width_options().has(1280), "import proxy offers a 1280 max width")
 	_check(import_sheet.unsupported_reason("mp4").contains("Android"), "import sheet explains MP4 extraction is Android-only")
 	_check(import_sheet.unsupported_reason("ogv").contains("VideoStreamPlayer"), "import sheet explains the OGV direct-play path")

@@ -38,8 +38,8 @@ func setup(doc) -> void:
 
 func _seed_proxy_defaults() -> void:
 	# Feed the sheet's selections from the persisted prefs, snapped to the
-	# presets this sheet offers (the prefs allow 6 fps; the proxy presets
-	# currently shipped are 12/24).
+	# presets this sheet offers. The preset list is shared with the media
+	# system and includes 6 fps, so a 6 fps preference is never coerced.
 	var fps := int(Prefs.get_value("media.proxy_fps", 12))
 	if not (fps in PROXY_FPS):
 		var best: int = int(PROXY_FPS[0])
