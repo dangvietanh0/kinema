@@ -1,9 +1,12 @@
 extends VBoxContainer
 ## Media lanes under the dope sheet.
 ##
+## Audio rows carry a mute control; video-reference rows are a tap/drag
+## surface. Both keep the 44 dp touch floor. Both lanes are collapsible, show
+## honest empty states, and never invent a waveform or a frame.
+##
 ## Audio rows are 48 dp because they carry a mute control; video-reference rows
-## are 40 dp and select on tap. Both lanes are collapsible, show honest empty
-## states, and never invent a waveform or a frame.
+## are 44 dp and select on tap.
 
 signal audio_selected(id: String)
 signal video_selected(id: String)
@@ -13,7 +16,7 @@ signal add_video_requested
 signal collapsed_changed(collapsed: bool)
 
 const AUDIO_ROW_HEIGHT := 48.0
-const VIDEO_ROW_HEIGHT := 40.0
+const VIDEO_ROW_HEIGHT := 44.0
 const HEADER_HEIGHT := 44.0
 const PIXELS_PER_SECOND := 80.0
 
@@ -119,6 +122,7 @@ func _build_audio() -> void:
 		var track: Dictionary = raw
 		var row := PanelContainer.new()
 		row.custom_minimum_size.y = AUDIO_ROW_HEIGHT
+		row.set_meta("qa_hit_target", true)
 		row.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT))
 		var box := HBoxContainer.new()
 		box.add_theme_constant_override("separation", 6)
@@ -154,6 +158,7 @@ func _build_video() -> void:
 		var ref: Dictionary = raw
 		var row := PanelContainer.new()
 		row.custom_minimum_size.y = VIDEO_ROW_HEIGHT
+		row.set_meta("qa_hit_target", true)
 		row.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT))
 		var box := HBoxContainer.new()
 		box.add_theme_constant_override("separation", 6)
