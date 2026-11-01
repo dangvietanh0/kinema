@@ -205,7 +205,7 @@ func _build() -> void:
 	_toast_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_center.add_child(_toast_margin)
 	_toast_panel = PanelContainer.new()
-	_toast_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_FLOAT, Kit.BORDER_SOFT, 1))
+	_toast_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_FLOAT, Color(0, 0, 0, 0), 0))
 	_toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_margin.add_child(_toast_panel)
 	var toast_row := HBoxContainer.new()

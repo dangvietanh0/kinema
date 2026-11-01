@@ -23,6 +23,10 @@ extends RefCounted
 ## Two light greys carry meaning and must not be swapped:
 ##   FOCUS (near-white) - UI selection, active tools, primary actions.
 ##   TIME  (grey)       - keys, playhead, transport, 3D selection.
+##
+## Hairlines split into two jobs. BORDER_SOFT separates dense rows and stays
+## quiet; CONTROL_BORDER delimits a control and clears 3:1 against the fills it
+## sits on, so a field edge is readable without re-outlining every panel.
 
 # --- Surfaces -------------------------------------------------------------
 const BG := Color("000000")
@@ -31,8 +35,15 @@ const SURFACE_2 := Color("0C0C0C")
 const SURFACE_3 := Color("121212")
 const SURFACE_HOVER := Color("1E1E1E")
 const SURFACE_ACTIVE := Color("333333")
-const BORDER := Color("3C3C3C")
+## A separator/divider hairline. Deliberately quiet: dividers do not delimit a
+## control, so they are exempt from the 3:1 non-text floor.
 const BORDER_SOFT := Color("242424")
+## A control boundary hairline (field edges, selectable cards). It must clear
+## 3:1 against every fill a control sits on: 3.41:1 on SURFACE_2 and 3.26:1 on
+## SURFACE_3. Do not use it for separators; that would turn the chrome back
+## into a wireframe.
+const CONTROL_BORDER := Color("666666")
+const BORDER := Color("3C3C3C")
 
 # --- Text -----------------------------------------------------------------
 const TEXT := Color("EBEBEB")

@@ -496,7 +496,7 @@ func _build_render_hud() -> void:
 	_render_hud.offset_bottom = -24.0
 	_render_hud.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_render_hud.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Kit.BORDER, 1)
+	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 6
@@ -3138,7 +3138,7 @@ func _open_color_sheet(property: String) -> void:
 		swatch.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 		swatch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		swatch.tooltip_text = str(hex)
-		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, Kit.R_CONTROL, Kit.BORDER, 1))
+		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
 		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), Kit.R_CONTROL, Kit.TEXT_MUTED, 1))
 		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), Kit.R_CONTROL, Kit.FOCUS, 1))
 		swatch.pressed.connect(_set_color_value.bind(color))
@@ -3184,7 +3184,7 @@ func _open_color_sheet(property: String) -> void:
 	_sync_color_controls()
 
 func _color_preview_style() -> StyleBoxFlat:
-	var style := Kit.flat_style(_color_value, Kit.R_CONTROL, Kit.BORDER, 1)
+	var style := Kit.flat_style(_color_value, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	return style

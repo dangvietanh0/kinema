@@ -17,6 +17,7 @@ const SURFACE_HOVER := Tokens.SURFACE_HOVER
 const SURFACE_ACTIVE := Tokens.SURFACE_ACTIVE
 const BORDER := Tokens.BORDER
 const BORDER_SOFT := Tokens.BORDER_SOFT
+const CONTROL_BORDER := Tokens.CONTROL_BORDER
 const TEXT := Tokens.TEXT
 const TEXT_MUTED := Tokens.TEXT_MUTED
 const TEXT_DIM := Tokens.TEXT_DIM
@@ -197,8 +198,10 @@ func _build_theme() -> void:
 	theme.set_stylebox("panel", "Panel", flat_style(SURFACE, 0, clear, 0))
 
 	# LineEdit. Fields are 44 dp tall everywhere: a comfortable touch target
-	# with 12 dp of horizontal breathing room and a 13 sp value.
-	var field := flat_style(SURFACE_2, R_CONTROL, BORDER_SOFT)
+	# with 12 dp of horizontal breathing room and a 13 sp value. The edge is
+	# a control boundary, so it uses CONTROL_BORDER (>= 3:1 on the fill), not
+	# the quiet separator hairline.
+	var field := flat_style(SURFACE_2, R_CONTROL, CONTROL_BORDER)
 	field.content_margin_left = 12
 	field.content_margin_right = 12
 	field.content_margin_top = 10

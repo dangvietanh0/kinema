@@ -278,7 +278,7 @@ func _build_transform_section() -> void:
 		# One frame around X/Y/Z reads as a vector row. Three separately framed
 		# fields with 4 dp gaps looked like unrelated controls.
 		var fields_frame := PanelContainer.new()
-		fields_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.BORDER_SOFT, 1))
+		fields_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
 		section.add_child(fields_frame)
 		var fields := HBoxContainer.new()
 		fields.add_theme_constant_override("separation", 0)
