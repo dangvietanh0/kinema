@@ -82,6 +82,8 @@ func _ready() -> void:
 			_check(editor.workspace_mode() == mode, label + ": the workbench mode applies")
 			_check(str(info.get("mode", "")) == mode, label + ": the resolved layout reports the mode")
 			_check(not editor._timeline_visible, label + ": the dope sheet starts folded")
+			_check(editor._dock.size.x <= 400.5,
+				label + ": the panel flyout respects the 400 dp cap")
 			var panel_rail = editor.get("_panel_rail")
 			var rail_expected: bool = mode != "compact" and editor.size.x >= 480.0
 			if mode == "compact":
@@ -131,6 +133,41 @@ func _ready() -> void:
 				_check(bool(info.get("user_scale_enabled", false)), label + ": desktop fit keeps UI scale enabled")
 				_check(editor.fit_percent() < 100.0, label + ": the editor reports the fit percentage")
 			print("LAYOUT OK: " + label)
+
+	# A 200% interface is the worst case for the shell: the logical canvas
+	# halves while every control keeps its dp minimum. Headless cannot render
+	# the scaled canvas, so it prints LAYOUT SKIP and the xvfb run proves the
+	# pixels; both runs still prove the mode resolves and the rail survives.
+	Prefs.set_value("display.user_scale", 2.0)
+	for scale_spec in [
+		{"size": Vector2i(1440, 900), "mode": "desktop"},
+		{"size": Vector2i(1280, 800), "mode": "studio"},
+	]:
+		var scaled: Dictionary = scale_spec
+		await _resize(main, scaled["size"])
+		editor.set_workspace_mode(str(scaled["mode"]))
+		await get_tree().process_frame
+		await get_tree().process_frame
+		main.refresh_layout_scale()
+		await get_tree().process_frame
+		var scaled_label := "%dx%d %s at 200%%" % [
+			scaled["size"].x, scaled["size"].y, scaled["mode"]
+		]
+		_check(editor.workspace_mode() == str(scaled["mode"]),
+			scaled_label + ": the workbench mode applies")
+		_check(not editor._timeline_visible,
+			scaled_label + ": the dope sheet starts folded")
+		var scaled_rail = editor.get("_panel_rail")
+		_check(scaled_rail != null and scaled_rail.visible,
+			scaled_label + ": the panel rail survives the double scale")
+		if _headless:
+			print("LAYOUT SKIP (headless 200% scale): " + scaled_label)
+		else:
+			_check_no_overflow(editor, scaled_label)
+			_check_no_overflow(main, scaled_label)
+			_check_hit_targets(editor, str(scaled["mode"]), scaled_label)
+		print("LAYOUT OK: " + scaled_label)
+	Prefs.set_value("display.user_scale", 1.0)
 
 	# The expansion surfaces: clip lane, media lanes and the rig tab. They are
 	# laid out at the three sizes the expansion targets, in the two touch

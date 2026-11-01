@@ -627,6 +627,22 @@ func _ready() -> void:
 	_check(wide_rail != null and wide_rail.visible, "studio keeps the right panel rail")
 	if wide_rail != null:
 		_check(absf(wide_rail.size.x - 44.0) < 1.0, "the panel rail is 44 dp wide")
+		# Each rail page is a real toggle: one press opens that page, a second
+		# press closes the flyout. Icon-only buttons also carry an accessible
+		# name so assistive technology can announce them.
+		for page_name in ["scene", "inspector", "rig"]:
+			var page_button: Button = wide_rail.page_button(page_name)
+			_check(page_button.accessibility_name != "",
+				"the %s rail button has an accessible name" % page_name)
+			page_button.pressed.emit()
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_check(editor._drawer_open and editor._compact_tab == page_name,
+				"the rail opens the %s page" % page_name)
+			page_button.pressed.emit()
+			await get_tree().process_frame
+			_check(not editor._drawer_open,
+				"a second %s rail press closes the flyout" % page_name)
 	_check(not editor._dock.visible, "studio dock starts closed")
 	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
 	var view_before: float = editor._view.size.x
@@ -760,6 +776,24 @@ func _ready() -> void:
 		await get_tree().process_frame
 	_check(editor._drawer_open and editor._dock.visible, "narrow studio drawer opens")
 	_check(editor._drawer_scrim.visible, "narrow studio drawer has a scrim")
+	# The rail is gone below the Studio minimum, so the flyout itself has to
+	# carry the three page tabs; otherwise Properties or Rig is unreachable.
+	_check(editor._drawer_scene_tab.visible
+		and editor._drawer_props_tab.visible
+		and editor._drawer_rig_tab.visible,
+		"the sub-480 flyout keeps every page tab")
+	editor._drawer_props_tab.pressed.emit()
+	await get_tree().process_frame
+	_check(editor._compact_tab == "inspector" and editor._inspector_panel.visible,
+		"the sub-480 flyout switches to Properties")
+	editor._drawer_rig_tab.pressed.emit()
+	await get_tree().process_frame
+	_check(editor._compact_tab == "rig" and editor._rig_frame.visible,
+		"the sub-480 flyout switches to Rig")
+	editor._drawer_scene_tab.pressed.emit()
+	await get_tree().process_frame
+	_check(editor._compact_tab == "scene" and editor._outliner_panel.visible,
+		"the sub-480 flyout switches back to Scene")
 	_check(editor._dock_close_button.visible, "narrow studio drawer can be dismissed")
 	editor._close_drawer()
 	await get_tree().process_frame
@@ -1344,6 +1378,10 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._workspace_sheet._scale_control.slider.editable, "workspace UI scale stays editable while fit is active")
 	_check(editor._workspace_sheet._fit_label.text.contains("43"), "workspace reports the live fit percentage")
+	_check(editor._workspace_sheet._fit_label.text.begins_with("Fit 43%"),
+		"the workspace fit label names the fit, not a mode")
+	_check(not editor._workspace_sheet._fit_label.text.contains("Desktop fit"),
+		"the fit label is not reused as Desktop-only copy")
 	editor.apply_fit_info(100.0, true, false)
 	await get_tree().process_frame
 	_check(editor._workspace_sheet._scale_control.slider.editable, "workspace UI scale stays editable at 100 percent")
@@ -1354,6 +1392,39 @@ func _ready() -> void:
 	_check(is_equal_approx(editor._workspace_sheet._scale_control.scale_value(), 1.5),
 		"the workspace slider exposes its scale as a factor")
 	editor._workspace_sheet._scale_control.set_percent_value(100.0, true)
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	print("SMOKE STEP: workspace clamp copy and rotation")
+	editor.size = Vector2(915.0, 412.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	editor._open_workspace_sheet()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var workspace = editor._workspace_sheet
+	_check(workspace._two_column, "a landscape phone opens the workspace in two columns")
+	var landscape_text := ""
+	for workspace_label in _labels_under(workspace):
+		landscape_text += workspace_label.text + "\n"
+	_check(landscape_text.contains("Below 85%"),
+		"the two-column scale hint keeps the touch-floor warning")
+	editor.apply_fit_info(100.0, true, true)
+	await get_tree().process_frame
+	_check(workspace._warning != null and workspace._warning.text.contains("Limited to fit this screen"),
+		"a clamped non-Desktop canvas uses the fit-limited copy")
+	_check(workspace._warning != null and not workspace._warning.text.contains("Desktop stays selected"),
+		"the clamp copy does not claim Desktop is selected")
+	var stored_mode := str(Prefs.get_value("display.layout", ""))
+	editor.size = Vector2(412.0, 915.0)
+	editor._apply_shell()
+	editor.apply_fit_info(100.0, true, true)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not workspace._two_column, "rotating to portrait rebuilds the sheet as one column")
+	_check(workspace._orientation_stacked, "rotating to portrait stacks orientation again")
+	_check(str(Prefs.get_value("display.layout", "")) == stored_mode,
+		"a clamped sheet does not rewrite the saved arrangement")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
