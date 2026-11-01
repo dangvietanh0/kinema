@@ -17,8 +17,6 @@ const EPS := 0.001
 var _failures: Array[String] = []
 var _checks := 0
 var _import_signal_count := 0
-var _ui_signal_count := 0
-var _ui_selected_strip := ""
 var _ui_sheet: Control = null
 
 
@@ -646,10 +644,8 @@ func _test_ui() -> void:
 	lane.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	await get_tree().process_frame
 	lane.setup(doc)
-	lane.strip_selected.connect(func(strip_id: String, clip_id: String) -> void:
-		_ui_signal_count += 1
-		_ui_selected_strip = strip_id
-	)
+	_check(not lane.has_signal("strip_selected"), "the clip lane exposes no unwired strip_selected signal")
+	_check(not lane.has_signal("layers_requested"), "the clip lane exposes no unwired layers_requested signal")
 	lane.sheet_requested.connect(func(control: Control, _title: String, _subtitle: String) -> void:
 		_ui_sheet = control
 	)
@@ -692,7 +688,6 @@ func _test_ui() -> void:
 	lane.tap_strip(strip_b)
 	await get_tree().process_frame
 	_check(doc.active_clip_id() == clip_b, "tapping a strip selects its clip through Document")
-	_check(_ui_signal_count == 1 and _ui_selected_strip == strip_b, "tapping a strip emits strip_selected")
 	_check(_ui_sheet != null, "tapping a strip builds a strip sheet")
 
 	# A short strip keeps a narrow visual block but still gets a 44x44 hit target.

@@ -696,6 +696,12 @@ func _test_android_backend() -> void:
 	})
 	_check(str(Array(relative.get("audio", []))[0].get("path", "")) == "/tmp/kinema_project/audio/step.wav", "manifest resolves relative audio paths against the project")
 
+	_check(AndroidVideo.encode_timeout_seconds(0) >= 300.0, "MP4 poll timeout keeps a 300 s floor")
+	_check(is_equal_approx(AndroidVideo.encode_timeout_seconds(120), 300.0), "a short encode still gets the 300 s floor")
+	_check(is_equal_approx(AndroidVideo.encode_timeout_seconds(720), 480.0), "MP4 poll timeout grows by half a second per frame")
+	_check(is_equal_approx(AndroidVideo.encode_timeout_seconds(10000), 5120.0), "a long encode gets a proportional budget")
+	_check(AndroidVideo.encode_timeout_seconds(-5) >= 300.0, "a negative frame count cannot shorten the floor")
+
 	var encoded: Dictionary = backend.encode(manifest, "/tmp/out.mp4")
 	_check(not bool(encoded.get("ok", true)), "encode refuses on Linux")
 	_check(str(encoded.get("error", "")) == AndroidVideo.REASON, "encode refusal uses the exact reason")
@@ -749,7 +755,7 @@ func _test_ui() -> void:
 	lanes.refresh()
 	await get_tree().process_frame
 	_check(lanes.audio_row_height() == 48.0, "audio lane rows are 48 dp")
-	_check(lanes.video_row_height() == 40.0, "video lane rows are 40 dp")
+	_check(lanes.video_row_height() >= 44.0, "video lane rows keep the 44 dp touch floor")
 	_check(lanes.audio_row_count() == 0 and lanes.video_row_count() == 0, "empty media lanes have no rows")
 	_check(lanes.empty_audio_text().contains("No audio tracks"), "audio empty state names the missing tracks")
 	_check(lanes.empty_video_text().contains("No video reference"), "video empty state names the missing reference")
