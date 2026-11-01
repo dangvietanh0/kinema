@@ -1232,7 +1232,7 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 | Reset display | action | — |
 
 - Workspace layout: mọi mode luôn chọn được; Desktop trên màn hình hẹp dùng shrink-to-fit, không fallback.
-- UI scale là scale người dùng; khi Desktop fit < 100%, control bị disable và hiển thị `Fit 43%` thay cho giá trị user scale, kèm hint vì fit sẽ bù lại mọi thay đổi. Khi fit = 100%, control hoạt động bình thường và hiển thị user scale.
+- [Superseded by the 2026-10-30 stage-first addendum] UI scale là scale người dùng; khi fit < 100%, control **không còn bị disable** — scale vẫn chỉnh được và fit tính riêng theo density, user scale nhân lên trên đó. Xem "Free interface scale" trong addendum stage-first shell (2026-10-30).
 - Orientation chỉ hiện trên Android; nếu `FEATURE_ORIENTATION` false, disable + hint.
 - Fullscreen chỉ desktop OS; Android immersive nếu API xác nhận, nếu không ẩn.
 - Safe area preview vẽ inset `WARNING` 1 px + label; chỉ debug.
@@ -1611,7 +1611,7 @@ Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài l
 - Desktop **luôn chọn được** trên điện thoại.
 - Nếu không vừa, toàn bộ UI Desktop được thu nhỏ đều cho đến khi vừa; không fallback Studio, không ẩn panel, không đổi mode.
 - Cơ chế: giảm `content_scale_factor` để canvas logic đạt tối thiểu 960×600; xem 6.1 và 6.6.
-- Hệ quả: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. Bạn đã chấp nhận tradeoff này. UI hiển thị tỉ lệ fit và gợi ý chuyển mode, nhưng không tự đổi. Khi fit < 100%, control UI scale bị disable kèm hint vì fit sẽ bù lại mọi thay đổi.
+- Hệ quả: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. Bạn đã chấp nhận tradeoff này. UI hiển thị tỉ lệ fit và gợi ý chuyển mode, nhưng không tự đổi. [Superseded by the 2026-10-30 stage-first addendum] Khi fit < 100%, control UI scale **không bị disable**; fit là density-only và user scale nhân lên trên đó.
 
 ### 18.2 Renderer mặc định trên Android — đã chốt: Mobile
 
@@ -1631,7 +1631,7 @@ Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài l
 Các mục này không cần bạn trả lời; chúng đã được ghi trong doc. Nếu thấy sai, nói rõ.
 
 - Home dạng list/table; liệt kê **tất cả project** qua `Store.list_projects()` mới; `recent_projects()` chỉ dùng để sort; không hiển thị template vì project JSON không lưu.
-- 44 dp logic cho mọi hành động, kể cả Desktop; mật độ đến từ typography/padding. Desktop fit và user scale < 1.0 làm giảm kích thước vật lý; có indicator. Desktop fit < 100% disable UI scale control.
+- 44 dp logic cho mọi hành động, kể cả Desktop; mật độ đến từ typography/padding. Desktop fit và user scale < 1.0 làm giảm kích thước vật lý; có indicator. [Superseded by the 2026-10-30 stage-first addendum] Desktop fit < 100% **không disable** UI scale control.
 - Export: PNG still + PNG sequence ZIP; không MP4.
 - Import: glTF/GLB + OBJ+MTL; FBX báo không hỗ trợ; một document object mỗi file.
 - UI tiếng Anh; single-select; không Save As.

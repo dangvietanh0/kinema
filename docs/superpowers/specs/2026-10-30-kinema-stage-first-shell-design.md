@@ -69,6 +69,28 @@ density that suited their eyes or device.
   floor. The app does not silently pretend the target grew.
 - The user's choice is persisted and applied to Home and the editor.
 
+## User override — black chrome (2026-11-01, binding)
+
+The user device-tested the stage-first shell on Android and rejected the grey
+chrome:
+
+- The app background is **pure black** (`project.godot` default clear color and
+  the `BG` token). Root, stage gaps, bars and panel bases all read black; the
+  stage is not a grey/graphite sheet. Hierarchy comes from near-black
+  elevation steps a few luminance points apart (the ladder documented in
+  `studio/src/ui/tokens.gd`), never from grey fills.
+- **Remove most outlines.** Panel containers, rails, bars, cards and the
+  flyout do not draw a 1 px border by default. Thin separators remain only
+  where dense rows and fields need them; focus rings and the single
+  destructive red keep their marks. A surface never says the same thing three
+  ways (border + fill + shadow).
+- The UI must not become an unreadable black slab: normal text keeps
+  >= 4.5:1 contrast and control boundaries >= 3:1. Verified on captured
+  pixels, not just on tokens.
+
+Non-goals are unchanged: no new visual primitives, no hue in the chrome, no
+gradients; Delete remains the only red action.
+
 ## Non-goals
 
 - No new panel content, no new modes, no change to document/animation/media/rig
