@@ -63,7 +63,7 @@ for required in \
     "$APP/src/main/assets/src/core/obj_importer.gd" \
     "$APP/src/main/assets/src/core/render_export.gd" \
     "$APP/src/main/assets/src/viewport/studio_sky.gdshader" \
-    "$APP/src/main/assets/assets/fonts/Inter.ttf" \
+    "$APP/src/main/assets/assets/fonts/IBMPlexSans-Regular.ttf" \
     "$APP/src/main/assets/assets/icons/tool-move.svg" \
     "$APP/src/main/assets/assets/icons/speed-graph.svg" \
     "$APP/src/main/assets/assets/licenses/godot/LICENSE.txt" \
