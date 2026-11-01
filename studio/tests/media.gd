@@ -256,6 +256,11 @@ func _test_video() -> void:
 		var clamped: Dictionary = _doc.media_system.proxy_options({"fps": 60, "max_width": 99999})
 		_check(int(clamped.get("fps", 0)) == 12, "unsupported proxy fps falls back to 12")
 		_check(int(clamped.get("max_width", 0)) == 1920, "proxy width clamps to the largest preset")
+		var six: Dictionary = _doc.media_system.proxy_options({"fps": 6, "max_width": 640})
+		_check(int(six.get("fps", 0)) == 6, "proxy options keep a 6 fps request")
+		var six_ref: Dictionary = VideoReference.default_ref("six", "Six", "video_refs/six", float(six["fps"]), 1.0, 16, 16)
+		_check(int(six_ref.get("fps", 0)) == 6, "a 6 fps proxy request reaches the reference")
+		_check(VideoReference.PROXY_FPS_PRESETS.has(6), "the proxy preset list includes 6 fps")
 		var custom: Dictionary = _doc.media_system.import_video_reference(FIXTURE_DIR.path_join("clip.mp4"), {"fps": 24, "max_width": 640})
 		_check(str(custom.get("error", "")).contains("Android"), "proxy import accepts explicit fps and width options")
 
@@ -691,6 +696,12 @@ func _test_android_backend() -> void:
 	})
 	_check(str(Array(relative.get("audio", []))[0].get("path", "")) == "/tmp/kinema_project/audio/step.wav", "manifest resolves relative audio paths against the project")
 
+	_check(AndroidVideo.encode_timeout_seconds(0) >= 300.0, "MP4 poll timeout keeps a 300 s floor")
+	_check(is_equal_approx(AndroidVideo.encode_timeout_seconds(120), 300.0), "a short encode still gets the 300 s floor")
+	_check(is_equal_approx(AndroidVideo.encode_timeout_seconds(720), 480.0), "MP4 poll timeout grows by half a second per frame")
+	_check(is_equal_approx(AndroidVideo.encode_timeout_seconds(10000), 5120.0), "a long encode gets a proportional budget")
+	_check(AndroidVideo.encode_timeout_seconds(-5) >= 300.0, "a negative frame count cannot shorten the floor")
+
 	var encoded: Dictionary = backend.encode(manifest, "/tmp/out.mp4")
 	_check(not bool(encoded.get("ok", true)), "encode refuses on Linux")
 	_check(str(encoded.get("error", "")) == AndroidVideo.REASON, "encode refusal uses the exact reason")
@@ -744,7 +755,7 @@ func _test_ui() -> void:
 	lanes.refresh()
 	await get_tree().process_frame
 	_check(lanes.audio_row_height() == 48.0, "audio lane rows are 48 dp")
-	_check(lanes.video_row_height() == 40.0, "video lane rows are 40 dp")
+	_check(lanes.video_row_height() >= 44.0, "video lane rows keep the 44 dp touch floor")
 	_check(lanes.audio_row_count() == 0 and lanes.video_row_count() == 0, "empty media lanes have no rows")
 	_check(lanes.empty_audio_text().contains("No audio tracks"), "audio empty state names the missing tracks")
 	_check(lanes.empty_video_text().contains("No video reference"), "video empty state names the missing reference")
@@ -811,7 +822,13 @@ func _test_ui() -> void:
 	_check(export_sheet.progress_text("frames", 42, 144) == "Frame 42/144", "export progress shows frame n/N")
 	_check(export_sheet.progress_text("encoding", 0, 0) == "Encoding video", "export progress shows the encoding phase")
 	_check(export_sheet.progress_text("verifying", 0, 0) == "Verifying", "export progress shows the verifying phase")
-	_check(export_sheet.format_ids() == ["png", "gif", "mp4"], "export sheet offers PNG, GIF and MP4")
+	_check(export_sheet.format_ids() == ["png", "gif", "mp4", "camera"], "export sheet offers PNG, GIF, MP4 and a camera track")
+	var bare_export = MediaExportSheet.new()
+	bare_export.setup(null, null)
+	add_child(bare_export)
+	await get_tree().process_frame
+	_check(not bare_export.camera_available(), "camera export is disabled without a scene camera")
+	_check(bare_export.camera_reason() == MediaExportSheet.CAMERA_REASON, "camera export explains the missing camera")
 	_check(_all_controls_44(export_sheet), "export sheet controls keep the 44 dp floor")
 	_check(_all_primary_96(export_sheet), "export primary action is 96 dp wide")
 	export_sheet.set_output_path("user://exports/custom.png")
@@ -827,7 +844,7 @@ func _test_ui() -> void:
 	import_sheet.setup(_doc)
 	add_child(import_sheet)
 	await get_tree().process_frame
-	_check(import_sheet.proxy_fps_options() == [12, 24], "import proxy fps options are 12/24")
+	_check(import_sheet.proxy_fps_options() == [6, 12, 24], "import proxy fps options are 6/12/24")
 	_check(import_sheet.max_width_options().has(1280), "import proxy offers a 1280 max width")
 	_check(import_sheet.unsupported_reason("mp4").contains("Android"), "import sheet explains MP4 extraction is Android-only")
 	_check(import_sheet.unsupported_reason("ogv").contains("VideoStreamPlayer"), "import sheet explains the OGV direct-play path")

@@ -721,6 +721,10 @@ func _adopt_document(document: Node3D) -> void:
 	if not doc.playback_changed.is_connected(_on_document_playback_changed):
 		doc.playback_changed.connect(_on_document_playback_changed)
 	doc.seek(doc.current_time, true)
+	# A load restores the playhead with a silent seek, so no playback event can
+	# carry it into the sequence snapshot. Adopt it explicitly.
+	_clip_time_before_sequence = float(doc.current_time)
+	_sequence_was_playing = false
 	if _rig_overlay != null:
 		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
 		_sync_rig_overlay()
@@ -1340,6 +1344,7 @@ func _restore_clip_after_sequence() -> void:
 	_restoring_clip = true
 	# Not silent: the dope sheet and clip lane must show the restored playhead.
 	doc.seek(_clip_time_before_sequence)
+	_clip_time_before_sequence = float(doc.current_time)
 	_restoring_clip = false
 
 func _toggle_drawer(tab: String) -> void:
@@ -1951,7 +1956,10 @@ func _run_media_export(options: Dictionary) -> void:
 func _export_failed(message: String) -> void:
 	if _media_export != null:
 		_media_export.set_progress("error")
-		_media_export.set_result("", 0, 0.0, message)
+		# Errors are a status, not a result row: a result renders as
+		# "path · size · duration · tracks", which is meaningless here.
+		_media_export.clear_result()
+		_media_export.set_status(message)
 	_overlay.toast(message, "triangle-alert", Kit.DANGER)
 
 func _export_progress(kind: String) -> Callable:
@@ -1969,6 +1977,9 @@ func _export_png_sequence(options: Dictionary) -> void:
 	var result: Dictionary = await renderer.render(options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
+		# A capture failure stops mid-render and returns the partial directory.
+		if frames_dir != "":
+			_clean_dir(frames_dir)
 		_export_failed(str(result.get("error", "The PNG sequence could not be rendered.")))
 		return
 	if _media_cancel:
@@ -1982,6 +1993,7 @@ func _export_png_sequence(options: Dictionary) -> void:
 	elif not output.ends_with(".zip"):
 		output = output.get_basename() + ".zip"
 	if not RenderExport.zip_directory(frames_dir, output):
+		_clean_dir(frames_dir)
 		_export_failed("The ZIP archive could not be written.")
 		return
 	_clean_dir(frames_dir)
@@ -2010,6 +2022,8 @@ func _export_gif(options: Dictionary) -> void:
 	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
+		if frames_dir != "":
+			_clean_dir(frames_dir)
 		_export_failed(str(result.get("error", "The GIF frames could not be rendered.")))
 		return
 	var frames: Array = []
@@ -2044,12 +2058,9 @@ func _export_gif(options: Dictionary) -> void:
 		output = "user://export.gif"
 	elif not output.ends_with(".gif"):
 		output = output.get_basename() + ".gif"
-	var writer := FileAccess.open(output, FileAccess.WRITE)
-	if writer == null:
+	if not _write_gif_file(output, bytes):
 		_export_failed("The GIF file could not be written.")
 		return
-	writer.store_buffer(bytes)
-	writer.close()
 	var duration: float = float(frame_options["end"]) - float(frame_options["start"])
 	if _media_export != null:
 		_media_export.set_progress("done")
@@ -2076,6 +2087,8 @@ func _export_mp4(options: Dictionary) -> void:
 	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
+		if frames_dir != "":
+			_clean_dir(frames_dir)
 		_export_failed(str(result.get("error", "The MP4 frames could not be rendered.")))
 		return
 	var audio: Array = []
@@ -2100,11 +2113,17 @@ func _export_mp4(options: Dictionary) -> void:
 		output = "user://export.mp4"
 	elif not output.ends_with(".mp4"):
 		output = output.get_basename() + ".mp4"
+	if not _ensure_output_dir(output):
+		_clean_dir(frames_dir)
+		_export_failed("The MP4 output folder could not be created.")
+		return
 	var started: Dictionary = backend.encode(manifest, output)
 	if not bool(started.get("ok", false)):
 		_clean_dir(frames_dir)
 		_export_failed(str(started.get("error", AndroidVideo.REASON)))
 		return
+	var timeout_seconds := AndroidVideo.encode_timeout_seconds(int(result.get("frame_count", 0)))
+	var deadline_msec := Time.get_ticks_msec() + int(ceil(timeout_seconds * 1000.0))
 	while true:
 		var poll: Dictionary = backend.poll()
 		if _media_export != null:
@@ -2120,6 +2139,12 @@ func _export_mp4(options: Dictionary) -> void:
 			backend.cancel()
 			_clean_dir(frames_dir)
 			_export_failed("Export cancelled.")
+			return
+		# A wedged native encoder must end the export, not leave the sheet busy.
+		if Time.get_ticks_msec() >= deadline_msec:
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed("The MP4 encoder did not finish within %d s, so the export was cancelled." % int(round(timeout_seconds)))
 			return
 		await get_tree().create_timer(0.05).timeout
 	_clean_dir(frames_dir)
@@ -2156,9 +2181,33 @@ func _export_camera(options: Dictionary) -> void:
 		_media_export.set_result(output, _file_size(output), duration, "camera track")
 	_overlay.toast("Camera track exported", "check", Kit.SUCCESS)
 
+func _write_gif_file(path: String, bytes: PackedByteArray) -> bool:
+	if not _ensure_output_dir(path):
+		return false
+	var writer := FileAccess.open(path, FileAccess.WRITE)
+	if writer == null:
+		return false
+	writer.store_buffer(bytes)
+	writer.close()
+	return true
+
+
+## `FileAccess.open(..., WRITE)` never creates parent directories. Default
+## exports point below `user://exports`, so every writer creates its parent
+## first instead of failing the first time.
+func _ensure_output_dir(path: String) -> bool:
+	var directory := path.get_base_dir()
+	if directory == "" or directory == ".":
+		return true
+	return DirAccess.make_dir_recursive_absolute(directory) == OK
+
+
 func _clean_dir(path: String) -> void:
 	var dir := DirAccess.open(path)
 	if dir == null:
+		# The timeout and failure paths depend on this cleanup, so a silent
+		# no-op would leave a frames directory behind with no diagnostic.
+		push_warning("Kinema: could not open %s to clean it; frames may remain." % path)
 		return
 	dir.list_dir_begin()
 	var name := dir.get_next()
@@ -2217,6 +2266,9 @@ func _exit_render_mode() -> void:
 	if doc != null:
 		doc.pause()
 		doc.seek(_render_saved_time, true)
+		# The restore is silent, so the sequence snapshot must be told about it
+		# here; otherwise a later sequence stop rewinds to a stale clip time.
+		_clip_time_before_sequence = float(doc.current_time)
 		if _render_was_playing:
 			doc.play()
 	if _view != null:
@@ -2265,28 +2317,30 @@ func _on_document_playback_changed(_time: float, _playing: bool) -> void:
 		return
 	if doc.is_sequence_playing():
 		_sequence_was_playing = true
-	elif _sequence_was_playing and not _playing:
+		return
+	if _sequence_was_playing and not _playing:
 		# Every stop path (lane pause, Space, natural end, stop_sequence) goes
 		# through here, so the clip clock always returns to its saved playhead.
+		# Do not snapshot the sequence's local time over the saved clip time.
 		_restore_clip_after_sequence()
-	elif _sequence_was_playing:
+		return
+	# Every other non-sequence event is clip time, including while the clip
+	# plays. `play_sequence()` overwrites `current_time` without a preceding
+	# clip emit, so this snapshot must already be current when the lane takes
+	# over.
+	_clip_time_before_sequence = float(doc.current_time)
+	if _sequence_was_playing:
 		# A clip play superseded the sequence without a stop emit; drop the
 		# stale flag so the next clip pause does not rewind the new run.
 		_sequence_was_playing = false
-		_clip_time_before_sequence = float(doc.current_time)
-	elif not _playing:
-		# An ordinary clip pause/seek keeps the saved playhead current so a
-		# later sequence run restores exactly where the clip was.
-		_clip_time_before_sequence = float(doc.current_time)
 
 func _sync_sequence_transport() -> void:
 	if doc == null:
 		return
-	if _timeline != null and _timeline._play_button != null:
-		var sequence_running := doc.is_sequence_playing()
-		_timeline._play_button.disabled = sequence_running
-		_timeline._play_button.tooltip_text = (
-			"Stop the sequence first" if sequence_running else "Play / pause")
+	if _timeline != null:
+		# The timeline owns its disabled flag and reason; the shell only says
+		# whether the clip clock may run.
+		_timeline.set_clip_transport_enabled(not doc.is_sequence_playing())
 
 
 func _capture_render_chrome() -> void:
@@ -2302,7 +2356,6 @@ func _capture_render_chrome() -> void:
 		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
 		"perf": _perf_overlay != null and _perf_overlay.visible,
 		"drawer": _drawer_open,
-		"video": _video_overlay != null and _video_overlay.visible,
 	}
 
 

@@ -989,8 +989,21 @@ func _ready() -> void:
 		_check(doc.is_sequence_playing(), "the clip lane button plays the sequence clock")
 		_check(not doc.is_playing, "the sequence does not run both clocks")
 		_check(tl_play.disabled, "timeline clip transport is disabled while the sequence plays")
+		_check(editor._timeline.has_method("set_clip_transport_enabled"),
+			"the timeline owns the clip transport state")
+		_check(tl_play.tooltip_text == "Stop the sequence first",
+			"the timeline owns the disabled transport reason")
+		var sequence_time_before: float = doc.current_time
+		# Wait a fixed slice instead of two raw frames: format_timecode is
+		# frame-quantized, so two uncapped headless frames can land inside the
+		# same frame and make the label comparison flake.
+		await get_tree().create_timer(0.2).timeout
+		_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before + 0.05,
+			"the sequence clock advances while the lane plays")
 		_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
-			"the timeline shows the active strip's local time while the sequence runs")
+			"the timeline follows the advancing sequence time")
+		_check(editor._timeline._time_label.text != doc.format_timecode(sequence_time_before),
+			"the timeline label moved with the sequence")
 		lane_play.pressed.emit()
 		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
 		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
@@ -1156,6 +1169,29 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
+	print("SMOKE STEP: camera track export")
+	# The camera exporter can only sample a real scene camera. The sheet must
+	# expose the format, select that camera, and build the camera options the
+	# editor routes to CameraExport.
+	var _camera_added: String = doc.add_camera(Vector3(1.0, 2.0, 3.0))
+	var camera_sheet = editor.get("_media_export")
+	_check(camera_sheet != null and camera_sheet.has_method("camera_available"),
+		"the media export sheet exposes a camera format")
+	if camera_sheet != null and camera_sheet.has_method("camera_available"):
+		camera_sheet.setup(doc, editor._view)
+		_check(camera_sheet.format_ids().has("camera"), "the media export sheet offers a camera track")
+		_check(camera_sheet.camera_available(), "a scene camera enables the camera export")
+		camera_sheet.set_format("camera")
+		var camera_options: Dictionary = camera_sheet.build_options()
+		_check(str(camera_options.get("format", "")) == "camera", "camera export builds camera options")
+		var exported_camera := str(camera_options.get("camera_id", ""))
+		var exported_camera_obj: Dictionary = doc.get_object(exported_camera)
+		_check(exported_camera != "" and str(exported_camera_obj.get("kind", "")) == "camera",
+			"camera export targets a real scene camera")
+		_check(str(camera_options.get("output_path", "")).ends_with(".json"), "camera export writes a JSON track")
+		camera_sheet.set_format("png")
+	doc.set_selection("")
+
 	# The following step expects the sheet left folded by the fold contract.
 	editor._timeline_visible = false
 	editor._sync_timeline_visibility()
@@ -1319,7 +1355,10 @@ func _ready() -> void:
 		await get_tree().process_frame
 		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
 		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
-		_check(editor._timeline_panel.size.y <= 270.0, "915x412 graph sheet stays within the short budget")
+		var short_budget: float = maxf(190.0,
+			editor.size.y - editor._top_bar.custom_minimum_size.y - 96.0 - float(Kit.GUTTER) * 2.0)
+		_check(editor._timeline_panel.size.y <= short_budget + 1.0,
+			"915x412 graph sheet stays within the computed short budget")
 		_check(
 			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
 			"915x412 graph does not overflow the center column"
@@ -1329,7 +1368,10 @@ func _ready() -> void:
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
-		_check(editor._timeline_panel.size.y <= 212.0, "800x360 graph sheet stays within the short budget")
+		var tiny_budget: float = maxf(190.0,
+			editor.size.y - editor._top_bar.custom_minimum_size.y - 96.0 - float(Kit.GUTTER) * 2.0)
+		_check(editor._timeline_panel.size.y <= tiny_budget + 1.0,
+			"800x360 graph sheet stays within the computed short budget")
 		_check(
 			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
 			"800x360 graph does not overflow the center column"
@@ -1391,6 +1433,37 @@ func _ready() -> void:
 		_check(action_rect.end.y <= scroll_rect.end.y + 0.5, "render sequence action is above the fold in the desktop modal")
 	_check(editor._sequence_frame_count() == 144, "sequence frame count follows duration and fps")
 	_check(not editor._render_busy, "render sheet is idle on open")
+
+	print("SMOKE STEP: export error reporting")
+	media_export = editor.get("_media_export")
+	_check(media_export != null and media_export.has_method("status_text"),
+		"the media export sheet exposes its status line")
+	if media_export != null and media_export.has_method("status_text"):
+		editor._export_failed("Fixture export failure")
+		_check(media_export.status_text() == "Fixture export failure",
+			"export errors live in the status line")
+		_check(media_export.result_text() == "", "export errors are not result metadata")
+
+	print("SMOKE STEP: export output directories")
+	# Headless cannot wait for frame_post_draw, so exercise the writer seam
+	# directly: the GIF writer must create a missing parent directory, and the
+	# MP4 handoff must ensure its output folder exists.
+	var gif_output := "user://export_dir_fixture/nested/kinema.gif"
+	var stale_dir := "user://export_dir_fixture"
+	if DirAccess.dir_exists_absolute(stale_dir):
+		_remove_tree(stale_dir)
+	_check(editor.has_method("_write_gif_file"), "the editor exposes the GIF writer seam")
+	if editor.has_method("_write_gif_file"):
+		var gif_bytes := PackedByteArray([71, 73, 70, 56, 57, 97])
+		_check(editor._write_gif_file(gif_output, gif_bytes), "the GIF writer creates a missing output directory")
+		_check(FileAccess.file_exists(gif_output), "the GIF lands below the created directory")
+		var mp4_output := "user://export_dir_fixture/mp4/nested/kinema.mp4"
+		if editor.has_method("_ensure_output_dir"):
+			_check(editor._ensure_output_dir(mp4_output), "the MP4 output directory can be created")
+			_check(DirAccess.dir_exists_absolute(mp4_output.get_base_dir()), "the MP4 parent directory exists")
+		else:
+			_check(false, "the editor exposes an output directory helper")
+	_remove_tree(stale_dir)
 	editor._overlay.close_modal()
 	editor._overlay.set_layout_mode(previous_layout)
 	await get_tree().process_frame
@@ -1440,6 +1513,31 @@ func _ready() -> void:
 	editor._settings_panel.set_option("editor.show_fps", false)
 	_check(bool(Prefs.get_value("editor.show_fps", true)) == false, "settings write Prefs")
 	editor._settings_panel.set_option("editor.show_fps", true)
+	editor._open_settings("media")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._settings_panel.active_category() == "media", "the media settings page opens")
+	var media_texts: Array[String] = []
+	for label in _labels_under(editor._overlay):
+		media_texts.append(label.text)
+	_check(_label_contains(media_texts, "video reference proxy"), "media settings show the proxy section")
+	_check("Proxy fps" in media_texts, "media settings show the proxy fps control")
+	_check("Proxy width" in media_texts, "media settings show the proxy width control")
+	_check(_button_with_text(editor._overlay, "6") != null, "media settings offer the real 6 fps proxy option")
+	editor._settings_panel.set_option("media.proxy_fps", 6)
+	_check(int(Prefs.get_value("media.proxy_fps", 0)) == 6, "the 6 fps proxy option writes Prefs")
+	editor._open_settings("rig")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._settings_panel.active_category() == "rig", "the rig settings page opens")
+	var rig_texts: Array[String] = []
+	for label in _labels_under(editor._overlay):
+		rig_texts.append(label.text)
+	_check(_label_contains(rig_texts, "viewport"), "rig settings show the viewport section")
+	_check("Show overlay" in rig_texts, "rig settings show the overlay control")
+	editor._settings_panel.set_option("rig.show_overlay", false)
+	_check(bool(Prefs.get_value("rig.show_overlay", true)) == false, "the rig overlay option writes Prefs")
+	editor._settings_panel.set_option("rig.show_overlay", true)
 	editor._open_settings("display")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -1795,8 +1893,53 @@ func _ready() -> void:
 		DirAccess.remove_absolute(fixture.path_join("tex.png"))
 		DirAccess.remove_absolute(fixture)
 
+	print("SMOKE STEP: sequence clock snapshots")
+	# The clip playhead is the document's own state, not the last clip event.
+	# A project loaded at t=3 must still be at 3 after a sequence run, and a
+	# clip that advanced while playing must be restored, not the last pause.
+	var reopen: Dictionary = Store.load_project(doc.project_id)
+	_check(not reopen.is_empty(), "the project reopens for the clock snapshots")
+	if not reopen.is_empty():
+		var reopen_data: Dictionary = reopen.get("data", {}).duplicate(true)
+		reopen_data["current_time"] = 3.0
+		editor.open_loaded(reopen.get("meta", {}), reopen_data)
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var clock_doc = editor.doc
+		_check(is_equal_approx(clock_doc.current_time, 3.0), "a loaded project keeps its saved playhead")
+		clock_doc.play_sequence()
+		_check(clock_doc.is_sequence_playing(), "the loaded project can run its sequence")
+		clock_doc.pause_sequence()
+		_check(is_equal_approx(clock_doc.current_time, 3.0),
+			"stopping a sequence restores the loaded playhead")
+
+		clock_doc.seek(0.5)
+		clock_doc.play()
+		await get_tree().create_timer(0.15).timeout
+		var advanced_clip: float = clock_doc.current_time
+		_check(advanced_clip > 0.55, "the clip clock advanced before the sequence")
+		clock_doc.play_sequence()
+		clock_doc.pause_sequence()
+		_check(is_equal_approx(clock_doc.current_time, advanced_clip),
+			"a sequence restores the clip time that was playing")
+
+		clock_doc.pause()
+		clock_doc.seek(0.5)
+		clock_doc.play()
+		await get_tree().create_timer(0.15).timeout
+		var preview_clip: float = clock_doc.current_time
+		editor._enter_render_mode()
+		_check(editor._render_mode, "the render preview opens for the snapshot test")
+		editor._exit_render_mode()
+		await get_tree().process_frame
+		clock_doc.play_sequence()
+		clock_doc.pause_sequence()
+		_check(is_equal_approx(clock_doc.current_time, preview_clip),
+			"a silent render-exit restore becomes the saved clip playhead")
+		clock_doc.pause()
+
 	# Leave and clean up the temporary project.
-	var project_id: String = doc.project_id
+	var project_id: String = editor.doc.project_id
 	editor._leave(false)
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -1809,6 +1952,24 @@ func _write_test_text(path: String, text: String) -> void:
 	if file != null:
 		file.store_string(text)
 		file.close()
+
+
+func _remove_tree(path: String) -> void:
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := path.path_join(name)
+			if dir.current_is_dir():
+				_remove_tree(child)
+			else:
+				DirAccess.remove_absolute(child)
+		name = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(path)
 
 func _contrast(a: Color, b: Color) -> float:
 	var high := maxf(_relative_luminance(a), _relative_luminance(b))
@@ -1852,6 +2013,13 @@ func _labels_under(root: Node) -> Array[Label]:
 		if node is Label:
 			labels.append(node)
 	return labels
+
+
+func _label_contains(texts: Array[String], needle: String) -> bool:
+	for text in texts:
+		if text.to_lower().contains(needle.to_lower()):
+			return true
+	return false
 
 func _line_edits_under(root: Node) -> Array[LineEdit]:
 	var nodes: Array[Node] = []

@@ -1,9 +1,10 @@
 extends VBoxContainer
-## Media export sheet: PNG sequence, GIF and Android MP4.
+## Media export sheet: PNG sequence, GIF, Android MP4 and a scene-camera track.
 ##
 ## The sheet never fakes a format. MP4 is disabled with the exact backend
 ## reason on non-Android, GIF disables 60 fps because a centisecond delay cannot
-## represent it, and progress uses the real phases the renderer/backend report.
+## represent it, and the camera track is only offered when the scene has a real
+## camera for CameraExport to sample.
 
 signal export_requested(options: Dictionary)
 signal cancel_requested
@@ -13,7 +14,8 @@ const AndroidVideo = preload("res://src/core/android_video.gd")
 const CameraExport = preload("res://src/core/camera_export.gd")
 const GifEncoder = preload("res://src/core/gif_encoder.gd")
 
-const FORMATS := ["png", "gif", "mp4"]
+const FORMATS := ["png", "gif", "mp4", "camera"]
+const CAMERA_REASON := "Add a scene camera to export a camera track."
 const RESOLUTIONS := [
 	{"label": "1280 × 720", "size": Vector2i(1280, 720)},
 	{"label": "1920 × 1080", "size": Vector2i(1920, 1080)},
@@ -31,6 +33,7 @@ var _fps := 24
 var _size := Vector2i(1920, 1080)
 var _bitrate := 12
 var _camera_id := ""
+var _camera_ids: Array[String] = []
 var _include_audio := true
 var _start := 0.0
 var _end := 4.0
@@ -47,10 +50,15 @@ var _cancel_button: Button
 func setup(doc, view = null) -> void:
 	_doc = doc
 	_view = view
+	_sync_cameras()
+	if _format == "camera" and not camera_available():
+		_format = "png"
 	if _doc != null and _doc.has_method("sequence_duration"):
 		_end = maxf(0.04, float(_doc.sequence_duration()))
 	if _output_path_value == "":
 		_output_path_value = _default_output_path()
+	else:
+		_output_path_value = _normalize_output_path(_output_path_value, _format)
 	_rebuild()
 
 
@@ -64,6 +72,8 @@ func set_output_path(path: String) -> void:
 
 func set_format(id: String) -> void:
 	if not id in FORMATS:
+		return
+	if id == "camera" and not camera_available():
 		return
 	_format = id
 	if _format == "gif" and _fps == 60:
@@ -86,6 +96,36 @@ func gif_reason_text() -> String:
 
 func format_ids() -> Array:
 	return FORMATS.duplicate()
+
+
+func camera_available() -> bool:
+	return not _camera_ids.is_empty()
+
+
+func camera_reason() -> String:
+	return "" if camera_available() else CAMERA_REASON
+
+
+func camera_id() -> String:
+	return _camera_id
+
+
+func _sync_cameras() -> void:
+	_camera_ids.clear()
+	if _doc == null:
+		_camera_id = ""
+		return
+	var exporter = CameraExport.new()
+	exporter.setup(_doc)
+	for entry in exporter.camera_names():
+		var data: Dictionary = entry
+		var id := str(data.get("id", ""))
+		if id != "":
+			_camera_ids.append(id)
+	if _camera_ids.is_empty():
+		_camera_id = ""
+	elif not _camera_id in _camera_ids:
+		_camera_id = _camera_ids[0]
 
 
 func resolution_sizes() -> Array:
@@ -133,6 +173,26 @@ func set_progress(kind: String, done: int = 0, total: int = 0) -> void:
 		_progress_label.text = progress_text(kind, done, total)
 	if _status_label != null:
 		_status_label.text = "Exporting" if kind in ["frames", "encoding", "verifying"] else progress_text(kind, done, total)
+
+
+func set_status(text: String) -> void:
+	if _status_label != null:
+		_status_label.text = text
+
+
+func status_text() -> String:
+	return _status_label.text if _status_label != null else ""
+
+
+func result_text() -> String:
+	return _result_label.text if _result_label != null else ""
+
+
+func clear_result() -> void:
+	if _result_label == null:
+		return
+	_result_label.text = ""
+	_result_label.visible = false
 
 
 func set_result(path: String, size_bytes: int, duration: float, tracks: String) -> void:
@@ -188,6 +248,9 @@ func _rebuild() -> void:
 		if id == "mp4" and not AndroidVideo.new().available():
 			button.disabled = true
 			button.tooltip_text = AndroidVideo.REASON
+		if id == "camera" and not camera_available():
+			button.disabled = true
+			button.tooltip_text = CAMERA_REASON
 		button.toggled.connect(func(on: bool) -> void:
 			if on:
 				set_format(id)
@@ -296,14 +359,21 @@ func _camera_option() -> OptionButton:
 	var option := OptionButton.new()
 	option.custom_minimum_size.y = 44
 	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	option.add_item("Editor camera")
-	option.set_item_metadata(0, "")
-	var exporter = CameraExport.new()
-	exporter.setup(_doc)
-	for entry in exporter.camera_names():
-		var data: Dictionary = entry
-		option.add_item(str(data.get("name", "Camera")))
-		option.set_item_metadata(option.item_count - 1, str(data.get("id", "")))
+	if not camera_available():
+		option.add_item(CAMERA_REASON)
+		option.disabled = true
+		option.tooltip_text = CAMERA_REASON
+		return option
+	for id in _camera_ids:
+		var label := "Camera"
+		if _doc != null:
+			var obj: Dictionary = _doc.get_object(id)
+			label = str(obj.get("name", label))
+		option.add_item(label)
+		var index := option.item_count - 1
+		option.set_item_metadata(index, id)
+		if id == _camera_id:
+			option.selected = index
 	option.item_selected.connect(func(index: int) -> void:
 		_camera_id = str(option.get_item_metadata(index))
 	)
@@ -357,14 +427,19 @@ func _labeled_option(label_text: String, option: OptionButton) -> HBoxContainer:
 
 
 func _default_output_path() -> String:
-	return "user://exports/kinema_export." + _format
+	return "user://exports/kinema_export." + _extension_for(_format)
+
+
+func _extension_for(format: String) -> String:
+	return "json" if format == "camera" else format
 
 
 func _normalize_output_path(path: String, format: String) -> String:
 	var value := path if path != "" else _default_output_path()
-	if value.get_extension().to_lower() == format:
+	var extension := _extension_for(format)
+	if value.get_extension().to_lower() == extension:
 		return value
-	return value.get_basename() + "." + format
+	return value.get_basename() + "." + extension
 
 
 func _output_path() -> String:
@@ -376,5 +451,10 @@ func _on_export() -> void:
 		set_progress("error")
 		if _status_label != null:
 			_status_label.text = AndroidVideo.REASON
+		return
+	if _format == "camera" and not camera_available():
+		set_progress("error")
+		if _status_label != null:
+			_status_label.text = CAMERA_REASON
 		return
 	export_requested.emit(build_options())
