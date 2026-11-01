@@ -89,6 +89,24 @@ var _chrome_mode := "studio"
 var _available_width := -1.0
 var _transport_buttons: Array[Button] = []
 
+# --- Time viewport (horizontal pan/zoom over the duration) -----------------
+## The dope sheet and speed graph map time to pixels through this visible
+## window instead of squeezing the whole duration into the canvas width. The
+## initial window is the full duration, so the default view is unchanged.
+const SCROLLBAR_HIT := 44.0
+const SCROLLBAR_TRACK_H := 6.0
+const MIN_VIEW_SPAN := 0.5
+var _view_start := 0.0
+var _view_span := -1.0
+var _view_duration_seen := -1.0
+var _header_folded := false
+var _scroll_dragging := false
+var _scroll_grab_x := 0.0
+var _touches: Dictionary = {}
+var _panning_view := false
+var _pan_last_mid := Vector2.ZERO
+var _pinch_dist := -1.0
+
 const CHANNEL_EDGE := 1.0
 const GRAPH_TAB_HEIGHT := 44.0
 const GRAPH_PRESETS := [
@@ -422,7 +440,7 @@ func _refresh_compact() -> void:
 		measured = minf(measured, _available_width)
 	var narrow := measured < 640.0
 	var narrow_chrome := touch or narrow
-	var show_header := _sheet_open and narrow_chrome
+	var show_header := _sheet_open and narrow_chrome and not _header_folded
 	# A narrow canvas cannot hold every transport control at 44 dp, so the
 	# folded and open states trade AUTO and the fold control rather than
 	# pushing the center column past the canvas edge.
@@ -436,8 +454,10 @@ func _refresh_compact() -> void:
 	if _fold_button != null:
 		# The header owns folding while the sheet is open; once it is folded
 		# the transport's control is the way back. Touch uses the compact
-		# bottom bar instead, so it never needs the transport control.
-		_fold_button.visible = not touch and (not narrow or not _sheet_open)
+		# bottom bar instead, so it never needs the transport control. When
+		# the overlay budget folds the header, the transport control takes
+		# over so the fold action stays reachable.
+		_fold_button.visible = not touch and ((not narrow or not _sheet_open) or _header_folded)
 	if _auto_button != null:
 		# A folded narrow sheet swaps AUTO for the fold control: both cannot
 		# hold a 44 dp target on a 320-360 dp canvas. AUTO returns as soon as
@@ -467,6 +487,16 @@ func set_short_layout(value: bool) -> void:
 		_sheet_rule.custom_minimum_size.y = 0.0 if _short_layout else 1.0
 	_apply_sheet_height()
 
+
+## The overlay budget can be too small to keep the compact sheet header. The
+## editor folds it here before the sheet is squeezed under its floor; the
+## transport's fold control stays reachable in its place.
+func set_header_folded(value: bool) -> void:
+	if _header_folded == value:
+		return
+	_header_folded = value
+	_refresh_compact()
+
 func _apply_sheet_height() -> void:
 	if _sheet == null:
 		return
@@ -475,9 +505,8 @@ func _apply_sheet_height() -> void:
 
 
 ## The overlay owns the total height, so the sheet gets whatever the transport,
-## the compact header, the lanes and the 96 dp stage floor leave. Fitting the
-## sheet here (rather than letting its preferred minimum push the panel past
-## the budget) is what keeps the stage visible on short screens.
+## the compact header, the lanes and the 72 dp shelf floor leave. The 72 dp
+## floor is the binding minimum: the transport (56) plus it must always fit.
 func fit_sheet_height(available: float) -> void:
 	if _sheet == null:
 		return
@@ -487,11 +516,68 @@ func fit_sheet_height(available: float) -> void:
 	var rule_h := 0.0
 	if _sheet_open and _sheet_rule != null and _sheet_rule.visible:
 		rule_h = maxf(1.0, _sheet_rule.custom_minimum_size.y)
-	var room := maxf(48.0, available - header_h - rule_h)
+	var room := maxf(72.0, available - header_h - rule_h)
 	var preferred := 96.0
 	if _mode == "graph":
 		preferred = 112.0 if _short_layout else 160.0
-	_sheet.custom_minimum_size.y = minf(preferred, room)
+	_sheet.custom_minimum_size.y = maxf(72.0, minf(preferred, room))
+
+
+## The transport belongs to the sheet's model but is mounted outside it by the
+## shell (below the stack, on the bottom edge). Explicit API instead of the
+## editor reaching into `_transport_panel`.
+func mount_transport(parent: Control) -> void:
+	if _transport_panel == null:
+		return
+	if _transport_panel.get_parent() == parent:
+		return
+	_transport_panel.reparent(parent, false)
+
+
+func mode() -> String:
+	return _mode
+
+
+## The one transport instance, for shells and tests that need its rect.
+func transport_panel() -> Control:
+	return _transport_panel
+
+
+## Where the transport is mounted right now (the timeline frame below the
+## stack, once the shell has re-parented it).
+func mount_target() -> Control:
+	if _transport_panel == null:
+		return null
+	return _transport_panel.get_parent() as Control
+
+
+## The sheet's current minimum height (no header, no rule) for budget maths.
+func sheet_min_height() -> float:
+	return _sheet.custom_minimum_size.y if _sheet != null else 0.0
+
+
+## True when the shell wants the compact sheet header (touch or a narrow
+## canvas), regardless of whether the overlay budget can afford it.
+func header_allowed() -> bool:
+	var measured := size.x
+	if _available_width > 0.0:
+		measured = minf(measured, _available_width)
+	var narrow_ui := _chrome_mode == "compact" or measured < 640.0
+	return _sheet_open and narrow_ui
+
+
+## Nominal compact-header height, whether it is currently folded or not.
+func header_height() -> float:
+	if _compact_header == null:
+		return 0.0
+	return _compact_header.custom_minimum_size.y
+
+
+## The 1 px rule between the sheet and the stack, when the sheet is open.
+func sheet_rule_height() -> float:
+	if _sheet_rule == null or not _sheet_rule.visible:
+		return 0.0
+	return maxf(1.0, _sheet_rule.custom_minimum_size.y)
 
 func set_mode(mode: String) -> void:
 	var next := "graph" if mode == "graph" else "dope"
@@ -550,6 +636,7 @@ func _refresh_transport(time: float, playing: bool) -> void:
 		_compact_delete_button.disabled = not has_key
 
 func _on_playback_changed(time: float, playing: bool) -> void:
+	_follow_playhead()
 	_refresh_transport(time, playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
@@ -658,6 +745,160 @@ func _on_delete_key() -> void:
 # Dope sheet drawing
 # -------------------------------------------------------------------------
 
+# -------------------------------------------------------------------------
+# Time viewport (pan and zoom)
+# -------------------------------------------------------------------------
+
+## Re-derives the viewport against the document. A duration change resets the
+## window to the whole duration so the default view never hides keys.
+func _normalize_view() -> void:
+	if doc == null:
+		return
+	var duration := maxf(0.001, doc.duration)
+	if _view_duration_seen != duration:
+		_view_duration_seen = duration
+		_view_start = 0.0
+		_view_span = -1.0
+	if _view_span <= 0.0:
+		_view_start = 0.0
+		return
+	_view_span = clampf(_view_span, MIN_VIEW_SPAN, duration)
+	_view_start = clampf(_view_start, 0.0, duration - _view_span)
+	if is_equal_approx(_view_start, 0.0) and _view_span >= duration:
+		_view_span = -1.0
+
+
+func viewport_span() -> float:
+	_normalize_view()
+	if doc == null:
+		return maxf(0.001, _view_span)
+	return maxf(0.001, _view_span if _view_span > 0.0 else doc.duration)
+
+
+func viewport_start() -> float:
+	_normalize_view()
+	return _view_start
+
+
+func viewport_end() -> float:
+	return viewport_start() + viewport_span()
+
+
+## Visible window as seconds (`x` = start, `y` = end) for tests and sheets.
+func time_view() -> Vector2:
+	return Vector2(viewport_start(), viewport_end())
+
+
+func set_time_view(start: float, end: float) -> void:
+	if doc == null:
+		return
+	var duration := maxf(0.001, doc.duration)
+	_view_duration_seen = duration
+	var span := maxf(MIN_VIEW_SPAN, end - start)
+	span = minf(span, duration)
+	start = clampf(start, 0.0, duration - span)
+	_view_start = start
+	_view_span = span if span < duration - 0.0001 else -1.0
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+## Pans the window by `delta` seconds. A full-duration view has nothing to
+## pan, which is what keeps the default view stable.
+func pan_time_view(delta: float) -> void:
+	if doc == null or _normalize_or_full():
+		return
+	var lo := 0.0
+	var hi: float = doc.duration - _view_span
+	_view_start = clampf(_view_start + delta, lo, maxf(lo, hi))
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func zoom_time_view(factor: float, anchor: float = -1.0) -> void:
+	if doc == null:
+		return
+	_normalize_view()
+	var span0 := _view_span if _view_span > 0.0 else doc.duration
+	var span := clampf(span0 * factor, MIN_VIEW_SPAN, doc.duration)
+	if anchor < 0.0:
+		anchor = _view_start + span0 * 0.5
+	var frac := (anchor - _view_start) / maxf(0.001, span0)
+	_view_start = clampf(anchor - frac * span, 0.0, maxf(0.0, doc.duration - span))
+	_view_span = span if span < doc.duration - 0.0001 else -1.0
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+## True when the window already covers the whole duration (nothing to pan).
+func _normalize_or_full() -> bool:
+	_normalize_view()
+	return _view_span <= 0.0
+
+
+## Keeps the playhead inside the window during playback and scrubs.
+func _follow_playhead() -> void:
+	if doc == null or _sheet == null or not _sheet.visible:
+		return
+	if _normalize_or_full():
+		return
+	var t := doc.current_time
+	var end := viewport_end()
+	if t < _view_start or t > end:
+		_view_start = clampf(t - _view_span * 0.15, 0.0, maxf(0.0, doc.duration - _view_span))
+		_sheet.queue_redraw()
+
+
+## The track the thumb slides on, in sheet-canvas coordinates.
+func scrollbar_track_rect() -> Rect2:
+	if doc == null or _scrollbar_hidden():
+		return Rect2()
+	_normalize_view()
+	var h := _sheet.size.y if _sheet != null else 0.0
+	var thumb_h := SCROLLBAR_TRACK_H
+	return Rect2(_grid_left, h - thumb_h - 4.0, _grid_width, thumb_h)
+
+
+func _scrollbar_hidden() -> bool:
+	if doc == null or _sheet == null or not _sheet.is_visible_in_tree():
+		return true
+	_normalize_view()
+	return _view_span <= 0.0
+
+
+func scrollbar_thumb_rect() -> Rect2:
+	var track := scrollbar_track_rect()
+	if track.size.x <= 0.0:
+		return Rect2()
+	var t0 := _view_start / maxf(0.001, doc.duration)
+	var t1 := viewport_end() / maxf(0.001, doc.duration)
+	var width := maxf(20.0, (t1 - t0) * track.size.x)
+	var x0 := track.position.x + t0 * track.size.x
+	x0 = clampf(x0, track.position.x, track.end.x - width)
+	return Rect2(x0, track.position.y, width, track.size.y)
+
+
+## The whole bottom band is the 44 dp touch target; only the slim thumb is
+## painted so the hit area stays generous without adding visual weight.
+func scrollbar_hit_rect() -> Rect2:
+	if _sheet == null:
+		return Rect2()
+	var h := _sheet.size.y
+	return Rect2(0.0, h - SCROLLBAR_HIT, _sheet.size.x, SCROLLBAR_HIT)
+
+
+# Debug/testing hook: map a press to whether the scrollbar owns it.
+func scrollbar_owns_press(pos: Vector2) -> bool:
+	if _scrollbar_hidden():
+		return false
+	var hit := scrollbar_hit_rect()
+	if not hit.has_point(pos):
+		return false
+	var thumb := scrollbar_thumb_rect()
+	var band := Rect2(thumb.position.x - 8.0, hit.position.y, thumb.size.x + 16.0, hit.size.y)
+	return band.has_point(pos)
+
+
 func _geometry(canvas: Control) -> void:
 	_ruler_h = 22.0
 	if _mode == "graph":
@@ -675,11 +916,10 @@ func _geometry(canvas: Control) -> void:
 func _time_to_x(time: float, canvas: Control) -> float:
 	if doc == null:
 		return _grid_left
-	return _grid_left + clampf(time / maxf(0.001, doc.duration), 0.0, 1.0) * _grid_width
+	return _grid_left + (time - viewport_start()) / viewport_span() * _grid_width
 
 func _x_to_time(x: float, _canvas: Control) -> float:
-	var t := clampf((x - _grid_left) / maxf(1.0, _grid_width), 0.0, 1.0)
-	return t * doc.duration
+	return viewport_start() + (x - _grid_left) / maxf(1.0, _grid_width) * viewport_span()
 
 func _draw_sheet(canvas: Control) -> void:
 	_geometry(canvas)
@@ -701,19 +941,22 @@ func _draw_sheet(canvas: Control) -> void:
 
 	var grid_top := _graph_top if _mode == "graph" else 0.0
 	var major := _major_step()
-	var minor_count := maxi(1, int(round(doc.duration / maxf(0.001, major))))
-	for i in range(minor_count + 1):
-		var time := float(i) * major
-		if time > doc.duration + 0.001:
-			break
-		var x := _time_to_x(time, canvas)
-		canvas.draw_line(Vector2(x, grid_top), Vector2(x, h), Kit.BORDER_SOFT * Color(1, 1, 1, 0.55), 1.0)
-		if x < w - 26.0:
-			var label := "%.1fs" % time if major < 1.0 else "%ds" % int(round(time))
-			canvas.draw_string(Kit.font_mono, Vector2(x + 3, 15), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_RULER, Kit.TEXT_MUTED)
+	# Ticks span the visible window, not the whole duration: a zoomed window
+	# still gets labels at the right times without drawing off-canvas.
+	var first_tick := floorf(viewport_start() / major) * major
+	var tick := first_tick
+	while tick <= viewport_end() + 0.001:
+		if tick >= -0.001 and tick <= doc.duration + 0.001:
+			var x := _time_to_x(tick, canvas)
+			canvas.draw_line(Vector2(x, grid_top), Vector2(x, h), Kit.BORDER_SOFT * Color(1, 1, 1, 0.55), 1.0)
+			if x < w - 26.0:
+				var label := "%.1fs" % tick if major < 1.0 else "%ds" % int(round(tick))
+				canvas.draw_string(Kit.font_mono, Vector2(x + 3, 15), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_RULER, Kit.TEXT_MUTED)
+		tick += major
 
 	if _mode == "graph":
 		_draw_graph(canvas, w, h)
+		_draw_scrollbar(canvas, w, h)
 		return
 
 	var row_top := _ruler_h
@@ -769,6 +1012,21 @@ func _draw_sheet(canvas: Control) -> void:
 		var rows_bottom := row_top + float(channels.size()) * _row_h
 		if h > rows_bottom + 12.0:
 			canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 8, rows_bottom + 14), "Drag diamonds to retime · tap the ruler to scrub", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 16, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+
+	_draw_scrollbar(canvas, w, h)
+
+
+## The sheet draws its own slim horizontal scrollbar: a thin thumb over a
+## faint track, with a full 44 dp hit band so fingers can grab either.
+func _draw_scrollbar(canvas: Control, w: float, h: float) -> void:
+	if _scrollbar_hidden():
+		return
+	var track := scrollbar_track_rect()
+	canvas.draw_rect(Rect2(track.position.x, track.position.y - 2.0, track.size.x, track.size.y + 4.0),
+		Kit.SURFACE * Color(1.0, 1.0, 1.0, 0.55))
+	var thumb := scrollbar_thumb_rect()
+	var thumb_color := Kit.ACCENT if _scroll_dragging else Kit.TEXT_DIM
+	canvas.draw_rect(thumb, thumb_color)
 
 # -------------------------------------------------------------------------
 # Speed graph
@@ -837,13 +1095,16 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 	var speeds := PackedFloat32Array()
 	speeds.resize(count)
 	var max_speed := 0.0001
+	# The vertical scale stays keyed to the whole channel so panning does not
+	# breathe; the horizontal samples walk the visible window only.
+	var channel_max := _channel_peak(doc.selected_id, _selected_channel, GRAPH_CHANNEL_SAMPLES)
 	for i in range(count):
-		var t := doc.duration * float(i) / float(maxi(1, count - 1))
+		var t := lerpf(viewport_start(), viewport_end(), float(i) / float(maxi(1, count - 1)))
 		var speed := _channel_speed(doc.selected_id, _selected_channel, t)
 		speeds[i] = speed
 		max_speed = maxf(max_speed, speed)
 	_graph_max_speed = max_speed
-	var scale_speed := max_speed * 1.12
+	var scale_speed := maxf(max_speed, channel_max) * 1.12
 
 	var points := PackedVector2Array()
 	for i in range(count):
@@ -1199,7 +1460,7 @@ func apply_ease_to_channel() -> bool:
 	return true
 
 func _major_step() -> float:
-	var px_per_second := _grid_width / maxf(0.001, doc.duration)
+	var px_per_second := _grid_width / viewport_span()
 	var candidates := [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0]
 	for value in candidates:
 		if float(value) * px_per_second >= 46.0:
@@ -1217,32 +1478,117 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 		return
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
-		if button.button_index != MOUSE_BUTTON_LEFT:
+		if button.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+			if button.pressed:
+				_wheel_time_view(button)
+				canvas.accept_event()
 			return
+		if button.button_index not in [MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT]:
+			if button.button_index != MOUSE_BUTTON_LEFT:
+				return
 		if button.pressed:
 			_press_sheet(button.position, canvas)
 		else:
 			_release_sheet(button.position)
 		canvas.accept_event()
-	elif event is InputEventMouseMotion and (_scrubbing or _dragging_key or _dragging_ease):
+	elif event is InputEventMouseMotion and (_scrubbing or _dragging_key or _dragging_ease or _scroll_dragging):
 		_drag_sheet((event as InputEventMouseMotion).position, canvas)
 		canvas.accept_event()
 	elif event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
-			_press_sheet(touch.position, canvas)
+			_touches[int(touch.index)] = touch.position
+			if _touches.size() >= 2 and not _dragging_key and not _dragging_ease:
+				_start_view_gesture()
+			else:
+				_press_sheet(touch.position, canvas)
 		else:
-			_release_sheet(touch.position)
+			_touches.erase(int(touch.index))
+			if _touches.size() < 2:
+				if _panning_view:
+					_panning_view = false
+				_pinch_dist = -1.0
+			if _touches.is_empty():
+				_release_sheet(touch.position)
 		canvas.accept_event()
 	elif event is InputEventScreenDrag:
-		_drag_sheet((event as InputEventScreenDrag).position, canvas)
+		var drag := event as InputEventScreenDrag
+		if _touches.has(int(drag.index)):
+			_touches[int(drag.index)] = drag.position
+		if _panning_view:
+			_update_view_gesture()
+			canvas.accept_event()
+			return
+		_drag_sheet(drag.position, canvas)
 		canvas.accept_event()
+
+
+## Shift+wheel pans the window horizontally; plain wheel zooms around the
+## cursor. Horizontal wheel buttons pan too, for trackpads that send them.
+func _wheel_time_view(button: InputEventMouseButton) -> void:
+	var span := viewport_span()
+	var horizontal := button.shift_pressed or button.button_index in [MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT]
+	if horizontal:
+		var dir := 1.0
+		if button.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_LEFT]:
+			dir = -1.0
+		pan_time_view(dir * span * 0.2)
+	else:
+		# Wheel up zooms in, wheel down zooms out; the anchor stays under the
+		# cursor so the time beneath the pointer does not jump.
+		var factor := 1.0 / 1.15 if button.button_index == MOUSE_BUTTON_WHEEL_UP else 1.15
+		zoom_time_view(factor, _x_to_time(button.position.x, _sheet))
+
+
+func _start_view_gesture() -> void:
+	# A second finger cancels the pending single-finger gesture without
+	# ending an edit: the press never started one in the two-finger case.
+	if _scrubbing:
+		_scrubbing = false
+	var indexes := _touches.keys()
+	var p0: Vector2 = _touches[indexes[0]]
+	var p1: Vector2 = _touches[indexes[1]]
+	_panning_view = true
+	_pinch_dist = p0.distance_to(p1)
+	_pan_last_mid = (p0 + p1) * 0.5
+
+
+func _update_view_gesture() -> void:
+	var indexes := _touches.keys()
+	if indexes.size() < 2:
+		return
+	var p0: Vector2 = _touches[indexes[0]]
+	var p1: Vector2 = _touches[indexes[1]]
+	var mid := (p0 + p1) * 0.5
+	var dx := mid.x - _pan_last_mid.x
+	_pan_last_mid = mid
+	if absf(dx) >= 0.5:
+		pan_time_view(-dx / maxf(1.0, _grid_width) * viewport_span())
+	var dist := p0.distance_to(p1)
+	if _pinch_dist > 4.0 and dist > 4.0:
+		var anchor := _x_to_time(mid.x, _sheet)
+		zoom_time_view(_pinch_dist / dist, anchor)
+	_pinch_dist = dist
 
 func button_mask_down() -> bool:
 	return _scrubbing or _dragging_key or _dragging_ease
 
 func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_geometry(canvas)
+	# The scrollbar band owns its thumb drag and its track tap. Keys keep a
+	# chance to win first so a diamond at the bottom row stays grabbable.
+	if not _scrollbar_hidden() and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
+		var thumb: Rect2 = scrollbar_thumb_rect()
+		if pos.x >= thumb.position.x - 8.0 and pos.x <= thumb.end.x + 8.0:
+			_scroll_dragging = true
+			_scroll_grab_x = pos.x - thumb.position.x
+		else:
+			# A track tap centers the window under the finger, then drags.
+			_scroll_dragging = true
+			_scroll_grab_x = thumb.size.x * 0.5
+			_scroll_follow_track(pos.x)
+		canvas.queue_redraw()
+		return
 	_selected_data_id = doc.selected_id
 	if doc.selected_id == "":
 		return
@@ -1258,7 +1604,8 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 			_scrubbing = true
 			if doc.is_playing:
 				doc.pause()
-			doc.seek(_x_to_time(pos.x, canvas))
+			doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
+			_follow_playhead()
 			canvas.queue_redraw()
 			return
 		var graph_key_hit := _key_at(pos)
@@ -1290,7 +1637,8 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		_scrubbing = true
 		if doc.is_playing:
 			doc.pause()
-		doc.seek(_x_to_time(pos.x, canvas))
+		doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
+		_follow_playhead()
 		canvas.queue_redraw()
 		return
 	if pos.y <= _ruler_h or pos.x < _label_width:
@@ -1305,7 +1653,8 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		_scrubbing = true
 		if doc.is_playing:
 			doc.pause()
-		doc.seek(_x_to_time(pos.x, canvas))
+		doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
+		_follow_playhead()
 		canvas.queue_redraw()
 		return
 	var hit := _key_at(pos)
@@ -1327,10 +1676,27 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_scrubbing = true
 	if doc.is_playing:
 		doc.pause()
-	doc.seek(_x_to_time(pos.x, canvas))
+	doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
+	_follow_playhead()
 	canvas.queue_redraw()
 
+## Maps a scrollbar drag to a window start. The grab offset keeps the finger
+## anchored to the thumb instead of snapping it to the cursor.
+func _scroll_follow_track(x: float) -> void:
+	if doc == null or _normalize_or_full():
+		return
+	var track := scrollbar_track_rect()
+	var frac := clampf((x - _scroll_grab_x - track.position.x) / maxf(1.0, track.size.x), 0.0, 1.0)
+	var span := viewport_span()
+	var start := clampf(frac * (doc.duration - span), 0.0, maxf(0.0, doc.duration - span))
+	set_time_view(start, start + span)
+
+
 func _drag_sheet(pos: Vector2, canvas: Control) -> void:
+	if _scroll_dragging:
+		_scroll_follow_track(pos.x)
+		canvas.queue_redraw()
+		return
 	if doc.selected_id == "":
 		return
 	if _dragging_ease and _selected_index >= 0:
@@ -1347,14 +1713,16 @@ func _drag_sheet(pos: Vector2, canvas: Control) -> void:
 		var key_index := _selected_index
 		var key_data_id := _selected_data_id
 		var key_channel := _selected_channel
-		var t := _x_to_time(pos.x, canvas)
+		var t := clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration)
 		var index := doc.set_key_time(key_data_id, key_channel, key_index, t)
 		_restore_selection(index if index >= 0 else key_index, key_data_id, key_channel)
 	elif _scrubbing:
-		doc.seek(_x_to_time(pos.x, canvas))
+		doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
+		_follow_playhead()
 		canvas.queue_redraw()
 
 func _release_sheet(_pos: Vector2) -> void:
+	_scroll_dragging = false
 	if _dragging_ease:
 		_dragging_ease = false
 		doc.end_edit()

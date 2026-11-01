@@ -476,11 +476,9 @@ func _build_timeline() -> void:
 		_media_lanes.setup(doc)
 	_timeline_stack.add_child(_media_lanes)
 
-	# The transport is one instance owned by the timeline; move it below the
+	# The transport is one instance owned by the timeline; mount it below the
 	# stack instead of building a second row.
-	var transport = _timeline.get("_transport_panel")
-	if transport is Control:
-		transport.reparent(_timeline_frame, false)
+	_timeline.mount_transport(_timeline_frame)
 
 func _on_lane_sheet_requested(body: Control, title: String, subtitle: String) -> void:
 	_overlay.show_sheet(title, subtitle, body, [
@@ -1391,7 +1389,7 @@ func _scene_is_expanded() -> bool:
 	return _scene_panel_enabled() and _scene_target_expanded()
 
 
-## Public for the layout/smoke suites and the workspace sheet: persist the
+## Public for the layout/smoke suites and the capture harness: persist the
 ## choice at or above 760 dp, keep a sub-760 expansion transient.
 func set_scene_panel_expanded(expanded: bool, persist: bool = true) -> void:
 	if persist:
@@ -1402,10 +1400,6 @@ func set_scene_panel_expanded(expanded: bool, persist: bool = true) -> void:
 		_scene_transient_width = size.x
 	if is_inside_tree():
 		_apply_shell()
-
-
-func scene_panel_expanded() -> bool:
-	return _scene_is_expanded()
 
 
 func _set_scene_expanded_from_ui(expanded: bool) -> void:
@@ -1521,32 +1515,31 @@ func _set_section_collapsed(section: String, collapsed: bool, persist: bool = tr
 
 
 ## The stage host's height drives the overlay budget. During the first shell
-## pass the container has not been laid out yet, so fall back to the known
-## chrome heights rather than measuring a stale rect.
+## pass the container has not been laid out yet, so measure the real chrome
+## controls (top bar, view header, status bar, bottom bar) instead of
+## duplicating their heights as literals.
 func _stage_height() -> float:
-	var height: float = _viewport_host.size.y
-	if height > 1.0:
-		return height
-	height = size.y
-	if _top_bar != null:
-		height -= _top_bar.custom_minimum_size.y
-	if _status_bar != null and _status_bar.visible:
-		height -= _status_bar.custom_minimum_size.y
-	if _bottom_bar != null and _bottom_bar.visible:
-		height -= _bottom_bar.custom_minimum_size.y
-	height -= 44.0 + float(Kit.GUTTER) * 2.0
+	if _viewport_host != null and _viewport_host.size.y > 1.0:
+		return _viewport_host.size.y
+	var height: float = size.y
+	var chrome := [_top_bar, _view_header, _status_bar, _bottom_bar]
+	for control in chrome:
+		if control != null and control.visible:
+			height -= control.custom_minimum_size.y
+	# Layout separations: the shell column (top/body/status/bottom) and the
+	# center column (header/stage).
+	height -= float(Kit.GUTTER) * 4.0
 	return maxf(height, 120.0)
 
 
-## The expanded sheet is a fraction of the stage, capped by the spec, and it
-## must always leave 96 dp of live image visible.
+## The expanded sheet is capped at 42 percent of the stage host so the live 3D
+## view keeps at least 55 percent of its height, and at 240 dp on tall
+## screens. It never drops below the transport plus a 72 dp sheet.
 func _timeline_overlay_budget(stage_height: float) -> float:
 	if not _timeline_should_show():
 		return FOLDED_TIMELINE
-	var budget := minf(320.0, maxf(180.0, stage_height * 0.55))
-	if _timeline != null and str(_timeline.get("_mode")) == "graph":
-		budget = minf(360.0, maxf(200.0, stage_height * 0.66))
-	budget = minf(budget, maxf(FOLDED_TIMELINE, stage_height - 96.0))
+	var budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, stage_height * 0.42))
+	budget = minf(budget, maxf(FOLDED_TIMELINE + 72.0, stage_height - 96.0))
 	return budget
 
 
@@ -1566,46 +1559,76 @@ func _sync_timeline_visibility() -> void:
 	var sheet := _timeline_should_show()
 	_timeline.set_sheet_visible(sheet)
 	if not sheet:
+		_timeline.set_header_folded(false)
 		if _media_lanes != null:
 			_media_lanes.visible = false
+			_media_lanes.fit_height(-1.0)
 		if _clip_lane != null:
 			_clip_lane.visible = false
 		_set_timeline_overlay_height(FOLDED_TIMELINE)
 		return
 
 	var budget := _timeline_overlay_budget(_stage_height())
-	# Start from the sheet's preferred minimum, then fold the least-used
-	# content first so the graph/dope area keeps as much height as possible.
+	# Resolve content in the binding fold order: the media lanes fold first
+	# (their body is capped inside a scrollable shell, so the header stays
+	# reachable), then the clip lane folds, then the sheet shrinks. The
+	# resolution starts lean (compact header folded) and the header comes
+	# back only when the pass leaves 48 dp of slack for it.
+	_timeline.set_header_folded(true)
 	_timeline.fit_sheet_height(10000.0)
+	var tl_content: float = _timeline.get_combined_minimum_size().y
 	var lane_min := 0.0
 	if _clip_lane != null:
 		lane_min = _clip_lane.get_combined_minimum_size().y
-	var media_min := 0.0
+	var media_want := 0.0
 	if _media_lanes != null:
-		media_min = _media_lanes.get_combined_minimum_size().y
-	var show_media := _media_lanes != null and media_min > 0.0
+		media_want = _media_lanes.get_combined_minimum_size().y
 	var show_lane := _clip_lane != null and lane_min > 0.0
-	var need := FOLDED_TIMELINE + _timeline.get_combined_minimum_size().y
-	if show_lane:
-		need += lane_min
-	if show_media:
-		need += media_min
-	# 1. Media headers are the least-used surface on a short stage.
-	if need > budget and show_media:
-		show_media = false
-		need -= media_min
-	# 2. Then the sequence lane folds with it.
-	if need > budget and show_lane:
+	var show_media := _media_lanes != null
+	var lane_part := 0.0
+	var media_part := 0.0
+	# Room left next to the transport row and the preferred sheet.
+	var room := budget - FOLDED_TIMELINE - tl_content
+	if room >= lane_min + media_want:
+		lane_part = lane_min
+		media_part = media_want
+	elif room >= lane_min + 44.0:
+		lane_part = lane_min
+		media_part = 44.0
+	elif room >= 44.0:
 		show_lane = false
-		need -= lane_min
+		media_part = minf(media_want, room)
+	else:
+		# The preferred sheet is unaffordable: keep the header folded, drop
+		# the sequence lane and shrink the sheet to its 72 dp floor so the
+		# collapsed media header gets one more chance.
+		show_lane = false
+		var floor_room := budget - FOLDED_TIMELINE - 73.0
+		if floor_room >= 44.0:
+			_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
+			media_part = minf(media_want, floor_room)
+		else:
+			# Even the floor cannot host the header. Fold the lanes whole and
+			# collapse the media lanes explicitly so the next pass (a taller
+			# stage, a resize) shows the header again instead of burying it.
+			show_media = false
+			media_part = 0.0
 	if _media_lanes != null:
-		_media_lanes.visible = show_media
+		_media_lanes.fit_height(media_part if show_media else -1.0)
+		_media_lanes.visible = show_media and media_part >= 44.0
+		if not _media_lanes.visible:
+			_media_lanes.set_collapsed(true)
 	if _clip_lane != null:
 		_clip_lane.visible = show_lane
-	var lane_part := lane_min if show_lane else 0.0
-	var media_part := media_min if show_media else 0.0
-	# 3. Only then does the sheet itself give back height, never below 48 dp,
-	#    so the transport and the required stage floor stay intact.
+	# The compact header returns only when it can coexist with a 72 dp sheet:
+	# available >= header + 72 + the 1 px rule. The sheet then takes what is
+	# left, never below 72 dp.
+	var can_host_header: bool = _timeline.header_allowed() and \
+		budget - FOLDED_TIMELINE - lane_part - media_part >= \
+		_timeline.header_height() + 72.0 + _timeline.sheet_rule_height()
+	if can_host_header:
+		_timeline.set_header_folded(false)
+	# Final pass: the sheet takes what is left, never below 72 dp.
 	_timeline.fit_sheet_height(budget - FOLDED_TIMELINE - lane_part - media_part)
 	_set_timeline_overlay_height(budget)
 
