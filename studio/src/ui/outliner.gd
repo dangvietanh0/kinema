@@ -3,6 +3,9 @@ extends VBoxContainer
 
 signal add_requested
 signal collapse_toggled(collapsed: bool)
+## The persistent scene column collapses to its rail rather than folding the
+## list inside a dock page.
+signal panel_collapse_requested
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
@@ -27,6 +30,10 @@ var _filter := ""
 ## Collapsing keeps the section header and its controls, and gives the rest of
 ## the dock back to the other panel. The editor owns persistence.
 var collapsed := false
+## True while the outliner is mounted in the persistent scene column. The
+## header chevron then collapses the whole column to its rail; the dock keeps
+## the old list-fold behaviour.
+var persistent_panel := false
 ## Rebuild counter for diagnostics and the smoke suite.
 var rebuild_count := 0
 
@@ -71,7 +78,7 @@ func _build() -> void:
 	add.pressed.connect(func() -> void: add_requested.emit())
 	header.add_child(add)
 	_collapse_button = Kit.icon_button("chevron-up", "Collapse the scene list", 44, 18)
-	_collapse_button.pressed.connect(func() -> void: set_collapsed(not collapsed, true))
+	_collapse_button.pressed.connect(_on_collapse_pressed)
 	header.add_child(_collapse_button)
 
 	var search_margin := MarginContainer.new()
@@ -133,6 +140,28 @@ func _build() -> void:
 	empty_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_empty.add_child(empty_sub)
 
+func set_persistent_panel(value: bool) -> void:
+	if persistent_panel == value:
+		return
+	persistent_panel = value
+	if persistent_panel:
+		# The column has its own rail; the list inside an expanded column is
+		# always expanded.
+		set_collapsed(false)
+		Kit.set_icon(_collapse_button, "chevron-left")
+		_collapse_button.tooltip_text = "Collapse the scene panel"
+	else:
+		set_collapsed(collapsed)
+		_collapse_button.tooltip_text = "Expand the scene list" if collapsed else "Collapse the scene list"
+
+
+func _on_collapse_pressed() -> void:
+	if persistent_panel:
+		panel_collapse_requested.emit()
+		return
+	set_collapsed(not collapsed, true)
+
+
 func set_collapsed(value: bool, emit_signal: bool = false) -> void:
 	collapsed = value
 	if _search_margin != null:
@@ -146,7 +175,7 @@ func set_collapsed(value: bool, emit_signal: bool = false) -> void:
 	if _header_margin != null:
 		_header_margin.add_theme_constant_override("margin_top", 0 if value else 10)
 		_header_margin.add_theme_constant_override("margin_bottom", 0 if value else 6)
-	if _collapse_button != null:
+	if _collapse_button != null and not persistent_panel:
 		Kit.set_icon(_collapse_button, "chevron-down" if value else "chevron-up")
 		_collapse_button.tooltip_text = "Expand the scene list" if value else "Collapse the scene list"
 	if emit_signal:

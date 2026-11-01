@@ -586,7 +586,7 @@ func _ready() -> void:
 	print("SMOKE INFO: compact shell minimum width ", compact_min)
 	_check(compact_min <= 320.0, "compact shell fits a 320 dp phone without horizontal overflow")
 	_check(editor._bottom_bar.get_combined_minimum_size().x <= 320.0, "compact action bar fits a 320 dp phone")
-	_check(editor._timeline.get_combined_minimum_size().x <= 320.0, "compact transport fits a 320 dp phone")
+	_check(editor._timeline._transport_panel.get_combined_minimum_size().x <= 320.0, "compact transport fits a 320 dp phone")
 	_check(not editor._top_bar._undo_button.visible and not editor._top_bar._settings_button.visible, "compact header keeps back, title and overflow only")
 	_check(editor._top_bar._menu_button.visible, "compact header keeps the overflow menu")
 	editor._toggle_timeline()
@@ -630,19 +630,116 @@ func _ready() -> void:
 	_check(not editor._dock.visible, "studio dock starts closed")
 	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
 	var view_before: float = editor._view.size.x
-	editor._toggle_drawer("scene")
+	editor._toggle_drawer("inspector")
 	for _i in 4:
 		await get_tree().process_frame
-	_check(editor._drawer_open and editor._dock.visible, "studio opens the dock flyout")
+	_check(editor._drawer_open and editor._dock.visible, "studio opens the properties flyout")
 	_check(editor._drawer_scrim.visible, "the flyout dims the stage it covers")
 	_check(absf(editor._view.size.x - view_before) < 1.0, "opening the flyout does not shrink the viewport")
 	_check(absf(editor._dock.get_global_rect().end.y - editor.size.y) <= 1.0, "studio dock reaches the bottom edge")
-	_check(editor._outliner_panel.size.y >= 320.0, "the scene page owns the flyout height")
+	_check(editor._inspector_panel.size.y >= 320.0, "the properties page owns the flyout height")
+	editor._close_drawer()
+	await get_tree().process_frame
+
+	print("SMOKE STEP: persistent scene panel")
+	Prefs.set_value("editor.scene_panel_expanded", true)
+	editor.size = Vector2(1280.0, 800.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	for _i in 3:
+		await get_tree().process_frame
+	_check(bool(Prefs.get_value("editor.scene_panel_expanded", false)),
+		"editor.scene_panel_expanded defaults and reads true")
+	_check(editor._scene_column != null and editor._scene_column.visible,
+		"studio mounts the persistent scene column")
+	_check(editor._outliner_panel.get_parent() == editor._scene_column,
+		"the one outliner instance lives in the scene column")
+	var expected_scene_width := clampf(editor.size.x * 0.20, 196.0, 280.0)
+	_check(absf(editor._scene_column.size.x - expected_scene_width) < 1.0,
+		"the expanded scene column uses the clamped 20 percent width")
+	_check(editor._outliner_panel.visible and not editor._scene_rail.visible,
+		"the expanded scene panel shows the outliner rather than the rail")
+	_check(not editor._drawer_open and not editor._drawer_scrim.visible,
+		"the persistent scene panel has no scrim and no focus trap")
+	var scene_outliner = editor._outliner
+	var scene_pick: String = doc.selected_id
+	if scene_pick == "" and not doc.objects.is_empty():
+		scene_pick = str(doc.objects[0]["id"])
+	doc.set_selection(scene_pick)
+	var scene_filter := "a"
+	scene_outliner._search.text = scene_filter
+	scene_outliner._on_search_changed(scene_filter)
+	var scene_scroll: int = scene_outliner._scroll.scroll_vertical
+
+	# The right rail Scene page is a toggle, not a second scene flyout.
+	editor._panel_rail.page_button("scene").pressed.emit()
+	for _i in 3:
+		await get_tree().process_frame
+	_check(absf(editor._scene_column.size.x - 44.0) < 1.0 and editor._scene_rail.visible,
+		"the rail Scene action collapses the panel to the 44 dp rail")
+	_check(not editor._drawer_open and not editor._dock.visible,
+		"the rail Scene action never opens a duplicate scene flyout")
+	_check(not bool(Prefs.get_value("editor.scene_panel_expanded", true)),
+		"collapsing the scene panel stores the preference")
+	editor._apply_shell()
+	await get_tree().process_frame
+	_check(editor._scene_rail.visible, "the collapsed scene panel survives _apply_shell")
+	Prefs.load_settings()
+	editor._apply_shell()
+	await get_tree().process_frame
+	_check(editor._scene_rail.visible, "the collapsed scene panel survives a preference reload")
+	editor._scene_rail_expand.pressed.emit()
+	for _i in 3:
+		await get_tree().process_frame
+	_check(editor._outliner_panel.visible and absf(editor._scene_column.size.x - expected_scene_width) < 1.0,
+		"the rail expand action restores the expanded scene panel")
+	_check(bool(Prefs.get_value("editor.scene_panel_expanded", false)),
+		"expanding the scene panel stores the preference")
+
+	# Scene from an open Properties/Rig flyout focuses the panel and closes it.
+	editor._panel_rail.page_button("inspector").pressed.emit()
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._drawer_open and editor._compact_tab == "inspector",
+		"the panel rail opens the properties flyout")
+	editor._panel_rail.page_button("scene").pressed.emit()
+	for _i in 4:
+		await get_tree().process_frame
+	_check(not editor._drawer_open and not editor._dock.visible,
+		"Scene from an open flyout closes the flyout")
+	_check(editor._outliner_panel.visible and editor._outliner_panel.get_parent() == editor._scene_column,
+		"Scene from an open flyout focuses the persistent panel")
+
+	# Re-parenting between the scene column and the dock keeps one instance and
+	# preserves the selection, search and scroll state.
+	editor.set_workspace_mode("compact")
+	for _i in 3:
+		await get_tree().process_frame
+	_check(editor._outliner == scene_outliner,
+		"the outliner instance survives re-parenting into the compact dock")
+	_check(editor._outliner_panel.get_parent() == editor._dock_box,
+		"compact moves the outliner into the dock")
+	_check(doc.selected_id == scene_pick, "re-parenting preserves the scene selection")
+	_check(scene_outliner._search.text == scene_filter and scene_outliner._filter == scene_filter.to_lower(),
+		"re-parenting preserves the scene search")
+	_check(scene_outliner._scroll.scroll_vertical == scene_scroll,
+		"re-parenting preserves the scene scroll")
+	editor.set_workspace_mode("studio")
+	for _i in 3:
+		await get_tree().process_frame
+	_check(editor._outliner == scene_outliner and editor._outliner_panel.get_parent() == editor._scene_column,
+		"studio returns the same outliner to the scene column")
+	_check(doc.selected_id == scene_pick, "the scene selection survives the return trip")
+	_check(scene_outliner._search.text == scene_filter and scene_outliner._filter == scene_filter.to_lower(),
+		"the scene search survives the return trip")
+	_check(scene_outliner._scroll.scroll_vertical == scene_scroll,
+		"the scene scroll survives the return trip")
+	scene_outliner._search.text = ""
+	scene_outliner._on_search_changed("")
+	await get_tree().process_frame
 	var outliner = editor._outliner
 	var outliner_overflow: bool = outliner._list.get_combined_minimum_size().y + 16.0 > outliner._scroll.size.y
 	_check(not outliner_overflow or absf(fmod(outliner._scroll.size.y - 6.0, 45.0)) < 0.6, "scene list viewport ends on a whole row")
-	editor._close_drawer()
-	await get_tree().process_frame
 	editor.set_workspace_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -652,6 +749,64 @@ func _ready() -> void:
 	_check(editor.get("_panel_rail") != null and editor.get("_panel_rail").visible, "desktop keeps the panel rail")
 	_check(not editor._dock.visible, "desktop dock starts closed")
 	_check(str(Prefs.get_value("display.layout", "")) == "desktop", "workspace mode persists")
+
+	print("SMOKE STEP: timeline overlay")
+	Prefs.set_value("editor.scene_panel_expanded", true)
+	editor.size = Vector2(1280.0, 800.0)
+	editor.set_workspace_mode("studio")
+	editor._apply_shell()
+	for _i in 3:
+		await get_tree().process_frame
+	editor._timeline.set_mode("dope")
+	_check(editor._timeline_panel.get_parent() == editor._viewport_host,
+		"the timeline is a child of the stage host, not the center column")
+	_check(absf(editor._timeline_panel.anchor_top - 1.0) < 0.001 and
+		absf(editor._timeline_panel.anchor_bottom - 1.0) < 0.001,
+		"the timeline anchors to the bottom edge of the stage")
+	_check(editor._timeline._transport_panel.get_parent() != editor._timeline,
+		"the transport is re-parented below the sheet stack")
+	_check(editor._timeline._transport_panel.get_parent() == editor._timeline_frame,
+		"the transport sits in the timeline frame under the stack")
+	var overlay_view_before: Vector2 = editor._view.size
+	var overlay_host: Control = editor._viewport_host
+	editor._toggle_timeline()
+	for _i in 3:
+		await get_tree().process_frame
+	_check(editor._timeline_visible, "the overlay opens from the transport")
+	var dope_height := minf(320.0, maxf(180.0, overlay_host.size.y * 0.55))
+	dope_height = minf(dope_height, maxf(56.0, overlay_host.size.y - 96.0))
+	_check(absf(editor._timeline_panel.size.y - dope_height) < 1.0,
+		"the open dope overlay respects the 55 percent budget")
+	_check(is_equal_approx(editor._view.size.x, overlay_view_before.x) and
+		is_equal_approx(editor._view.size.y, overlay_view_before.y),
+		"opening the overlay does not resize the 3D view")
+	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
+		"the open overlay leaves at least 96 dp of stage")
+	_check(absf(editor._timeline_panel.get_global_rect().end.y -
+		overlay_host.get_global_rect().end.y) <= 1.0,
+		"the overlay bottom is the stage bottom")
+	_check(absf(editor._timeline._transport_panel.get_global_rect().end.y -
+		overlay_host.get_global_rect().end.y) <= 1.0,
+		"the transport row is the bottom edge of the stage")
+	editor._timeline.set_mode("graph")
+	editor._sync_timeline_visibility()
+	for _i in 3:
+		await get_tree().process_frame
+	var graph_height := minf(360.0, maxf(200.0, overlay_host.size.y * 0.66))
+	graph_height = minf(graph_height, maxf(56.0, overlay_host.size.y - 96.0))
+	_check(absf(editor._timeline_panel.size.y - graph_height) < 1.0,
+		"the open graph overlay respects the 66 percent budget")
+	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
+		"the graph overlay still leaves a visible stage")
+	editor._timeline.set_mode("dope")
+	editor._toggle_timeline()
+	for _i in 3:
+		await get_tree().process_frame
+	_check(absf(editor._timeline_panel.size.y - 56.0) < 0.5,
+		"the folded overlay is exactly a 56 dp transport")
+	_check(is_equal_approx(editor._view.size.x, overlay_view_before.x) and
+		is_equal_approx(editor._view.size.y, overlay_view_before.y),
+		"folding the overlay leaves the 3D view untouched")
 
 	print("SMOKE STEP: editor type and touch floor")
 	editor.size = Vector2(412.0, 915.0)
@@ -711,7 +866,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._short, "915x412 resolves as a short landscape shell")
 	_check(not editor._timeline_visible, "short landscape starts with the dope sheet folded")
-	_check(absf(editor._timeline_panel.custom_minimum_size.y - 56.0) < 0.5, "the folded landscape stage is a 56 dp transport")
+	_check(absf(editor._timeline_panel.size.y - 56.0) < 0.5, "the folded landscape stage is a 56 dp transport")
 	var short_lane = editor.get("_clip_lane")
 	var short_media = editor.get("_media_lanes")
 	_check(short_lane != null and not short_lane.visible, "the folded stage hides the sequence lane")
@@ -721,7 +876,12 @@ func _ready() -> void:
 	if short_rail != null:
 		_check(absf(short_rail.size.x - 44.0) < 1.0, "landscape panel rail is 44 dp wide")
 	_check(not editor._dock.visible, "landscape dock starts closed")
-	_check(editor._view.size.x >= 800.0, "landscape viewport reclaims the dock column")
+	_check(editor._view.size.x >= 560.0,
+		"landscape keeps a 560 dp stage beside the expanded scene panel")
+	_check(absf(editor._scene_column.size.x - 196.0) < 1.0,
+		"915 dp expands the scene panel to its 196 dp floor")
+	_check(editor._outliner_panel.get_parent() == editor._scene_column,
+		"landscape keeps the one outliner in the scene column")
 	editor._timeline.set_sheet_visible(true)
 	await get_tree().process_frame
 	editor._timeline._refresh_compact()
@@ -735,7 +895,7 @@ func _ready() -> void:
 		)
 	else:
 		_check(editor._timeline._compact_header.visible, "a narrow landscape sheet exposes graph, loop, snap, delete and fold")
-	_check(editor._timeline.get_combined_minimum_size().x <= editor._view.size.x + 1.0, "the landscape transport fits the stage width")
+	_check(editor._timeline._transport_panel.get_combined_minimum_size().x <= editor._view.size.x + 1.0, "the landscape transport fits the stage width")
 	editor._timeline.set_sheet_visible(false)
 	editor.size = Vector2(412.0, 915.0)
 	editor.set_workspace_mode("studio")
@@ -820,23 +980,35 @@ func _ready() -> void:
 		_check(not media_lanes.visible, "the folded stage hides the media header")
 		if lane != null:
 			var folded_total: float = 56.0
-			_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_total) < 0.5,
+			_check(absf(editor._timeline_panel.size.y - folded_total) < 0.5,
 				"the folded sheet is a 56 dp transport")
 			editor._timeline_visible = true
 			editor._sync_timeline_visibility()
 			await get_tree().process_frame
 			_check(lane.visible, "opening the stage reveals the sequence lane")
-			_check(media_lanes.visible, "opening the stage reveals the collapsed media header")
-			var folded_panel: float = editor._timeline_panel.custom_minimum_size.y
+			# The overlay budget is fixed. On a narrow canvas the compact
+			# sheet header plus the clip lane already fill it, so the media
+			# header folds first; on a wide sheet it stays visible.
+			if editor._timeline._compact_header.visible:
+				_check(not media_lanes.visible,
+					"a narrow open sheet folds the media header before it shrinks the stage")
+			else:
+				_check(media_lanes.visible, "a wide open sheet keeps the collapsed media header")
+			var open_panel: float = editor._timeline_panel.size.y
 			media_lanes.set_collapsed(false)
 			await get_tree().process_frame
+			await get_tree().process_frame
 			_check(not media_lanes.is_collapsed(), "media lanes expand on request")
-			_check(editor._timeline_panel.custom_minimum_size.y > folded_panel,
-				"expanding media lanes grows the timeline panel")
+			_check(absf(editor._timeline_panel.size.y - open_panel) < 0.5,
+				"an expanded media lane fits inside the fixed overlay budget")
+			_check(media_lanes.get_global_rect().end.y <=
+				editor._timeline._transport_panel.get_global_rect().position.y + 0.5,
+				"media lanes stay above the transport row")
 			media_lanes.set_collapsed(true)
 			await get_tree().process_frame
-			_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_panel) < 0.5,
-				"collapsing media lanes restores the timeline height")
+			await get_tree().process_frame
+			_check(absf(editor._timeline_panel.size.y - open_panel) < 0.5,
+				"collapsing media lanes keeps the fixed overlay height")
 
 	var tl_play: Button = editor._timeline._play_button
 	_check(tl_play != null, "the dope sheet keeps a clip transport")
@@ -1028,7 +1200,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(not editor._timeline_visible, "graph mode does not reopen a folded sheet")
 	var folded_graph := 56.0
-	_check(absf(editor._timeline_panel.custom_minimum_size.y - folded_graph) < 0.5, "folded graph keeps only the 56 dp transport")
+	_check(absf(editor._timeline_panel.size.y - folded_graph) < 0.5, "folded graph keeps only the 56 dp transport")
 	editor._timeline_visible = true
 	editor._sync_timeline_visibility()
 	editor._timeline.set_mode("dope")
@@ -1097,7 +1269,7 @@ func _ready() -> void:
 			_check(timeline.graph_height_hint() > 0.0, "graph mode requests a taller sheet")
 		await get_tree().process_frame
 		await get_tree().process_frame
-		var graph_panel_height: float = editor._timeline_panel.custom_minimum_size.y
+		var graph_panel_height: float = editor._timeline_panel.size.y
 		_check(graph_panel_height > 180.0, "graph mode gives the sheet more height")
 		_check(timeline.has_method("graph_plot_rect"), "graph exposes its plot rect")
 		if timeline.has_method("graph_plot_rect"):
@@ -1183,8 +1355,8 @@ func _ready() -> void:
 		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
 		_check(editor._timeline_panel.size.y <= 270.0, "915x412 graph sheet stays within the short budget")
 		_check(
-			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
-			"915x412 graph does not overflow the center column"
+			editor._timeline_panel.size.y <= editor._view.size.y - 96.0 + 1.0,
+			"915x412 graph overlay leaves at least 96 dp of stage"
 		)
 		editor.size = Vector2(800.0, 360.0)
 		editor._apply_shell()
@@ -1193,8 +1365,8 @@ func _ready() -> void:
 		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
 		_check(editor._timeline_panel.size.y <= 212.0, "800x360 graph sheet stays within the short budget")
 		_check(
-			editor._view.size.y + editor._timeline_panel.size.y <= editor.size.y - editor._top_bar.custom_minimum_size.y + 1.0,
-			"800x360 graph does not overflow the center column"
+			editor._timeline_panel.size.y <= editor._view.size.y - 96.0 + 1.0,
+			"800x360 graph overlay leaves at least 96 dp of stage"
 		)
 		editor.size = Vector2(412.0, 915.0)
 		editor.set_workspace_mode("compact")
@@ -1207,7 +1379,7 @@ func _ready() -> void:
 		timeline.set_mode("dope")
 		await get_tree().process_frame
 		_check(timeline._mode == "dope", "dope mode restores")
-		_check(editor._timeline_panel.custom_minimum_size.y < graph_panel_height, "dope mode returns the extra height")
+		_check(editor._timeline_panel.size.y < graph_panel_height, "dope mode returns the extra height")
 		doc.set_selection(ease_id)
 		doc.seek(0.0)
 

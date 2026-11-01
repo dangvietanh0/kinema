@@ -473,6 +473,26 @@ func _apply_sheet_height() -> void:
 	var graph_min := 112.0 if _short_layout else 160.0
 	_sheet.custom_minimum_size.y = graph_min if _mode == "graph" else 96.0
 
+
+## The overlay owns the total height, so the sheet gets whatever the transport,
+## the compact header, the lanes and the 96 dp stage floor leave. Fitting the
+## sheet here (rather than letting its preferred minimum push the panel past
+## the budget) is what keeps the stage visible on short screens.
+func fit_sheet_height(available: float) -> void:
+	if _sheet == null:
+		return
+	var header_h := 0.0
+	if _compact_header != null and _compact_header.visible:
+		header_h = _compact_header.custom_minimum_size.y
+	var rule_h := 0.0
+	if _sheet_open and _sheet_rule != null and _sheet_rule.visible:
+		rule_h = maxf(1.0, _sheet_rule.custom_minimum_size.y)
+	var room := maxf(48.0, available - header_h - rule_h)
+	var preferred := 96.0
+	if _mode == "graph":
+		preferred = 112.0 if _short_layout else 160.0
+	_sheet.custom_minimum_size.y = minf(preferred, room)
+
 func set_mode(mode: String) -> void:
 	var next := "graph" if mode == "graph" else "dope"
 	var changed := next != _mode
