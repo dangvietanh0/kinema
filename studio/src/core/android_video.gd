@@ -11,6 +11,9 @@ const FRAMES_CLASS := "studio.kinema.media.KinemaVideoFrames"
 const REASON := "MP4 encoding uses the Android MediaCodec backend. Build the Android APK to export MP4."
 const FRAMES_REASON := "Video frame extraction uses the Android MediaCodec backend. Build the Android APK to import MP4/MOV references."
 const DEFAULT_PATTERN := "frame_%04d.png"
+const ENCODE_TIMEOUT_BASE := 120.0
+const ENCODE_TIMEOUT_PER_FRAME := 0.5
+const ENCODE_TIMEOUT_FLOOR := 300.0
 
 var _encoder = null
 var _frames = null
@@ -109,6 +112,13 @@ func poll() -> Dictionary:
 func cancel() -> void:
 	if available() and _encoder != null:
 		_encoder.cancel()
+
+
+## Bounded poll budget for one encode: 120 s of fixed overhead plus half a
+## second per rendered frame, never below 300 s. A wedged native encoder must
+## fail the export instead of leaving the sheet busy forever.
+static func encode_timeout_seconds(frame_count: int) -> float:
+	return maxf(ENCODE_TIMEOUT_FLOOR, ENCODE_TIMEOUT_BASE + ENCODE_TIMEOUT_PER_FRAME * float(maxi(0, frame_count)))
 
 
 func probe(path: String) -> Dictionary:

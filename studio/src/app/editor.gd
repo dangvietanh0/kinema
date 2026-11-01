@@ -1957,6 +1957,9 @@ func _export_png_sequence(options: Dictionary) -> void:
 	var result: Dictionary = await renderer.render(options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
+		# A capture failure stops mid-render and returns the partial directory.
+		if frames_dir != "":
+			_clean_dir(frames_dir)
 		_export_failed(str(result.get("error", "The PNG sequence could not be rendered.")))
 		return
 	if _media_cancel:
@@ -1970,6 +1973,7 @@ func _export_png_sequence(options: Dictionary) -> void:
 	elif not output.ends_with(".zip"):
 		output = output.get_basename() + ".zip"
 	if not RenderExport.zip_directory(frames_dir, output):
+		_clean_dir(frames_dir)
 		_export_failed("The ZIP archive could not be written.")
 		return
 	_clean_dir(frames_dir)
@@ -1998,6 +2002,8 @@ func _export_gif(options: Dictionary) -> void:
 	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
+		if frames_dir != "":
+			_clean_dir(frames_dir)
 		_export_failed(str(result.get("error", "The GIF frames could not be rendered.")))
 		return
 	var frames: Array = []
@@ -2061,6 +2067,8 @@ func _export_mp4(options: Dictionary) -> void:
 	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
+		if frames_dir != "":
+			_clean_dir(frames_dir)
 		_export_failed(str(result.get("error", "The MP4 frames could not be rendered.")))
 		return
 	var audio: Array = []
@@ -2094,6 +2102,8 @@ func _export_mp4(options: Dictionary) -> void:
 		_clean_dir(frames_dir)
 		_export_failed(str(started.get("error", AndroidVideo.REASON)))
 		return
+	var timeout_seconds := AndroidVideo.encode_timeout_seconds(int(result.get("frame_count", 0)))
+	var deadline_msec := Time.get_ticks_msec() + int(ceil(timeout_seconds * 1000.0))
 	while true:
 		var poll: Dictionary = backend.poll()
 		if _media_export != null:
@@ -2109,6 +2119,12 @@ func _export_mp4(options: Dictionary) -> void:
 			backend.cancel()
 			_clean_dir(frames_dir)
 			_export_failed("Export cancelled.")
+			return
+		# A wedged native encoder must end the export, not leave the sheet busy.
+		if Time.get_ticks_msec() >= deadline_msec:
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed("The MP4 encoder did not finish within %d s, so the export was cancelled." % int(round(timeout_seconds)))
 			return
 		await get_tree().create_timer(0.05).timeout
 	_clean_dir(frames_dir)
