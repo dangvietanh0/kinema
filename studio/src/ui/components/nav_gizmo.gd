@@ -20,6 +20,8 @@ const ORTHO_SIZE := 2.8
 const LABEL_SIZE := 12
 ## Distance in dp between the arrowhead apex and the nearest edge of a label.
 const LABEL_GAP := 9.0
+## Minimum dp gap between two label rectangles.
+const LABEL_MARGIN := 1.0
 
 var px_per_dp := 1.0
 
@@ -234,53 +236,117 @@ func set_orientation(yaw: float, pitch: float) -> void:
 func _update_tips() -> void:
 	if _camera == null or _viewport == null or _viewport.size.x <= 0 or _viewport.size.y <= 0:
 		return
+	var tips := {}
 	for axis in AXES:
 		# unproject_position() is in SubViewport pixels; the Control paints in
 		# dp, so divide by the same density the viewport rendered at.
-		var point := _camera.unproject_position(_axis_vector(axis)) / px_per_dp
-		_tip_points[axis] = point
-		_label_points[axis] = _clamped_label(point, axis)
+		tips[axis] = _camera.unproject_position(_axis_vector(axis)) / px_per_dp
+	for axis in AXES:
+		_tip_points[axis] = tips[axis]
+	_layout_labels(tips)
 
 
-## Labels sit outside the arrowhead, never on the cone. The outward radial
-## direction is preferred; when it would clamp onto the arrowhead at a control
-## edge, a perpendicular offset keeps the letter clear. A tip that points
-## straight at the camera projects onto the centre and gets a stable diagonal,
-## so its glyph never covers the other axes.
-func _clamped_label(tip: Vector2, axis: String) -> Vector2:
-	var text := str(AXIS_LABELS[axis])
-	var text_size := Kit.font_mono.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, LABEL_SIZE)
+func _head_disc(tip: Vector2) -> Array:
 	var centre := Vector2(GIZMO_SIZE, GIZMO_SIZE) * 0.5
-	var direction := tip - centre
-	if direction.length() < 1.0:
-		direction = Vector2(0.62, -0.78)
-	else:
-		direction = direction.normalized()
-	var head_centre := centre + (tip - centre) * 0.85
-	var head_radius := (tip - centre).length() * 0.12 + 2.0
-	var gap := LABEL_GAP + maxf(text_size.x, text_size.y) * 0.5
-	var candidates := [
-		direction,
-		Vector2(direction.y, -direction.x),
-		Vector2(-direction.y, direction.x),
-		-direction,
-	]
-	var fallback := Vector2.ZERO
-	for candidate in candidates:
-		var anchor: Vector2 = tip + candidate * gap
-		var pos := Vector2(
-			clampf(anchor.x - text_size.x * 0.5, 1.0, GIZMO_SIZE - text_size.x - 1.0),
-			clampf(anchor.y - text_size.y * 0.5, 1.0, GIZMO_SIZE - text_size.y - 1.0)
-		)
-		var rect := Rect2(pos, text_size)
+	var arm := tip - centre
+	# The cone occupies the last 30% of the positive arm, so its centre sits at
+	# 0.85 and its radius follows the projected arm length.
+	return [centre + arm * 0.85, arm.length() * 0.12 + 2.0]
+
+
+## Shortest gap between two axis-aligned rectangles; zero when they overlap.
+func _rect_gap(a: Rect2, b: Rect2) -> float:
+	var dx := maxf(0.0, maxf(a.position.x - b.end.x, b.position.x - a.end.x))
+	var dy := maxf(0.0, maxf(a.position.y - b.end.y, b.position.y - a.end.y))
+	return sqrt(dx * dx + dy * dy)
+
+
+## How much room a candidate has before it touches a head disc or a label that
+## was already placed. Negative means it collides with one of them.
+func _label_clearance(rect: Rect2, heads: Dictionary, placed: Dictionary) -> float:
+	var clearance := INF
+	for axis in AXES:
+		var head: Array = heads[axis]
+		var head_centre: Vector2 = head[0]
+		var head_radius: float = head[1]
 		var closest := Vector2(
 			clampf(head_centre.x, rect.position.x, rect.end.x),
-			clampf(head_centre.y, rect.position.y, rect.end.y)
-		)
-		if head_centre.distance_to(closest) >= head_radius:
-			return pos
-		fallback = pos
-	return fallback
+			clampf(head_centre.y, rect.position.y, rect.end.y))
+		clearance = minf(clearance, head_centre.distance_to(closest) - head_radius)
+	for axis in placed:
+		clearance = minf(clearance, _rect_gap(rect, placed[axis]) - LABEL_MARGIN)
+	return clearance
+
+
+func _label_rect_at(anchor: Vector2, text_size: Vector2) -> Rect2:
+	var pos := Vector2(
+		clampf(anchor.x - text_size.x * 0.5, 1.0, GIZMO_SIZE - text_size.x - 1.0),
+		clampf(anchor.y - text_size.y * 0.5, 1.0, GIZMO_SIZE - text_size.y - 1.0))
+	return Rect2(pos, text_size)
+
+
+## Labels are laid out jointly, not one axis at a time in isolation. Every
+## candidate must clear the control edges, all three axis heads (not just its
+## own) and every label already placed. A negative-pitch orbit can project two
+## axes close together, so the radial direction is only a preference; side and
+## opposite offsets are tried before a dense scan gives up on the ideal ring.
+func _layout_labels(tips: Dictionary) -> void:
+	var heads := {}
+	for axis in AXES:
+		heads[axis] = _head_disc(tips[axis])
+	var placed := {}
+	var centre := Vector2(GIZMO_SIZE, GIZMO_SIZE) * 0.5
+	for axis in AXES:
+		var tip: Vector2 = tips[axis]
+		var text := str(AXIS_LABELS[axis])
+		var text_size := Kit.font_mono.get_string_size(
+			text, HORIZONTAL_ALIGNMENT_LEFT, -1, LABEL_SIZE)
+		var outward := tip - centre
+		if outward.length() < 1.0:
+			outward = Vector2(0.62, -0.78)
+		var base_angle := outward.angle()
+		var gap := LABEL_GAP + maxf(text_size.x, text_size.y) * 0.5
+		var best := _label_rect_at(tip + outward.normalized() * gap, text_size)
+		var best_clearance := -INF
+		var chosen := false
+		var steps := [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8]
+		var rings := [gap, gap + 6.0, gap + 12.0]
+		for ring in rings:
+			if chosen:
+				break
+			for step in steps:
+				var angle := base_angle + PI * float(step) / 8.0
+				var rect := _label_rect_at(
+					tip + Vector2.from_angle(angle) * ring, text_size)
+				var clearance := _label_clearance(rect, heads, placed)
+				if clearance >= 0.0:
+					best = rect
+					chosen = true
+					break
+				if clearance > best_clearance:
+					best_clearance = clearance
+					best = rect
+		if not chosen:
+			# Last resort: scan the control for the clearest free spot. This
+			# only runs when every radial and side ring is blocked.
+			var step_size := 4.0
+			var y := 1.0
+			while y <= GIZMO_SIZE - text_size.y - 1.0 and not chosen:
+				var x := 1.0
+				while x <= GIZMO_SIZE - text_size.x - 1.0:
+					var rect := Rect2(Vector2(x, y), text_size)
+					var clearance := _label_clearance(rect, heads, placed)
+					if clearance >= 0.0:
+						best = rect
+						chosen = true
+						break
+					if clearance > best_clearance:
+						best_clearance = clearance
+						best = rect
+					x += step_size
+				y += step_size
+		_label_points[axis] = best.position
+		placed[axis] = best
 
 
 func tip_position(axis: String) -> Vector2:
@@ -334,13 +400,16 @@ func _gui_input(event: InputEvent) -> void:
 func _draw() -> void:
 	if not _orientation_set:
 		return
+	# label_position() is the visual top-left used by the collision layout, so
+	# move the baseline down by the font ascent instead of drawing above it.
+	var ascent := Kit.font_mono.get_ascent(LABEL_SIZE)
 	for axis in AXES:
 		var point: Vector2 = _label_points.get(axis, Vector2.ZERO)
 		var label := str(AXIS_LABELS[axis])
 		# A dark shadow keeps the letter legible over the bright axis arrow.
 		draw_string(
 			Kit.font_mono,
-			point + Vector2(1, 1),
+			point + Vector2(1, 1 + ascent),
 			label,
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1,
@@ -349,7 +418,7 @@ func _draw() -> void:
 		)
 		draw_string(
 			Kit.font_mono,
-			point,
+			point + Vector2(0, ascent),
 			label,
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1,
