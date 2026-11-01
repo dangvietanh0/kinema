@@ -2185,6 +2185,9 @@ func _ensure_output_dir(path: String) -> bool:
 func _clean_dir(path: String) -> void:
 	var dir := DirAccess.open(path)
 	if dir == null:
+		# The timeout and failure paths depend on this cleanup, so a silent
+		# no-op would leave a frames directory behind with no diagnostic.
+		push_warning("Kinema: could not open %s to clean it; frames may remain." % path)
 		return
 	dir.list_dir_begin()
 	var name := dir.get_next()
