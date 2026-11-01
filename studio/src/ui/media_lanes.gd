@@ -20,6 +20,7 @@ const PIXELS_PER_SECOND := 80.0
 
 var _doc = null
 var _body: VBoxContainer
+var _body_scroll: ScrollContainer
 var _empty_audio: Label
 var _empty_video: Label
 var _audio_rows: Array[Control] = []
@@ -29,6 +30,9 @@ var _connected := false
 var _dragging_id := ""
 var _drag_origin_x := 0.0
 var _drag_origin_start := 0.0
+## Height cap the timeline overlay hands the section. -1 means "no cap":
+## the body takes its natural height like before.
+var _fit_height := -1.0
 
 
 func setup(doc) -> void:
@@ -52,10 +56,33 @@ func is_collapsed() -> bool:
 
 
 func set_collapsed(collapsed: bool) -> void:
+	var changed := _collapsed != collapsed
 	_collapsed = collapsed
 	if _body != null:
 		_body.visible = not _collapsed
-	collapsed_changed.emit(_collapsed)
+	_sync_capacity()
+	if changed:
+		collapsed_changed.emit(_collapsed)
+
+
+## Caps the section height to `height` dp (header included). The body then
+## scrolls inside the cap, so a tight overlay budget never hides the header
+## and its collapse control. Pass -1 to restore the natural height.
+func fit_height(height: float) -> void:
+	_fit_height = height
+	_sync_capacity()
+
+
+func _sync_capacity() -> void:
+	if _body_scroll == null or not is_instance_valid(_body_scroll):
+		return
+	var want := 0.0
+	if _body != null and not _collapsed:
+		want = _body.get_combined_minimum_size().y
+	if _fit_height < 0.0:
+		_body_scroll.custom_minimum_size.y = want
+	else:
+		_body_scroll.custom_minimum_size.y = clampf(_fit_height - HEADER_HEIGHT, 0.0, want)
 
 
 func audio_row_count() -> int:
@@ -82,12 +109,22 @@ func refresh() -> void:
 	_video_rows.clear()
 	add_theme_constant_override("separation", 0)
 	_build_header()
+	# The body lives in a scroll shell: when the overlay budget caps the
+	# section, the header stays put and the rows scroll instead of the whole
+	# media section vanishing.
+	_body_scroll = ScrollContainer.new()
+	_body_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_body_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_body_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_child(_body_scroll)
 	_body = VBoxContainer.new()
 	_body.add_theme_constant_override("separation", 0)
-	add_child(_body)
+	_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_body_scroll.add_child(_body)
 	_build_audio()
 	_build_video()
 	_body.visible = not _collapsed
+	_sync_capacity()
 
 
 func _build_header() -> void:

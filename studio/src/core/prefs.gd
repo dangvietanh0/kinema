@@ -28,6 +28,7 @@ const DEFAULTS := {
 	"editor.reduce_motion": false,
 	"editor.haptics": false,
 	"editor.collapsed_sections": [],
+	"editor.scene_panel_expanded": true,
 	"editor.project_sort": "recent",
 	"performance.overlay": "compact",
 	"performance.frame_graph": false,

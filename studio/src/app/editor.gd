@@ -58,6 +58,17 @@ const PANEL_RAIL_MIN_WIDTH := 480.0
 ## 44 dp transport plus its 1 px rules and vertical padding. Leaving the
 ## folded strip at 52 clipped the ruler baseline on landscape phones.
 const FOLDED_TIMELINE := 56.0
+## The scene panel is persistent on Studio and Desktop once the shell can hold
+## the 44 dp rail without starving the stage.
+const SCENE_PANEL_MIN_WIDTH := 480.0
+## Above this width the stored preference decides between the expanded panel
+## and the rail. Below it the rail is the default and expansion is transient.
+const SCENE_EXPANDED_MIN_WIDTH := 760.0
+const SCENE_RAIL_WIDTH := 44.0
+const SCENE_EXPANDED_MIN := 196.0
+const SCENE_EXPANDED_MAX := 280.0
+## A transient scene expansion must not leave the stage narrower than this.
+const SCENE_STAGE_FLOOR := 320.0
 
 ## Material swatches are a graphite ramp. The hex field still accepts any
 ## colour, but the default palette never pulls the workbench off-message.
@@ -77,6 +88,10 @@ var _bottom_bar: PanelContainer
 
 var _body: HBoxContainer
 var _rail: PanelContainer
+var _scene_column: PanelContainer
+var _scene_rail: PanelContainer
+var _scene_rail_expand: Button
+var _scene_rail_count: Label
 var _center: VBoxContainer
 var _view_header: PanelContainer
 var _viewport_host: Control
@@ -85,6 +100,7 @@ var _perf_overlay: PanelContainer
 var _rig_overlay: Control
 var _video_overlay: Control
 var _timeline_panel: PanelContainer
+var _timeline_frame: VBoxContainer
 var _timeline_stack: VBoxContainer
 var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
@@ -118,6 +134,10 @@ var _fit_user_scale_enabled := true
 var _fit_clamped := false
 var _drawer_open := false
 var _compact_tab := "scene"
+## A sub-760 expansion is a transient gesture: it is keyed to the current shell
+## width and never writes `editor.scene_panel_expanded`.
+var _scene_transient := false
+var _scene_transient_width := -1.0
 var layout_info: Dictionary = {}
 var workbench_mode := "studio"
 var _timeline_visible := false
@@ -294,6 +314,26 @@ func _build_body() -> void:
 
 	_build_timeline()
 
+	# The persistent scene column lives between the stage and the panel rail,
+	# on the right edge of the body (user override 2026-11-01: the scene tree
+	# belongs on the right). It is hidden on Compact and on shells too narrow
+	# to host the rail; the outliner then returns to the dock, which is the
+	# only modal surface left.
+	_scene_column = PanelContainer.new()
+	_scene_column.visible = false
+	_scene_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var scene_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	# The inner edge faces the stage on the column's left side now that the
+	# column hangs off the right edge.
+	scene_style.border_width_left = 1
+	scene_style.content_margin_left = 0
+	scene_style.content_margin_right = 0
+	scene_style.content_margin_top = 0
+	scene_style.content_margin_bottom = 0
+	_scene_column.add_theme_stylebox_override("panel", scene_style)
+	_body.add_child(_scene_column)
+	_build_scene_rail()
+
 	# The right rail is the only permanent panel chrome. The dock itself is an
 	# overlay, so the stage keeps every pixel the old 320 dp column reserved.
 	_panel_rail = PanelRailScript.new()
@@ -302,6 +342,59 @@ func _build_body() -> void:
 	_panel_rail.z_index = 13
 	_panel_rail.page_requested.connect(_toggle_drawer)
 	_body.add_child(_panel_rail)
+
+## The collapsed scene rail is a mount point, not a header: one 44 dp expand
+## action, the layers icon and the object count. It never pretends to own a
+## list it does not show.
+func _build_scene_rail() -> void:
+	_scene_rail = PanelContainer.new()
+	_scene_rail.custom_minimum_size = Vector2(SCENE_RAIL_WIDTH, 0.0)
+	_scene_rail.visible = false
+	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	# The rail hangs off the right edge; its inner edge faces the stage.
+	style.border_width_left = 1
+	style.content_margin_left = 0
+	style.content_margin_right = 0
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	_scene_rail.add_theme_stylebox_override("panel", style)
+	_scene_column.add_child(_scene_rail)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_top", 4)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	_scene_rail.add_child(margin)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 4)
+	margin.add_child(column)
+
+	_scene_rail_expand = Kit.icon_button("panel-right", "Expand the scene panel", 44, 20)
+	_scene_rail_expand.pressed.connect(_on_scene_rail_expand)
+	column.add_child(_scene_rail_expand)
+
+	# Spec: layers icon plus the object count. The rail is 44 dp wide, so the
+	# icon and its badge stack vertically instead of hanging a word off the
+	# glyph column.
+	var layers := Kit.icon("layers", Kit.TEXT_DIM, 18)
+	layers.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	column.add_child(layers)
+
+	var badge := PanelContainer.new()
+	badge.custom_minimum_size = Vector2(24, 24)
+	badge.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	badge.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+	column.add_child(badge)
+	_scene_rail_count = Kit.label("0", 10, Kit.TEXT_MUTED, 600)
+	_scene_rail_count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_scene_rail_count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge.add_child(_scene_rail_count)
+
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(spacer)
+
 
 func _build_status_bar() -> void:
 	_status_bar = StatusBarScript.new()
@@ -315,12 +408,35 @@ func _build_bottom_bar() -> void:
 	_layout.add_child(_bottom_bar)
 
 func _build_timeline() -> void:
+	# The timeline is a bottom-anchored overlay inside the stage host, not a
+	# child of the center column. Opening it grows over the image instead of
+	# resizing the 3D view.
 	_timeline_panel = PanelContainer.new()
-	_timeline_panel.custom_minimum_size.y = 190
-	_timeline_panel.size_flags_vertical = Control.SIZE_FILL
-	var style := Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0)
+	_timeline_panel.z_index = 9
+	_timeline_panel.anchor_left = 0.0
+	_timeline_panel.anchor_right = 1.0
+	_timeline_panel.anchor_top = 1.0
+	_timeline_panel.anchor_bottom = 1.0
+	_timeline_panel.offset_left = 0.0
+	_timeline_panel.offset_right = 0.0
+	_timeline_panel.offset_top = -FOLDED_TIMELINE
+	_timeline_panel.offset_bottom = 0.0
+	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	style.border_width_top = 1
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.55)
+	style.shadow_size = 10
+	style.shadow_offset = Vector2(0.0, -2.0)
 	_timeline_panel.add_theme_stylebox_override("panel", style)
-	_center.add_child(_timeline_panel)
+	_viewport_host.add_child(_timeline_panel)
+	_viewport_host.resized.connect(_on_viewport_resized)
+
+	# The frame keeps the transport below the sheet stack so the clip lane,
+	# dope sheet and media lanes grow upward over the stage while the transport
+	# stays on the bottom edge.
+	_timeline_frame = VBoxContainer.new()
+	_timeline_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_timeline_frame.add_theme_constant_override("separation", 0)
+	_timeline_panel.add_child(_timeline_frame)
 
 	# The timeline area is now three stacked surfaces: the sequence clip lane
 	# on top, the single-object dope sheet below it and the media lanes under
@@ -328,7 +444,7 @@ func _build_timeline() -> void:
 	_timeline_stack = VBoxContainer.new()
 	_timeline_stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline_stack.add_theme_constant_override("separation", int(Kit.GUTTER))
-	_timeline_panel.add_child(_timeline_stack)
+	_timeline_frame.add_child(_timeline_stack)
 
 	_clip_lane = ClipLaneScript.new()
 	_clip_lane.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
@@ -357,6 +473,10 @@ func _build_timeline() -> void:
 	if doc != null:
 		_media_lanes.setup(doc)
 	_timeline_stack.add_child(_media_lanes)
+
+	# The transport is one instance owned by the timeline; mount it below the
+	# stack instead of building a second row.
+	_timeline.mount_transport(_timeline_frame)
 
 func _on_lane_sheet_requested(body: Control, title: String, subtitle: String) -> void:
 	_overlay.show_sheet(title, subtitle, body, [
@@ -457,6 +577,9 @@ func _build_dock() -> void:
 	_outliner.add_requested.connect(_open_add_sheet)
 	_outliner.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("outliner", collapsed)
+	)
+	_outliner.panel_collapse_requested.connect(func() -> void:
+		_set_scene_expanded_from_ui(false)
 	)
 	_outliner_panel.add_child(_outliner)
 
@@ -703,6 +826,7 @@ func _adopt_document(document: Node3D) -> void:
 		_view.set_document(doc)
 		_view.set_tool(_tool)
 	_outliner.setup(doc)
+	_update_scene_rail_count()
 	_inspector.setup(doc)
 	_timeline.setup(doc)
 	_clip_lane.setup(doc)
@@ -740,6 +864,7 @@ func _adopt_document(document: Node3D) -> void:
 
 func _on_document_scene_changed() -> void:
 	_update_header()
+	_update_scene_rail_count()
 
 func _on_document_rigs_changed() -> void:
 	if doc != null and _rig_overlay != null:
@@ -1058,6 +1183,13 @@ func _on_resized() -> void:
 	_apply_shell()
 
 
+func _on_viewport_resized() -> void:
+	# The stage host finishes its container pass after the shell has applied,
+	# so recompute the overlay against the real stage height.
+	if _timeline_panel != null and not _render_mode:
+		_sync_timeline_visibility()
+
+
 ## Arranges the shell for the current workbench mode. Idempotent: it is safe to
 ## call on every resize, mode change and preference change.
 func _apply_shell() -> void:
@@ -1104,9 +1236,37 @@ func _apply_shell() -> void:
 	if _rail.get_parent() != want_parent:
 		_rail.reparent(want_parent, false)
 		want_parent.move_child(_rail, 0)
+
+	# One outliner instance, one selection model, one search state. The scene
+	# column owns it on Studio/Desktop; Compact and sub-480 shells hand it back
+	# to the dock. Re-parenting never rebuilds the tree.
+	var scene_enabled: bool = not compact and size.x >= SCENE_PANEL_MIN_WIDTH
+	var scene_expanded: bool = scene_enabled and _scene_target_expanded()
+	var scene_width := 0.0
+	if scene_enabled:
+		scene_width = _scene_expanded_width() if scene_expanded else SCENE_RAIL_WIDTH
+		_scene_column.custom_minimum_size.x = scene_width
+		_scene_column.visible = true
+	else:
+		_scene_column.custom_minimum_size.x = 0.0
+		_scene_column.visible = false
+	_scene_rail.visible = scene_enabled and not scene_expanded
+	_outliner.set_persistent_panel(scene_enabled)
+	if scene_enabled:
+		if _outliner_panel.get_parent() != _scene_column:
+			_outliner_panel.reparent(_scene_column, false)
+		_outliner_panel.visible = scene_expanded
+	else:
+		if _outliner_panel.get_parent() != _dock_box:
+			_outliner_panel.reparent(_dock_box, false)
+		_outliner_panel.visible = _compact_tab == "scene"
+	_update_scene_rail_state(scene_enabled and not scene_expanded)
 	if _panel_rail != null:
 		_panel_rail.visible = panel_rail_visible
-		_panel_rail.set_page(_compact_tab, _drawer_open)
+		if _drawer_open:
+			_panel_rail.set_page(_compact_tab, true)
+		else:
+			_panel_rail.set_page("scene", scene_expanded)
 
 	_dock.visible = _drawer_open
 	_drawer_scrim.visible = _drawer_open
@@ -1129,8 +1289,10 @@ func _apply_shell() -> void:
 		# stage with two rails.
 		_top_bar.set_panels_button_visible(rail_fallback)
 		_top_bar.set_panels_open(_drawer_open)
-	# One page at a time: the flyout is not the old stacked wide dock.
-	_outliner_panel.visible = _compact_tab == "scene"
+	# One page at a time: the flyout is not the old stacked wide dock. The
+	# outliner is only a dock page when the scene column does not own it.
+	if _outliner_panel.get_parent() == _dock_box:
+		_outliner_panel.visible = _compact_tab == "scene"
 	_inspector_panel.visible = _compact_tab == "inspector"
 	_rig_frame.visible = _compact_tab == "rig"
 	# The panel stays mounted and reachable; only its dock frame follows tabs.
@@ -1170,7 +1332,7 @@ func _apply_shell() -> void:
 	if not compact:
 		rail_reserve = float(_rail.call("rail_width"))
 	var panel_reserve := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
-	_timeline.set_available_width(size.x - rail_reserve - panel_reserve)
+	_timeline.set_available_width(size.x - rail_reserve - panel_reserve - scene_width)
 	var bottom_inset := 0.0
 	if _status_bar.visible:
 		bottom_inset += _status_bar.custom_minimum_size.y
@@ -1194,6 +1356,105 @@ func _apply_shell() -> void:
 	_update_drawer_tabs()
 	_sync_view_header_visibility()
 	_refresh_chrome_values()
+
+
+# -------------------------------------------------------------------------
+# Persistent scene panel
+# -------------------------------------------------------------------------
+
+func _scene_panel_enabled() -> bool:
+	return workbench_mode != "compact" and size.x >= SCENE_PANEL_MIN_WIDTH
+
+
+func _scene_expanded_width() -> float:
+	return clampf(size.x * 0.20, SCENE_EXPANDED_MIN, SCENE_EXPANDED_MAX)
+
+
+## A sub-760 expansion is legal only while the stage keeps 320 dp. The two
+## rails and the body gutters come out of the shell width first.
+func _scene_expansion_legal() -> bool:
+	if not _scene_panel_enabled():
+		return false
+	var rail_width := float(_rail.call("rail_width")) if _rail != null else SCENE_RAIL_WIDTH
+	var panel_rail := SCENE_RAIL_WIDTH if size.x >= PANEL_RAIL_MIN_WIDTH else 0.0
+	var stage := size.x - rail_width - _scene_expanded_width() - panel_rail - float(Kit.GUTTER) * 3.0
+	return stage >= SCENE_STAGE_FLOOR
+
+
+func _scene_can_expand() -> bool:
+	if not _scene_panel_enabled():
+		return false
+	if size.x >= SCENE_EXPANDED_MIN_WIDTH:
+		return true
+	return _scene_expansion_legal()
+
+
+func _scene_target_expanded() -> bool:
+	if not _scene_panel_enabled():
+		return false
+	if size.x >= SCENE_EXPANDED_MIN_WIDTH:
+		return bool(Prefs.get_value("editor.scene_panel_expanded", true))
+	return _scene_transient and absf(size.x - _scene_transient_width) < 0.5 and _scene_expansion_legal()
+
+
+func _scene_is_expanded() -> bool:
+	return _scene_panel_enabled() and _scene_target_expanded()
+
+
+## Public for the layout/smoke suites and the capture harness: persist the
+## choice at or above 760 dp, keep a sub-760 expansion transient.
+func set_scene_panel_expanded(expanded: bool, persist: bool = true) -> void:
+	if persist:
+		Prefs.set_value("editor.scene_panel_expanded", expanded)
+		_scene_transient = false
+	else:
+		_scene_transient = expanded
+		_scene_transient_width = size.x
+	if is_inside_tree():
+		_apply_shell()
+
+
+func _set_scene_expanded_from_ui(expanded: bool) -> void:
+	set_scene_panel_expanded(expanded, size.x >= SCENE_EXPANDED_MIN_WIDTH)
+
+
+func _toggle_scene_panel() -> void:
+	if not _scene_panel_enabled():
+		return
+	if _drawer_open:
+		# Scene from a Properties/Rig flyout focuses the panel and dismisses
+		# the overlay instead of opening a second scene surface.
+		_close_drawer()
+		if not _scene_is_expanded() and _scene_can_expand():
+			_set_scene_expanded_from_ui(true)
+		return
+	if _scene_is_expanded():
+		_set_scene_expanded_from_ui(false)
+	elif _scene_can_expand():
+		_set_scene_expanded_from_ui(true)
+
+
+func _on_scene_rail_expand() -> void:
+	if _scene_can_expand():
+		_set_scene_expanded_from_ui(true)
+
+
+func _update_scene_rail_state(rail_visible: bool) -> void:
+	if _scene_rail_expand == null:
+		return
+	var can_expand := _scene_can_expand()
+	_scene_rail_expand.disabled = rail_visible and not can_expand
+	if can_expand:
+		_scene_rail_expand.tooltip_text = "Expand the scene panel"
+	else:
+		_scene_rail_expand.tooltip_text = "The stage needs 320 dp; widen the window to expand the scene panel"
+
+
+func _update_scene_rail_count() -> void:
+	if _scene_rail_count == null:
+		return
+	var objects: int = 0 if doc == null else doc.objects.size()
+	_scene_rail_count.text = str(objects)
 
 
 ## A drawer or sheet can begin inside the camera label and cut it mid-word
@@ -1265,66 +1526,123 @@ func _set_section_collapsed(section: String, collapsed: bool, persist: bool = tr
 		_apply_shell()
 
 
+## The stage host's height drives the overlay budget. During the first shell
+## pass the container has not been laid out yet, so measure the real chrome
+## controls (top bar, view header, status bar, bottom bar) instead of
+## duplicating their heights as literals.
+func _stage_height() -> float:
+	if _viewport_host != null and _viewport_host.size.y > 1.0:
+		return _viewport_host.size.y
+	var height: float = size.y
+	var chrome := [_top_bar, _view_header, _status_bar, _bottom_bar]
+	for control in chrome:
+		if control != null and control.visible:
+			height -= control.custom_minimum_size.y
+	# Layout separations: the shell column (top/body/status/bottom) and the
+	# center column (header/stage).
+	height -= float(Kit.GUTTER) * 4.0
+	return maxf(height, 120.0)
+
+
+## The expanded sheet is capped at 42 percent of the stage host so the live 3D
+## view keeps at least 55 percent of its height, and at 240 dp on tall
+## screens. It never drops below the transport plus a 72 dp sheet.
+func _timeline_overlay_budget(stage_height: float) -> float:
+	if not _timeline_should_show():
+		return FOLDED_TIMELINE
+	var budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, stage_height * 0.42))
+	budget = minf(budget, maxf(FOLDED_TIMELINE + 72.0, stage_height - 96.0))
+	return budget
+
+
+func _set_timeline_overlay_height(value: float) -> void:
+	if _timeline_panel == null:
+		return
+	_timeline_panel.offset_top = -value
+	_timeline_panel.offset_bottom = 0.0
+	_timeline_panel.custom_minimum_size.y = value
+
+
 func _sync_timeline_visibility() -> void:
 	if _timeline_panel == null or _timeline == null:
 		return
-	# The transport row is always present; only the dope sheet folds away, so
-	# a phone keeps the 3D view height until the sheet is asked for.
+	# The transport row is always present; only the sheet folds away, so the
+	# stage keeps its 3D height until the sheet is asked for.
 	var sheet := _timeline_should_show()
 	_timeline.set_sheet_visible(sheet)
+	if not sheet:
+		_timeline.set_header_folded(false)
+		if _media_lanes != null:
+			_media_lanes.visible = false
+			_media_lanes.fit_height(-1.0)
+		if _clip_lane != null:
+			_clip_lane.visible = false
+		_set_timeline_overlay_height(FOLDED_TIMELINE)
+		return
+
+	var budget := _timeline_overlay_budget(_stage_height())
+	# Resolve content in the binding fold order: the media lanes fold first
+	# (their body is capped inside a scrollable shell, so the header stays
+	# reachable), then the clip lane folds, then the sheet shrinks. The
+	# resolution starts lean (compact header folded) and the header comes
+	# back only when the pass leaves 48 dp of slack for it.
+	_timeline.set_header_folded(true)
+	_timeline.fit_sheet_height(10000.0)
+	var tl_content: float = _timeline.get_combined_minimum_size().y
 	var lane_min := 0.0
 	if _clip_lane != null:
 		lane_min = _clip_lane.get_combined_minimum_size().y
-	var media_min := 0.0
+	var media_want := 0.0
 	if _media_lanes != null:
-		media_min = _media_lanes.get_combined_minimum_size().y
-	# Landscape phones are a first-class surface: the dope sheet gives back
-	# height on short screens so the viewport keeps a usable working area.
-	match workbench_mode:
-		"compact":
-			_timeline_panel.custom_minimum_size.y = 180.0 if sheet else FOLDED_TIMELINE
-		"desktop":
-			_timeline_panel.custom_minimum_size.y = 180.0 if _short else 220.0
-			if not sheet:
-				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
-		_:
-			_timeline_panel.custom_minimum_size.y = 156.0 if _short else 180.0
-			if not sheet:
-				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
-	var extra: float = _timeline.graph_height_hint() if sheet else 0.0
-	# Folded, the stage keeps only the 56 dp transport. The sequence lane and
-	# media headers belong to the sheet the user is looking at; leaving a 114 dp
-	# clip canvas under a folded dope sheet was what made the 3D view tiny on a
-	# landscape phone.
-	var show_media := sheet and _media_lanes != null and media_min > 0.0
-	var show_lane := sheet and _clip_lane != null and lane_min > 0.0
-	var base: float = _timeline_panel.custom_minimum_size.y
-	if _short:
-		# The viewport keeps a 96 dp floor; the two 1 px gutters between the
-		# header, the viewport and the sheet come out of the sheet, not the
-		# stage. Media lanes fold away first, then the clip lane, and the
-		# graph hint shrinks before the clip lane disappears.
-		var chrome: float = float(_top_bar.custom_minimum_size.y) if _top_bar != null else 44.0
-		var budget := maxf(190.0, size.y - chrome - 96.0 - float(Kit.GUTTER) * 2.0)
-		# 1. The collapsed media lanes are the least used surface here.
-		if base + lane_min + media_min + extra > budget and show_media:
+		media_want = _media_lanes.get_combined_minimum_size().y
+	var show_lane := _clip_lane != null and lane_min > 0.0
+	var show_media := _media_lanes != null
+	var lane_part := 0.0
+	var media_part := 0.0
+	# Room left next to the transport row and the preferred sheet.
+	var room := budget - FOLDED_TIMELINE - tl_content
+	if room >= lane_min + media_want:
+		lane_part = lane_min
+		media_part = media_want
+	elif room >= lane_min + 44.0:
+		lane_part = lane_min
+		media_part = 44.0
+	elif room >= 44.0:
+		show_lane = false
+		media_part = minf(media_want, room)
+	else:
+		# The preferred sheet is unaffordable: keep the header folded, drop
+		# the sequence lane and shrink the sheet to its 72 dp floor so the
+		# collapsed media header gets one more chance.
+		show_lane = false
+		var floor_room := budget - FOLDED_TIMELINE - 73.0
+		if floor_room >= 44.0:
+			_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
+			media_part = minf(media_want, floor_room)
+		else:
+			# Even the floor cannot host the header. Fold the lanes whole and
+			# collapse the media lanes explicitly so the next pass (a taller
+			# stage, a resize) shows the header again instead of burying it.
 			show_media = false
-		# 2. The graph hint yields before either lane disappears.
-		if base + (lane_min if show_lane else 0.0) + (media_min if show_media else 0.0) + extra > budget and extra > 40.0:
-			extra = 40.0
-		# 3. Only then does the clip lane fold with the dope sheet.
-		if base + (lane_min if show_lane else 0.0) + (media_min if show_media else 0.0) + extra > budget and show_lane:
-			show_lane = false
-			extra = minf(extra, maxf(0.0, budget - base))
+			media_part = 0.0
 	if _media_lanes != null:
-		_media_lanes.visible = show_media
+		_media_lanes.fit_height(media_part if show_media else -1.0)
+		_media_lanes.visible = show_media and media_part >= 44.0
+		if not _media_lanes.visible:
+			_media_lanes.set_collapsed(true)
 	if _clip_lane != null:
 		_clip_lane.visible = show_lane
-	# The panel reserves the real stack height: transport, the optional clip
-	# lane, the optional media lanes and the graph hint.
-	var lane_part := lane_min if show_lane else 0.0
-	var media_part := media_min if show_media else 0.0
-	_timeline_panel.custom_minimum_size.y = base + lane_part + media_part + (extra if sheet else 0.0)
+	# The compact header returns only when it can coexist with a 72 dp sheet:
+	# available >= header + 72 + the 1 px rule. The sheet then takes what is
+	# left, never below 72 dp.
+	var can_host_header: bool = _timeline.header_allowed() and \
+		budget - FOLDED_TIMELINE - lane_part - media_part >= \
+		_timeline.header_height() + 72.0 + _timeline.sheet_rule_height()
+	if can_host_header:
+		_timeline.set_header_folded(false)
+	# Final pass: the sheet takes what is left, never below 72 dp.
+	_timeline.fit_sheet_height(budget - FOLDED_TIMELINE - lane_part - media_part)
+	_set_timeline_overlay_height(budget)
 
 func _on_timeline_mode_changed(_mode: String) -> void:
 	_sync_timeline_visibility()
@@ -1348,6 +1666,11 @@ func _restore_clip_after_sequence() -> void:
 	_restoring_clip = false
 
 func _toggle_drawer(tab: String) -> void:
+	# On Studio/Desktop the scene tree is the persistent column. The rail and
+	# the Scene page toggle that column; only Compact still opens the dock.
+	if tab == "scene" and _scene_panel_enabled():
+		_toggle_scene_panel()
+		return
 	if _drawer_open and _compact_tab == tab:
 		_close_drawer()
 		return
@@ -1391,7 +1714,8 @@ func _compact_shell() -> bool:
 func _set_compact_tab(tab: String) -> void:
 	_compact_tab = tab if tab in ["scene", "inspector", "rig"] else "scene"
 	if _dock != null:
-		_outliner_panel.visible = _compact_tab == "scene"
+		if _outliner_panel.get_parent() == _dock_box:
+			_outliner_panel.visible = _compact_tab == "scene"
 		_inspector_panel.visible = _compact_tab == "inspector"
 		_rig_frame.visible = _compact_tab == "rig"
 		_rig_panel.visible = true
@@ -1413,7 +1737,10 @@ func _update_drawer_tabs() -> void:
 	if _dock_title_label != null:
 		_dock_title_label.text = _panel_page_title(_compact_tab)
 	if _panel_rail != null:
-		_panel_rail.set_page(_compact_tab, _drawer_open)
+		if _drawer_open:
+			_panel_rail.set_page(_compact_tab, true)
+		else:
+			_panel_rail.set_page("scene", _scene_panel_enabled() and _scene_is_expanded())
 	if _top_bar != null:
 		_top_bar.set_panels_open(_drawer_open)
 
@@ -2351,6 +2678,7 @@ func _capture_render_chrome() -> void:
 		"rail": _rail != null and _rail.visible,
 		"header": _view_header != null and _view_header.visible,
 		"timeline": _timeline_panel != null and _timeline_panel.visible,
+		"scene_column": _scene_column != null and _scene_column.visible,
 		"dock": _dock != null and _dock.visible,
 		"panel_rail": _panel_rail != null and _panel_rail.visible,
 		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
@@ -2372,6 +2700,8 @@ func _set_render_chrome_hidden() -> void:
 		_view_header.visible = false
 	if _timeline_panel != null:
 		_timeline_panel.visible = false
+	if _scene_column != null:
+		_scene_column.visible = false
 	if _dock != null:
 		_dock.visible = false
 	if _panel_rail != null:
@@ -2399,6 +2729,8 @@ func _restore_render_chrome() -> void:
 		_view_header.visible = bool(_render_ui_state.get("header", true))
 	if _timeline_panel != null:
 		_timeline_panel.visible = bool(_render_ui_state.get("timeline", true))
+	if _scene_column != null:
+		_scene_column.visible = bool(_render_ui_state.get("scene_column", true))
 	if _panel_rail != null:
 		_panel_rail.visible = bool(_render_ui_state.get("panel_rail", true))
 	if _perf_overlay != null:

@@ -8,9 +8,18 @@ extends Control
 ## output path and an action. The harness opens the study template, waits for
 ## the shell to settle, and writes the framebuffer as a PNG.
 ##
-## Actions: home, home-new, timeline, drawer-scene, drawer-props, add-sheet,
-## settings, performance, renderer, graphics, render, quick-render, workspace,
-## draft, graph.
+## Actions: home, home-new, timeline, timeline-folded, drawer-scene,
+## drawer-props, add-sheet, settings, performance, renderer, graphics, render,
+## quick-render, workspace, draft, graph, scene-rail, scene-expanded.
+##
+## Two additions in the U1 follow-up stay inside the scene-panel/timeline
+## evidence this task owns:
+## - `timeline-folded` mirrors `timeline`: the 56 dp folded strip is a binding
+##   state of the overlay contract, so it needs its own photograph.
+## - `KINEMA_CAPTURE_GEOMETRY=1` prints the stage/overlay/scene rects. The
+##   right-edge column and the 42 percent overlay budget are geometry
+##   contracts a PNG cannot prove; the diagnostic is opt-in and inert
+##   otherwise.
 ##
 ## Screenshots are evidence, so the harness must not photograph its own
 ## history: Home is seeded with representative recent projects, the editor uses
@@ -71,6 +80,13 @@ func _ready() -> void:
 		"timeline":
 			if not main._editor._timeline_visible:
 				main._editor._toggle_timeline()
+		"timeline-folded":
+			if main._editor._timeline_visible:
+				main._editor._toggle_timeline()
+		"scene-rail":
+			main._editor._set_scene_expanded_from_ui(false)
+		"scene-expanded":
+			main._editor._set_scene_expanded_from_ui(true)
 		"drawer-scene":
 			main._editor._toggle_drawer("scene")
 		"drawer-props":
@@ -125,6 +141,16 @@ func _ready() -> void:
 	# needs a few frames to disappear before the shutter.
 	for _i in 3:
 		await get_tree().process_frame
+	# Geometry is not visible in the PNG; when a shot looks off, this makes the
+	# measured rects recoverable from the capture log.
+	if main._editor != null and OS.get_environment("KINEMA_CAPTURE_GEOMETRY") == "1":
+		print("GEOMETRY host=%s view=%s timeline=%s scene=%s body=%s" % [
+			str(main._editor._viewport_host.get_global_rect()),
+			str(main._editor._view.get_global_rect()),
+			str(main._editor._timeline_panel.get_global_rect()),
+			str(main._editor._scene_column.get_global_rect()),
+			str(main._editor._body.get_global_rect()),
+		])
 	var viewport_size := get_viewport().get_visible_rect().size
 	var image := get_viewport().get_texture().get_image()
 	var dir := out_path.get_base_dir()

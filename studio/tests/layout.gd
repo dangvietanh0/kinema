@@ -23,8 +23,13 @@ const SIZES := [
 	Vector2i(2560, 1600),
 ]
 const MODES := ["compact", "studio", "desktop"]
+const LayoutMath = preload("res://src/app/layout_math.gd")
 const HIT_FLOOR := 43.5
 const PROJECT_TITLE := "Layout Matrix"
+const SCENE_PANEL_MIN := 480.0
+const SCENE_EXPANDED_MIN := 760.0
+const STAGE_FLOOR := Vector2(560.0, 230.0)
+const FOLDED_TIMELINE := 56.0
 
 var _failures: Array[String] = []
 var _headless := false
@@ -69,6 +74,7 @@ func _ready() -> void:
 		return
 	# The creation toast is transient chrome, not part of the arrangement.
 	editor._overlay.clear_toast()
+	Prefs.set_value("editor.scene_panel_expanded", true)
 
 	for size in SIZES:
 		await _resize(main, size)
@@ -112,12 +118,60 @@ func _ready() -> void:
 					# menu bar keeps the panel routes there.
 					_check(editor._top_bar.mode() == "desktop",
 						label + ": desktop keeps its menu-bar panel routes")
+			var scene_expected: bool = mode != "compact" and editor.size.x >= SCENE_PANEL_MIN
+			var scene_column = editor.get("_scene_column")
+			var outliner_panel = editor.get("_outliner_panel")
+			var scene_rail = editor.get("_scene_rail")
+			_check(scene_column != null and outliner_panel != null and scene_rail != null,
+				label + ": the scene column, rail and outliner exist")
+			if scene_column != null and outliner_panel != null and scene_rail != null:
+				_check(scene_column.visible == scene_expected,
+					label + ": the persistent scene column follows the mode and minimum width")
+				if scene_expected:
+					_check(outliner_panel.get_parent() == scene_column,
+						label + ": the single outliner mounts in the scene column")
+					var body_kids: Array = editor._body.get_children()
+					_check(body_kids.find(editor._center) < body_kids.find(scene_column),
+						label + ": the scene column sits to the right of the stage")
+					if panel_rail != null and panel_rail.visible:
+						_check(body_kids.find(scene_column) < body_kids.find(panel_rail),
+							label + ": the scene column sits left of the panel rail")
+						_check(scene_column.get_global_rect().end.x <=
+							panel_rail.get_global_rect().position.x + 0.5,
+							label + ": the scene column ends before the panel rail")
+					_check(scene_column.get_global_rect().position.x >=
+						editor._viewport_host.get_global_rect().end.x - 0.5,
+						label + ": the scene column hangs off the right edge of the stage")
+					if editor.size.x >= SCENE_EXPANDED_MIN:
+						var expected_width := clampf(editor.size.x * 0.20, 196.0, 280.0)
+						_check(absf(scene_column.size.x - expected_width) < 1.0,
+							label + ": the expanded scene panel uses the clamped 20 percent width")
+						_check(outliner_panel.visible and not scene_rail.visible,
+							label + ": the expanded panel shows the tree instead of the rail")
+					else:
+						_check(absf(scene_column.size.x - 44.0) < 1.0,
+							label + ": a sub-760 dp stage keeps the 44 dp scene rail")
+						_check(scene_rail.visible and not outliner_panel.visible,
+							label + ": the rail replaces the expanded panel")
+					_check(not editor._drawer_open and not editor._drawer_scrim.visible,
+						label + ": the scene panel installs no scrim and no flyout")
+				else:
+					_check(outliner_panel.get_parent() == editor._dock_box,
+						label + ": compact and sub-480 shells keep the outliner in the dock")
+			_check(editor._timeline_panel.get_parent() == editor._viewport_host,
+				label + ": the timeline overlays the stage host")
+			_check(absf(editor._timeline_panel.size.y - FOLDED_TIMELINE) < 1.0,
+				label + ": the folded timeline is exactly a 56 dp transport")
 			if mode != "compact":
 				_check(not editor._drawer_open, label + ": the panel flyout starts closed")
-				_check(editor._view.size.x >= size.x - 160.0,
-					label + ": the viewport owns the dock's former width")
+				var scene_reserve: float = scene_column.size.x if scene_expected else 0.0
+				_check(editor._view.size.x >= size.x - 160.0 - scene_reserve,
+					label + ": the viewport owns the stage after the rails and scene column")
 				_check(editor._view.size.y >= 140.0,
 					label + ": the folded timeline leaves a usable 3D height")
+			if size == Vector2i(915, 412) and mode == "studio":
+				_check(editor._view.size.x >= STAGE_FLOOR.x and editor._view.size.y >= STAGE_FLOOR.y,
+					label + ": the live stage keeps at least 560x230 with the scene panel open")
 			# Headless cannot render a scaled Desktop canvas, so its pixel
 			# assertions would be fiction. The fit maths below still run.
 			var scaled_desktop: bool = _headless and mode == "desktop" and float(info.get("fit", 1.0)) < 1.0
@@ -184,6 +238,270 @@ func _ready() -> void:
 			"start": 0.0, "opacity": 0.5, "visible": true,
 		}],
 	}}, editor.doc.project_dir)
+
+	# The scene panel and the timeline overlay are the point of this contract.
+	# They are measured at Desktop, at the 915x412 Studio stage floor, and on
+	# the sub-760 and sub-480 boundaries where the scene panel becomes a rail
+	# or returns to the dock.
+	print("LAYOUT STEP: scene panel and timeline overlay")
+	Prefs.set_value("editor.scene_panel_expanded", true)
+	await _resize(main, Vector2i(1440, 900))
+	editor.set_workspace_mode("desktop")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	_check(absf(editor._scene_column.size.x - 280.0) < 1.0,
+		"1440 desktop expands the scene panel to its 280 dp cap")
+	_check(editor._outliner_panel.get_parent() == editor._scene_column,
+		"desktop mounts the one outliner in the scene column")
+	_check(not editor._drawer_scrim.visible and not editor._drawer_open,
+		"the expanded scene panel has no scrim and no focus trap")
+	_check_no_overflow(editor, "1440x900 desktop scene panel")
+	_check_hit_targets(editor, "desktop", "1440x900 desktop scene panel")
+
+	# The user override (2026-11-01) puts the persistent tree on the right
+	# edge: rail, stage, scene column, then the 44 dp panel rail. Verified at
+	# a wide desktop and at the short 915x412 Studio floor.
+	print("LAYOUT STEP: scene column on the right edge")
+	for size in [Vector2i(1280, 800), Vector2i(915, 412)]:
+		await _resize(main, size)
+		editor.set_workspace_mode("studio")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		main.refresh_layout_scale()
+		await get_tree().process_frame
+		var edge_label := "%dx%d right-edge scene column" % [size.x, size.y]
+		_check(editor._scene_column.visible and editor._outliner_panel.visible,
+			edge_label + ": the persistent column is open")
+		var kids: Array = editor._body.get_children()
+		_check(kids.find(editor._center) < kids.find(editor._scene_column) and
+			kids.find(editor._scene_column) < kids.find(editor._panel_rail),
+			edge_label + ": rail, stage, scene column, panel rail is the body order")
+		_check(editor._viewport_host.get_global_rect().end.x <=
+			editor._scene_column.get_global_rect().position.x + 0.5,
+			edge_label + ": the stage ends before the scene column")
+		_check(editor._scene_column.get_global_rect().end.x <=
+			editor._panel_rail.get_global_rect().position.x + 0.5,
+			edge_label + ": the scene column ends before the 44 dp panel rail")
+		_check_no_overflow(editor, edge_label)
+		print("LAYOUT OK: " + edge_label)
+	await _resize(main, Vector2i(1440, 900))
+	editor.set_workspace_mode("desktop")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+
+	var overlay_host: Control = editor._viewport_host
+	var view_before_overlay: Vector2 = editor._view.size
+	editor._timeline_visible = true
+	editor._timeline.set_mode("dope")
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	# M8: the formula itself in each regime. The budget never drops below
+	# transport + 72 dp sheet and never grows past 240 dp.
+	_check(absf(editor._timeline_overlay_budget(1000.0) - 240.0) < 0.5,
+		"a tall stage caps the overlay at 240 dp")
+	_check(absf(editor._timeline_overlay_budget(500.0) - 210.0) < 0.5,
+		"a mid stage uses 42 percent of its host")
+	_check(absf(editor._timeline_overlay_budget(320.0) - 134.4) < 0.5,
+		"a 320 dp stage host uses the 42 percent budget")
+	_check(320.0 - editor._timeline_overlay_budget(320.0) >= 320.0 * 0.55 - 0.5,
+		"a 320 dp stage host keeps at least 55 percent")
+	_check(absf(editor._timeline_overlay_budget(200.0) - (FOLDED_TIMELINE + 72.0)) < 0.5,
+		"a short stage keeps the transport plus a 72 dp sheet")
+	var overlay_stage_h: float = overlay_host.size.y
+	# Binding 2026-11-01 budget: 42 percent of the stage host, capped at 240
+	# dp, never below transport 56 + sheet 72.
+	var dope_budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, overlay_stage_h * 0.42))
+	dope_budget = minf(dope_budget, maxf(FOLDED_TIMELINE + 72.0, overlay_stage_h - 96.0))
+	_check(editor._timeline_panel.size.y <= dope_budget + 0.5,
+		"the dope overlay stays inside the 42 percent budget")
+	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 72.0 - 0.5,
+		"the dope overlay keeps the transport plus a 72 dp sheet")
+	_check(overlay_stage_h - editor._timeline_panel.size.y >= overlay_stage_h * 0.55 - 1.0,
+		"the open dope overlay leaves at least 55 percent of the stage")
+	_check(is_equal_approx(editor._view.size.x, view_before_overlay.x) and
+		is_equal_approx(editor._view.size.y, view_before_overlay.y),
+		"opening the timeline does not resize the 3D view")
+	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
+		"the open dope overlay leaves at least 96 dp of stage visible")
+	_check(absf(editor._timeline_panel.get_global_rect().end.y -
+		overlay_host.get_global_rect().end.y) <= 1.0,
+		"the timeline overlay anchors to the stage bottom")
+	_check(absf(editor._timeline.mount_target().get_global_rect().end.y -
+		overlay_host.get_global_rect().end.y) <= 1.0,
+		"the transport row is the bottom edge of the stage")
+	editor._timeline.set_mode("graph")
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var graph_budget := dope_budget
+	_check(editor._timeline_panel.size.y <= graph_budget + 0.5,
+		"the graph overlay shares the same 42 percent cap")
+	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
+		"the open graph overlay still leaves a visible stage")
+	editor._timeline.set_mode("dope")
+	editor._timeline_visible = false
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(absf(editor._timeline_panel.size.y - FOLDED_TIMELINE) < 1.0,
+		"folding the timeline returns it to exactly 56 dp")
+	_check(is_equal_approx(editor._view.size.x, view_before_overlay.x) and
+		is_equal_approx(editor._view.size.y, view_before_overlay.y),
+		"folding the timeline restores the same 3D view size")
+
+	# The binding short-screen case: at 915x412 the open dope sheet keeps at
+	# least 55 percent of the stage and folds the clip lane and media header
+	# before it squeezes the sheet below transport + 72 dp.
+	await _resize(main, Vector2i(915, 412))
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	var short_host: Control = editor._viewport_host
+	editor._timeline.set_mode("dope")
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var short_budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, short_host.size.y * 0.42))
+	short_budget = minf(short_budget, maxf(FOLDED_TIMELINE + 72.0, short_host.size.y - 96.0))
+	_check(editor._timeline_panel.size.y <= short_budget + 0.5,
+		"915x412 dope stays inside the 42 percent budget")
+	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 72.0 - 0.5,
+		"915x412 dope keeps transport plus a 72 dp sheet")
+	_check(short_host.size.y - editor._timeline_panel.size.y >= short_host.size.y * 0.55 - 1.0,
+		"915x412 dope leaves at least 55 percent of the stage")
+	_check(not editor._clip_lane.visible and not editor._media_lanes.visible,
+		"915x412 folds the clip lane and media header before shrinking the sheet")
+	editor._timeline_visible = false
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+
+	editor.set_scene_panel_expanded(false)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(absf(editor._scene_column.size.x - 44.0) < 1.0 and editor._scene_rail.visible,
+		"the collapse chevron turns the scene panel into the 44 dp rail")
+	_check(not bool(Prefs.get_value("editor.scene_panel_expanded", true)),
+		"the collapsed scene panel persists the preference")
+	editor._apply_shell()
+	await get_tree().process_frame
+	_check(editor._scene_rail.visible,
+		"the collapsed scene panel survives _apply_shell")
+	Prefs.load_settings()
+	editor._apply_shell()
+	await get_tree().process_frame
+	_check(editor._scene_rail.visible,
+		"the collapsed scene panel survives a preference reload")
+	Prefs.set_value("editor.scene_panel_expanded", true)
+	editor._apply_shell()
+	await get_tree().process_frame
+
+	await _resize(main, Vector2i(600, 960))
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	_check(absf(editor._scene_column.size.x - 44.0) < 1.0 and editor._scene_rail.visible,
+		"a 600 dp studio stage keeps the scene rail")
+	_check(editor._scene_rail_expand.disabled,
+		"the rail explains why it cannot expand into a stage below 320 dp")
+	_check(editor._scene_rail_expand.tooltip_text.contains("320 dp"),
+		"the disabled rail says the stage needs 320 dp")
+	_check_no_overflow(editor, "600x960 studio scene rail")
+
+	# M8: the exact thresholds. 480 dp turns the persistent column into a
+	# rail; 479 dp hands the same outliner back to the dock. Independently,
+	# the sub-760 expansion is legal only while the stage keeps exactly 320 dp
+	# (611 dp shell), and illegal one dp below it.
+	await _resize(main, Vector2i(480, 960))
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	_check(editor._scene_column.visible and editor._scene_rail.visible,
+		"a 480 dp studio shell keeps the 44 dp scene rail")
+	_check(editor._outliner_panel.get_parent() == editor._scene_column,
+		"the 480 dp shell keeps the outliner in the scene column")
+	# One dp below the threshold. Studio clamps its canvas to its own 480 dp
+	# minimum (LayoutMath.STUDIO_MIN), so a real window can never produce a
+	# 479 dp Studio canvas; headless keeps factor 1.0 and can. The pixel case
+	# therefore runs only where the canvas is honestly 479 dp, and the clamped
+	# window still proves the threshold is that same minimum.
+	var below_threshold := LayoutMath.resolve(Vector2i(479, 960), 160.0, "Linux", 1.0, "studio", true)
+	_check(bool(below_threshold["clamped"]) and
+		absf((below_threshold["logical_after"] as Vector2).x - SCENE_PANEL_MIN) < 0.5,
+		"a 479 dp Studio window clamps to the 480 dp column threshold")
+	await _resize(main, Vector2i(479, 960))
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	if absf(editor.size.x - 479.0) < 0.5:
+		_check(not editor._scene_column.visible,
+			"a 479 dp shell hides the persistent scene column")
+		_check(editor._outliner_panel.get_parent() == editor._dock_box,
+			"a 479 dp shell returns the outliner to the dock")
+	else:
+		print("LAYOUT SKIP: 479 dp scene column: Studio clamped the canvas to %d dp" % roundi(editor.size.x))
+		_check(editor.size.x >= SCENE_PANEL_MIN - 0.5,
+			"the Studio canvas never falls below the 480 dp scene column threshold")
+		_check(editor._scene_column.visible,
+			"the clamped 480 dp canvas keeps the scene column available")
+
+	Prefs.set_value("editor.scene_panel_expanded", false)
+	for entry in [[611, true], [610, false]]:
+		await _resize(main, Vector2i(int(entry[0]), 960))
+		editor.set_workspace_mode("studio")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		main.refresh_layout_scale()
+		await get_tree().process_frame
+		var stage_label := "%d dp shell scene expansion" % int(entry[0])
+		_check(editor._scene_rail.visible, stage_label + ": the rail is the collapsed state")
+		if bool(entry[1]):
+			_check(not editor._scene_rail_expand.disabled,
+				stage_label + ": exactly 320 dp of stage still expands")
+			_check(editor._scene_rail_expand.tooltip_text == "Expand the scene panel",
+				stage_label + ": the enabled rail keeps its expand tooltip")
+		else:
+			_check(editor._scene_rail_expand.disabled,
+				stage_label + ": one dp below the 320 dp stage floor disables expansion")
+			_check(editor._scene_rail_expand.tooltip_text.contains("320 dp"),
+				stage_label + ": the disabled rail explains the stage floor")
+	Prefs.set_value("editor.scene_panel_expanded", true)
+
+	await _resize(main, Vector2i(700, 960))
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	_check(not editor._scene_rail_expand.disabled,
+		"a 700 dp studio stage can expand without starving the stage")
+	Prefs.set_value("editor.scene_panel_expanded", false)
+	editor._apply_shell()
+	await get_tree().process_frame
+	editor._scene_rail_expand.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._outliner_panel.visible and editor._outliner_panel.get_parent() == editor._scene_column,
+		"the rail expand action transiently opens the scene panel")
+	_check(not bool(Prefs.get_value("editor.scene_panel_expanded", true)),
+		"a transient sub-760 expansion never overwrites the stored preference")
+	_check_no_overflow(editor, "700x960 studio transient scene panel")
+	Prefs.set_value("editor.scene_panel_expanded", true)
+	editor._apply_shell()
+	await get_tree().process_frame
 
 	# The expansion surfaces: clip lane, media lanes and the rig tab. They are
 	# laid out at the three sizes the expansion targets, in the two touch
