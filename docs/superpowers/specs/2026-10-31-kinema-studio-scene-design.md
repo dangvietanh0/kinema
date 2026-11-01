@@ -8,6 +8,31 @@ pushes the viewport) and the 2D gizmo/compass descriptions in the viewport.
 The frozen document contract is amended only for the import-hierarchy methods
 listed in §5; animation, media and rig APIs are untouched.
 
+## Revision (2026-11-01)
+
+The user overrode the zone order in §1. The persistent scene tree hangs off
+the **right** edge: tool rail, stage, scene column, 44 dp panel rail. The
+stage keeps the width the left-edge column left it, and the rail icon, the
+hairline on the stage-facing edge and the outliner chevron mirror with it.
+There is still one outliner instance and one re-parenting path.
+
+The overlay budget was cut too. The open sheet takes at most 42 % of the
+stage host and never more than 240 dp, and it never drops below the 56 dp
+transport plus a 72 dp sheet. The media header keeps its 44 dp collapse
+control and caps its body inside a scroll shell, so expanding it can never
+hide the section or its way back; the clip lane folds next and the sheet
+shrinks last. The folded overlay is still exactly 56 dp and still never
+resizes `_view`.
+
+The dope sheet and the speed graph share one horizontal time viewport: the
+initial window is the full duration, two-finger pan/pinch and Shift+wheel
+pan, the wheel zooms about the cursor, a slim scrollbar (44 dp hit band)
+drives the same window, and the view follows the playhead. Ruler scrub, key
+dragging, graph editing, snapping and undo all map through that viewport.
+Where §1, §2, §6 or §7 below still name the left-edge order, the fixed
+320 dp budget or a sheet that resizes the view, this revision wins and the
+layout/smoke suites assert the new values.
+
 ## Why
 
 The stage-first shell removed the reserved inspector column, but the scene tree
