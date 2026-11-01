@@ -28,6 +28,7 @@ const PROJECT_TITLE := "Layout Matrix"
 
 var _failures: Array[String] = []
 var _headless := false
+var _buttons_checked := 0
 
 
 func _fail(message: String) -> void:
@@ -182,6 +183,11 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(project_id != "" and Store.delete_project(project_id), "the layout matrix project is deleted")
+	# Coverage guard: the walker must really visit composed buttons, not skip
+	# them. A regression to a non-Button-only sweep lands here at zero.
+	_check(_buttons_checked > 0,
+		"the hit-target walker measures laid-out BaseButtons (%d checked)" % _buttons_checked)
+	print("LAYOUT BUTTONS: %d laid-out BaseButton targets checked" % _buttons_checked)
 	_finish()
 
 
@@ -223,13 +229,18 @@ func _walk_overflow(control: Control, width: float, context: String, clipped: bo
 			_walk_overflow(child, width, context, next_clipped)
 
 
-## Every visible action keeps the 44 dp touch floor. The exemptions are the
-## product's own: `qa_hit_exempt` marks desktop menu-bar chrome, which is a
-## mouse surface, and a MenuBar's children are the same chrome.
+## Every visible action keeps the 44 dp touch floor. Buttons are checked twice:
+## at their authored minimum (what the control promises) and at their real
+## laid-out rect (what a container actually gave them), so a container that
+## squeezes a button cannot pass on the minimum alone. The matrix settles its
+## frames before walking, so a visible button with a real rect has been laid
+## out. The exemptions are the product's own: `qa_hit_exempt` marks desktop
+## menu-bar chrome, which is a mouse surface, and a MenuBar's children are the
+## same chrome.
 func _check_hit_targets(root: Control, mode: String, context: String) -> void:
 	for node in root.find_children("*", "Control", true, false):
 		var control := node as Control
-		if control == null or control is BaseButton or not control.is_visible_in_tree():
+		if control == null or not control.is_visible_in_tree():
 			continue
 		if not _is_interactive(control):
 			continue
@@ -243,15 +254,25 @@ func _check_hit_targets(root: Control, mode: String, context: String) -> void:
 		var height := maxf(control.size.y, control.custom_minimum_size.y)
 		if width < HIT_FLOOR or height < HIT_FLOOR:
 			_fail("%s: %s is %.1fx%.1f, below the 44 dp floor" % [context, control.get_path(), width, height])
+		if control is BaseButton:
+			_buttons_checked += 1
+			# The laid-out size, not the authored minimum: a container that
+			# squeezes a button must fail even when its minimum is 44 dp.
+			if control.size != Vector2.ZERO and (control.size.x < HIT_FLOOR or control.size.y < HIT_FLOOR):
+				_fail("%s: %s lays out at %.1fx%.1f, below the 44 dp floor" % [
+					context, control.get_path(), control.size.x, control.size.y
+				])
 
 
-## A tap/drag surface is a non-Button control that accepts pointer input:
+## A tap/drag surface is a Button or a control that accepts pointer input:
 ## text fields and ranges, controls marked `qa_hit_target` (media rows) or a
 ## script that overrides `_gui_input` (the clip-lane canvas). Scroll-bar
-## internals are engine chrome, not a authored touch target.
+## internals are engine chrome, not an authored touch target.
 func _is_interactive(control: Control) -> bool:
 	if control is ScrollBar:
 		return false
+	if control is BaseButton:
+		return true
 	if control is LineEdit or control is TextEdit or control is Range:
 		return true
 	if control.mouse_filter == Control.MOUSE_FILTER_IGNORE:
