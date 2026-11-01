@@ -710,6 +710,45 @@ func _ready() -> void:
 		and hud_style.get_border_width(SIDE_RIGHT) == 0
 		and hud_style.get_border_width(SIDE_BOTTOM) == 0,
 		"the render HUD card draws no border")
+
+	print("SMOKE STEP: control boundaries")
+	# Fix round 2: every swept control edge is pinned. A future revert of any
+	# one of these to BORDER_SOFT would drop it to 1.26:1 and fail here.
+	var inspector_color_button: Button = editor._inspector._color_button
+	_check(inspector_color_button != null, "the inspector exposes its colour button")
+	if inspector_color_button != null:
+		_check_control_edge(inspector_color_button.get_theme_stylebox("normal"),
+			"the inspector colour button", Kit.SURFACE_2)
+	var vector_field = editor._inspector._fields["position"][0]
+	var vector_frame: PanelContainer = vector_field.get_parent().get_parent()
+	_check_control_edge(vector_frame.get_theme_stylebox("panel"),
+		"the inspector vector frame", Kit.SURFACE_2)
+	_check_control_edge(home._template_style(false),
+		"the home template card", Kit.SURFACE_2)
+	var pose_probe = load("res://src/ui/pose_panel.gd").new()
+	add_child(pose_probe)
+	var pose_chip: PanelContainer = pose_probe._make_chip({"id": "probe", "name": "Probe"})
+	add_child(pose_chip)
+	_check_control_edge(pose_chip.get_theme_stylebox("panel"),
+		"the pose chip", Kit.SURFACE_2)
+	pose_chip.queue_free()
+	pose_probe.queue_free()
+	editor._open_color_sheet("color")
+	for _i in 4:
+		await get_tree().process_frame
+	var swatch_checked := false
+	for node in editor._overlay.find_children("*", "Button", true, false):
+		var swatch_button := node as Button
+		if swatch_button == null or not swatch_button.tooltip_text.begins_with("#"):
+			continue
+		var swatch_style: StyleBoxFlat = swatch_button.get_theme_stylebox("normal")
+		if swatch_style != null and swatch_style.border_color == Kit.CONTROL_BORDER:
+			_check_control_edge(swatch_style, "the colour swatch", Kit.SURFACE_2)
+			swatch_checked = true
+			break
+	_check(swatch_checked, "the colour sheet exposes a control-edged swatch")
+	editor._overlay.close_modal(true)
+	await get_tree().process_frame
 	var view_before: float = editor._view.size.x
 	editor._toggle_drawer("scene")
 	for _i in 4:
@@ -1775,6 +1814,20 @@ func _contrast(a: Color, b: Color) -> float:
 	var high := maxf(_relative_luminance(a), _relative_luminance(b))
 	var low := minf(_relative_luminance(a), _relative_luminance(b))
 	return (high + 0.05) / (low + 0.05)
+
+## A control edge must be drawn, use the control-boundary token, and clear
+## 3:1 against the surface behind it. `fill` is the panel fill, not the
+## stylebox bg (a colour swatch's bg is the colour it previews).
+func _check_control_edge(style: StyleBoxFlat, label: String, fill: Color) -> void:
+	_check(style != null, label + " has a stylebox")
+	if style == null:
+		return
+	_check(style.get_border_width(SIDE_LEFT) >= 1,
+		label + " draws a boundary")
+	_check(style.border_color == Kit.CONTROL_BORDER,
+		label + " uses the control boundary token")
+	_check(_contrast(style.border_color, fill) >= 3.0,
+		label + " boundary clears 3:1 against its surface")
 
 ## WCAG 2.x relative luminance. Godot's Color.get_luminance() is the raw
 ## weighted sRGB value, not the linearised one the contrast formula requires.
