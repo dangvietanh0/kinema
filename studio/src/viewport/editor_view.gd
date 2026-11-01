@@ -40,6 +40,10 @@ var _gizmo: Node3D
 ## While a capture probe renders, editing chrome must stay out of the shared
 ## world. _draw_gizmo() runs every frame and would otherwise re-show it.
 var _gizmo_suppressed := false
+## Captures can overlap: a quick still can start while a sequence frame or a
+## media export is between its probe awaits. Each holder takes one level and
+## the chrome returns only when the last one releases.
+var _gizmo_suppression := 0
 var _nav_gizmo: Control
 var _nav_yaw := INF
 var _nav_pitch := INF
@@ -1367,12 +1371,14 @@ func _draw_hud() -> void:
 # -------------------------------------------------------------------------
 
 ## Editing chrome never belongs in a capture. A one-shot hide cannot survive
-## the per-frame rebuild, so a flag is held for the whole probe render and
-## cleared only after the image has been read.
+## the per-frame rebuild, so the depth is held for the whole probe render and
+## released only after the image has been read. Nested captures take one level
+## each; the flag clears when the last holder releases.
 func _set_gizmo_suppressed(on: bool) -> void:
-	_gizmo_suppressed = on
+	_gizmo_suppression = maxi(0, _gizmo_suppression + (1 if on else -1))
+	_gizmo_suppressed = _gizmo_suppression > 0
 	if _gizmo != null:
-		_gizmo.set_suppressed(on)
+		_gizmo.set_suppressed(_gizmo_suppressed)
 
 
 func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image:

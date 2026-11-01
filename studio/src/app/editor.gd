@@ -1900,8 +1900,15 @@ func _open_render_sheet() -> void:
 		{"text": "Done", "primary": true},
 	])
 
+## Every capture entry point shares this guard. A still or sequence must not
+## start while another render or a media export owns the probe renderer:
+## overlapping captures would interleave their chrome suppression and their
+## progress state.
+func _capture_blocked() -> bool:
+	return _render_busy or _media_busy
+
 func _quick_still() -> void:
-	if doc == null or _view == null or _render_busy:
+	if doc == null or _view == null or _capture_blocked():
 		return
 	doc.pause()
 	_set_render_busy(true)
@@ -1921,7 +1928,7 @@ func _quick_still() -> void:
 # -------------------------------------------------------------------------
 
 func _run_media_export(options: Dictionary) -> void:
-	if doc == null or _view == null or _media_export == null or _media_busy or _render_busy:
+	if doc == null or _view == null or _media_export == null or _capture_blocked():
 		return
 	_media_busy = true
 	_media_cancel = false
@@ -2349,7 +2356,7 @@ func _restore_render_chrome() -> void:
 	_sync_rig_overlay()
 
 func _render_still() -> void:
-	if doc == null or _view == null or _render_busy:
+	if doc == null or _view == null or _capture_blocked():
 		return
 	doc.pause()
 	_set_render_busy(true)
@@ -2453,7 +2460,7 @@ func _set_render_progress(value: float, text: String) -> void:
 		_render_status.text = text
 
 func _render_sequence(with_dialog: bool = true) -> void:
-	if doc == null or _view == null or _render_busy:
+	if doc == null or _view == null or _capture_blocked():
 		return
 	doc.pause()
 	_set_render_busy(true)
