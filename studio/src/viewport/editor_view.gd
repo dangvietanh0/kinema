@@ -37,9 +37,13 @@ var _grid_root: Node3D
 var _grid_mesh: MeshInstance3D
 ## The transform gizmo is one real 3D node in the stage, not a document child.
 var _gizmo: Node3D
+## While a capture probe renders, editing chrome must stay out of the shared
+## world. _draw_gizmo() runs every frame and would otherwise re-show it.
+var _gizmo_suppressed := false
 var _nav_gizmo: Control
 var _nav_yaw := INF
 var _nav_pitch := INF
+var _nav_density := -1.0
 var _fps_chip: Button
 var _quick_render_button: Button
 ## The viewport header owns the visible grid and frame controls. These two
@@ -443,6 +447,17 @@ func _on_resized() -> void:
 	_draw_gizmo()
 	_repaint()
 
+## Device pixels per UI unit. The window is in physical pixels while the
+## canvas is in dp, so this ratio is the display density the stage, the nav
+## gizmo and every capture must respect.
+func _device_pixel_scale() -> float:
+	var win := get_window()
+	var visible := get_viewport().get_visible_rect().size
+	if win != null and visible.x > 1.0 and visible.y > 1.0:
+		return clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
+	return 1.0
+
+
 func _apply_viewport_size() -> void:
 	if _viewport == null:
 		return
@@ -450,11 +465,7 @@ func _apply_viewport_size() -> void:
 	# scale the canvas by their display density, so the raw control size would
 	# produce a soft, upscaled 3D image. The adaptive quality scale and the cap
 	# trade sharpness for frame time; both are reported in the performance HUD.
-	var pixel_scale := 1.0
-	var win := get_window()
-	var visible := get_viewport().get_visible_rect().size
-	if win != null and visible.x > 1.0 and visible.y > 1.0:
-		pixel_scale = clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
+	var pixel_scale := _device_pixel_scale()
 	var quality_scale := 1.0 if render_mode else _preview_scale
 	var target := Vector2(size.x, size.y) * pixel_scale * quality_scale
 	var cap := float(_preview_cap)
@@ -719,6 +730,10 @@ func _set_view_label(label: String) -> void:
 func _sync_nav() -> void:
 	if _nav_gizmo == null:
 		return
+	var density := _device_pixel_scale()
+	if not is_equal_approx(density, _nav_density):
+		_nav_density = density
+		_nav_gizmo.set_pixel_density(density)
 	if is_equal_approx(_nav_yaw, yaw) and is_equal_approx(_nav_pitch, pitch):
 		return
 	_nav_yaw = yaw
@@ -1292,6 +1307,9 @@ func _draw_gizmo() -> void:
 	_gizmo_handles.clear()
 	if _gizmo == null or _camera == null:
 		return
+	if _gizmo_suppressed:
+		_gizmo.set_visible_gizmo(false)
+		return
 	var on := tool != "select" and doc != null and doc.selected_id != "" and not render_mode
 	var node: Node3D = null
 	if on:
@@ -1348,6 +1366,15 @@ func _draw_hud() -> void:
 # Still capture
 # -------------------------------------------------------------------------
 
+## Editing chrome never belongs in a capture. A one-shot hide cannot survive
+## the per-frame rebuild, so a flag is held for the whole probe render and
+## cleared only after the image has been read.
+func _set_gizmo_suppressed(on: bool) -> void:
+	_gizmo_suppressed = on
+	if _gizmo != null:
+		_gizmo.set_suppressed(on)
+
+
 func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image:
 	if _viewport == null or _camera == null:
 		return null
@@ -1363,9 +1390,9 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 	var grid_visible := _grid_on
 	_set_grid_strength(0.0)
 	# The transform gizmo lives in the stage world, so a world-sharing probe
-	# would photograph it. Editing chrome never belongs in a still.
-	if _gizmo != null:
-		_gizmo.set_visible_gizmo(false)
+	# would photograph it. The HUD and navigation gizmo are canvas items of the
+	# main viewport, not part of this probe's world, so they cannot enter.
+	_set_gizmo_suppressed(true)
 	var markers_were_hidden := false
 	if doc != null:
 		markers_were_hidden = doc.markers_hidden
@@ -1393,6 +1420,7 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 	await RenderingServer.frame_post_draw
 	var image := probe.get_texture().get_image()
 	probe.queue_free()
+	_set_gizmo_suppressed(false)
 	if doc != null:
 		doc.markers_hidden = markers_were_hidden
 		doc.update_marker_scales(_camera)
@@ -1420,9 +1448,9 @@ func capture_with_camera(size: Vector2i, msaa: int, xform: Transform3D, fov: flo
 	var grid_visible := _grid_on
 	_set_grid_strength(0.0)
 	# The transform gizmo lives in the stage world, so a world-sharing probe
-	# would photograph it. Editing chrome never belongs in a still.
-	if _gizmo != null:
-		_gizmo.set_visible_gizmo(false)
+	# would photograph it. The HUD and navigation gizmo are canvas items of the
+	# main viewport, not part of this probe's world, so they cannot enter.
+	_set_gizmo_suppressed(true)
 	var markers_were_hidden := false
 	if doc != null:
 		markers_were_hidden = doc.markers_hidden
@@ -1447,6 +1475,7 @@ func capture_with_camera(size: Vector2i, msaa: int, xform: Transform3D, fov: flo
 	await RenderingServer.frame_post_draw
 	var image := probe.get_texture().get_image()
 	probe.queue_free()
+	_set_gizmo_suppressed(false)
 	if doc != null:
 		doc.markers_hidden = markers_were_hidden
 		doc.update_marker_scales(_camera)

@@ -34,6 +34,9 @@ var _priorities: Dictionary = {}
 var _center_material: StandardMaterial3D
 var _active_axis := ""
 var _hover_axis := ""
+## Held while a capture probe renders, so the per-frame rebuild cannot
+## resurrect chrome into an export.
+var _suppressed := false
 ## Pixels per UI unit for the stage viewport. EditorView writes this so the
 ## screen-size formula can use the real SubViewport resolution and still keep
 ## the arm in dp instead of physical pixels.
@@ -338,7 +341,15 @@ func _face_front_arcs(camera: Camera3D) -> void:
 
 
 func set_visible_gizmo(on: bool) -> void:
-	visible = on
+	visible = on and not _suppressed
+
+
+## Suppression outranks every visibility request until it is cleared, which is
+## what keeps the gizmo out of a still and every sequence frame.
+func set_suppressed(on: bool) -> void:
+	_suppressed = on
+	if on:
+		visible = false
 
 
 func _update_render_priorities(camera: Camera3D) -> void:
