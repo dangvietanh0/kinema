@@ -814,9 +814,11 @@ func _ready() -> void:
 		_check(tl_play.tooltip_text == "Stop the sequence first",
 			"the timeline owns the disabled transport reason")
 		var sequence_time_before: float = doc.current_time
-		await get_tree().process_frame
-		await get_tree().process_frame
-		_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before,
+		# Wait a fixed slice instead of two raw frames: format_timecode is
+		# frame-quantized, so two uncapped headless frames can land inside the
+		# same frame and make the label comparison flake.
+		await get_tree().create_timer(0.2).timeout
+		_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before + 0.05,
 			"the sequence clock advances while the lane plays")
 		_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
 			"the timeline follows the advancing sequence time")
