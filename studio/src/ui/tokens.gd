@@ -5,9 +5,20 @@ extends RefCounted
 ## re-exports every value, so call sites read `Kit.SURFACE` while the numbers
 ## live here. Colours are exact: the hex code is the specification.
 ##
-## The workbench is deliberately achromatic. Surfaces are graphite, hairlines
-## are grey, and state is carried by luminance rather than hue. Only DANGER
-## keeps a red channel, because destructive actions need to be unmistakable.
+## Black chrome (user override, 2026-11-01): the window and the stage are pure
+## black. Hierarchy comes from a near-black elevation ladder, not from grey
+## fills, and panels do not draw outlines by default. State and separation stay
+## luminance rather than hue. Only DANGER keeps a red channel, because
+## destructive actions need to be unmistakable.
+##
+## The elevation ladder, each step a few luminance points above the last so the
+## raise still reads on the phone screen while the stage stays black:
+##   BG             #000000  window clear colour, stage and gutter gaps.
+##   SURFACE        #060606  panel bodies (dock, sheets, centre columns).
+##   SURFACE_2      #0C0C0C  raised fills: fields, bars, cards, the stage HUD.
+##   SURFACE_3      #121212  highest panel fill: raised inputs, chips.
+##   SURFACE_HOVER  #1E1E1E  hover state on any surface.
+##   SURFACE_ACTIVE #333333  active/pressed fill, the brightest chrome fill.
 ##
 ## Two light greys carry meaning and must not be swapped:
 ##   FOCUS (near-white) - UI selection, active tools, primary actions.
@@ -15,10 +26,10 @@ extends RefCounted
 
 # --- Surfaces -------------------------------------------------------------
 const BG := Color("000000")
-const SURFACE := Color("0E0E0E")
-const SURFACE_2 := Color("151515")
-const SURFACE_3 := Color("1D1D1D")
-const SURFACE_HOVER := Color("272727")
+const SURFACE := Color("060606")
+const SURFACE_2 := Color("0C0C0C")
+const SURFACE_3 := Color("121212")
+const SURFACE_HOVER := Color("1E1E1E")
 const SURFACE_ACTIVE := Color("333333")
 const BORDER := Color("3C3C3C")
 const BORDER_SOFT := Color("242424")
@@ -101,6 +112,9 @@ const STATUS_BAR := 24.0
 const RAIL_COMPACT := 48.0
 const RAIL_STUDIO := 44.0
 const RAIL_DESKTOP := 40.0
+## One shared panel-rail width: the rail element, the flyout inset and the
+## timeline reserve all read this so a width change cannot desync the shell.
+const PANEL_RAIL_WIDTH := 44.0
 
 # --- Motion ---------------------------------------------------------------
 const MOTION_FAST := 0.10
