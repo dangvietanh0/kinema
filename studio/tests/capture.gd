@@ -12,6 +12,15 @@ extends Control
 ## drawer-props, add-sheet, settings, performance, renderer, graphics, render,
 ## quick-render, workspace, draft, graph, scene-rail, scene-expanded.
 ##
+## Two additions in the U1 follow-up stay inside the scene-panel/timeline
+## evidence this task owns:
+## - `timeline-folded` mirrors `timeline`: the 56 dp folded strip is a binding
+##   state of the overlay contract, so it needs its own photograph.
+## - `KINEMA_CAPTURE_GEOMETRY=1` prints the stage/overlay/scene rects. The
+##   right-edge column and the 42 percent overlay budget are geometry
+##   contracts a PNG cannot prove; the diagnostic is opt-in and inert
+##   otherwise.
+##
 ## Screenshots are evidence, so the harness must not photograph its own
 ## history: Home is seeded with representative recent projects, the editor uses
 ## a real project name, transient toasts are cleared before the shutter, and the
