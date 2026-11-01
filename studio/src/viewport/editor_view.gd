@@ -19,6 +19,8 @@ signal view_changed(label: String)
 signal grid_changed(enabled: bool)
 
 const DocumentScript = preload("res://src/core/document.gd")
+const TransformGizmo3DScript = preload("res://src/viewport/transform_gizmo_3d.gd")
+const NavGizmoScript = preload("res://src/ui/components/nav_gizmo.gd")
 var doc: DocumentScript = null
 var tool := "select"
 
@@ -33,6 +35,19 @@ var _camera: Camera3D
 var _env_node: WorldEnvironment
 var _grid_root: Node3D
 var _grid_mesh: MeshInstance3D
+## The transform gizmo is one real 3D node in the stage, not a document child.
+var _gizmo: Node3D
+## While a capture probe renders, editing chrome must stay out of the shared
+## world. _draw_gizmo() runs every frame and would otherwise re-show it.
+var _gizmo_suppressed := false
+## Captures can overlap: a quick still can start while a sequence frame or a
+## media export is between its probe awaits. Each holder takes one level and
+## the chrome returns only when the last one releases.
+var _gizmo_suppression := 0
+var _nav_gizmo: Control
+var _nav_yaw := INF
+var _nav_pitch := INF
+var _nav_density := -1.0
 var _fps_chip: Button
 var _quick_render_button: Button
 ## The viewport header owns the visible grid and frame controls. These two
@@ -56,6 +71,9 @@ var _mode := "idle"  # idle | orbit | gizmo | multi | pan
 var _gesture_start := Vector2.ZERO
 var _tap_candidate := false
 var _gizmo_axis := ""
+## The handle under the real pointer, if any. Touch has no hover; a mouse
+## highlights the axis it is about to grab.
+var _hover_axis := ""
 var _gizmo_start_pos := Vector3.ZERO
 var _gizmo_start_rot := Quaternion.IDENTITY
 var _gizmo_start_scale := Vector3.ONE
@@ -139,6 +157,15 @@ func _build_viewport() -> void:
 	_viewport.add_child(_camera)
 
 	_build_stage()
+
+	# The gizmo is parented once to the stage SubViewport. It is not part of
+	# the document, so selecting, deleting or reloading objects never orphans
+	# it and its geometry is never serialised.
+	_gizmo = TransformGizmo3DScript.new()
+	_gizmo.name = "TransformGizmo3D"
+	_gizmo.set_visible_gizmo(false)
+	_viewport.add_child(_gizmo)
+
 	Gfx.apply_viewport(_viewport)
 	if not Gfx.changed.is_connected(_on_graphics_changed):
 		Gfx.changed.connect(_on_graphics_changed)
@@ -297,6 +324,20 @@ func _build_hud() -> void:
 	_quick_render_button.pressed.connect(func() -> void: quick_render_requested.emit())
 	top_right.add_child(_quick_render_button)
 
+	# Orientation control: a 116 dp floating surface in the stage's
+	# bottom-right corner, 12 dp in from both edges. It sits in the HUD layer,
+	# above the image but below the timeline and any modal sheet.
+	_nav_gizmo = NavGizmoScript.new()
+	_nav_gizmo.name = "NavGizmo"
+	var nav_size: float = NavGizmoScript.GIZMO_SIZE
+	_nav_gizmo.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_nav_gizmo.offset_left = -(nav_size + 12.0)
+	_nav_gizmo.offset_top = -(nav_size + 12.0)
+	_nav_gizmo.offset_right = -12.0
+	_nav_gizmo.offset_bottom = -12.0
+	_nav_gizmo.view_requested.connect(_on_nav_view_requested)
+	_hud_root.add_child(_nav_gizmo)
+
 func _override_hud_button(button: Button) -> void:
 	# HUD controls read as floating surfaces, not framed cards. State is
 	# carried by fill and glyph luminance; only the field frames in the
@@ -340,11 +381,14 @@ func bind_header_controls(grid_button: Button, frame_button: Button) -> void:
 
 func set_tool(new_tool: String) -> void:
 	tool = new_tool
+	_hover_axis = ""
+	_draw_gizmo()
 	queue_redraw()
 
 
 func set_gizmo_scale(value: float) -> void:
 	gizmo_scale = clampf(value, 0.5, 2.0)
+	_draw_gizmo()
 	queue_redraw()
 
 
@@ -369,6 +413,10 @@ func set_render_mode(enabled: bool) -> void:
 		grid_changed.emit(false)
 		_set_grid_strength(0.0)
 		set_hud_visible(false)
+		if _nav_gizmo != null:
+			# The nav gizmo is part of the HUD but is also checked on its own;
+			# hide the control, not only its ancestor.
+			_nav_gizmo.visible = false
 		set_draft_quality(false)
 		if doc != null:
 			doc.markers_hidden = true
@@ -387,6 +435,8 @@ func set_render_mode(enabled: bool) -> void:
 		grid_changed.emit(_grid_on)
 		_set_grid_strength(1.0 if _render_grid_was_on else 0.0)
 		set_hud_visible(_render_hud_was_on)
+		if _nav_gizmo != null:
+			_nav_gizmo.visible = true
 		set_draft_quality(_render_draft_was_on)
 		if doc != null:
 			doc.markers_hidden = _render_markers_were_hidden
@@ -398,7 +448,19 @@ func set_render_mode(enabled: bool) -> void:
 
 func _on_resized() -> void:
 	_apply_viewport_size()
+	_draw_gizmo()
 	_repaint()
+
+## Device pixels per UI unit. The window is in physical pixels while the
+## canvas is in dp, so this ratio is the display density the stage, the nav
+## gizmo and every capture must respect.
+func _device_pixel_scale() -> float:
+	var win := get_window()
+	var visible := get_viewport().get_visible_rect().size
+	if win != null and visible.x > 1.0 and visible.y > 1.0:
+		return clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
+	return 1.0
+
 
 func _apply_viewport_size() -> void:
 	if _viewport == null:
@@ -407,11 +469,7 @@ func _apply_viewport_size() -> void:
 	# scale the canvas by their display density, so the raw control size would
 	# produce a soft, upscaled 3D image. The adaptive quality scale and the cap
 	# trade sharpness for frame time; both are reported in the performance HUD.
-	var pixel_scale := 1.0
-	var win := get_window()
-	var visible := get_viewport().get_visible_rect().size
-	if win != null and visible.x > 1.0 and visible.y > 1.0:
-		pixel_scale = clampf(minf(float(win.size.x) / visible.x, float(win.size.y) / visible.y), 1.0, 4.0)
+	var pixel_scale := _device_pixel_scale()
 	var quality_scale := 1.0 if render_mode else _preview_scale
 	var target := Vector2(size.x, size.y) * pixel_scale * quality_scale
 	var cap := float(_preview_cap)
@@ -446,9 +504,14 @@ func _process(delta: float) -> void:
 	) * distance
 	_camera.global_position = target + offset
 	_camera.look_at(target, Vector3.UP)
+	_sync_nav()
 	if doc == null:
+		_draw_gizmo()
 		return
 	doc.update_marker_scales(_camera)
+	# The 3D gizmo follows animated transforms and camera moves every frame;
+	# its handles are rebuilt from the same projection the hit test uses.
+	_draw_gizmo()
 	_dirty_visual = true
 	# The overlay only redraws when something visible changed; the old
 	# unconditional redraw re-ran the compass, gizmo and HUD text every frame.
@@ -461,9 +524,12 @@ func _process(delta: float) -> void:
 # -------------------------------------------------------------------------
 
 func _on_scene_changed() -> void:
+	_draw_gizmo()
 	queue_redraw()
 
 func _on_selection_changed(_id: String) -> void:
+	_hover_axis = ""
+	_draw_gizmo()
 	queue_redraw()
 
 func _on_object_changed(_id: String) -> void:
@@ -630,8 +696,14 @@ func set_preview_cap(value: int) -> void:
 func _repaint() -> void:
 	_dirty_visual = true
 	_redraw_needed = true
+	_draw_gizmo()
 	if _viewport != null and _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
 		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+## The navigation gizmo's only output is a canonical view request. Keeping the
+## route here means the header menu and the stage gizmo share one camera path.
+func _on_nav_view_requested(label: String) -> void:
+	set_view_preset(label)
 
 ## Applies one of the four canonical camera presets. The viewport header
 ## owns the menu; this method is the single entry point so a future camera
@@ -656,6 +728,21 @@ func _apply_preset(label: String, new_yaw: float, new_pitch: float) -> void:
 
 func _set_view_label(label: String) -> void:
 	view_changed.emit(label)
+
+## The navigation gizmo only re-renders when the orbit actually changes; an
+## idle frame leaves its SubViewport untouched.
+func _sync_nav() -> void:
+	if _nav_gizmo == null:
+		return
+	var density := _device_pixel_scale()
+	if not is_equal_approx(density, _nav_density):
+		_nav_density = density
+		_nav_gizmo.set_pixel_density(density)
+	if is_equal_approx(_nav_yaw, yaw) and is_equal_approx(_nav_pitch, pitch):
+		return
+	_nav_yaw = yaw
+	_nav_pitch = pitch
+	_nav_gizmo.set_orientation(yaw, pitch)
 
 func _on_grid_toggled(enabled: bool) -> void:
 	_grid_on = enabled
@@ -853,6 +940,9 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 		_preview_busy_check()
 
 func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
+	if _mode == "idle":
+		_update_hover(event.position)
+		return
 	if _mode == "gizmo":
 		_apply_gizmo_drag(event.relative)
 	elif _mode == "orbit":
@@ -861,6 +951,17 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 		return
 	accept_event()
 	_preview_busy_check()
+
+## Highlight the handle the pointer is over. Touch never produces this path,
+## so a drag never depends on a hover state.
+func _update_hover(point: Vector2) -> void:
+	var next := ""
+	if not render_mode and tool != "select" and doc != null and doc.selected_id != "":
+		next = _hit_gizmo(point)
+	if next == _hover_axis:
+		return
+	_hover_axis = next
+	_draw_gizmo()
 
 func _orbit(relative: Vector2) -> void:
 	if relative.length() < 0.01:
@@ -971,14 +1072,42 @@ func _to_ui(viewport_pos: Vector2) -> Vector2:
 	var ratio := Vector2(float(size.x) / float(_viewport.size.x), float(size.y) / float(_viewport.size.y))
 	return viewport_pos * ratio
 
+## Hit radius in UI units: always at least the 44 dp floor (22 px per side)
+## and scaled with the visual arm, so a large gizmo is not a small target.
+func gizmo_hit_radius() -> float:
+	if _gizmo_handles.is_empty():
+		return 22.0
+	var origin := Vector2.INF
+	for handle in _gizmo_handles:
+		if str(handle.get("axis", "")) == "free":
+			origin = handle.get("pos", Vector2.INF)
+	if origin == Vector2.INF:
+		return 22.0
+	var reach := 0.0
+	for handle in _gizmo_handles:
+		if str(handle.get("axis", "")) != "free":
+			reach = maxf(reach, origin.distance_to(handle.get("pos", Vector2.ZERO)))
+	# Ring samples sit at 0.74 of the arm, so divide them back to the arm.
+	if tool == "rotate":
+		reach /= 0.74
+	return maxf(22.0, reach * 0.30)
+
+
 func _hit_gizmo(point: Vector2) -> String:
 	if render_mode or tool == "select" or doc == null or doc.selected_id == "":
 		return ""
+	# Rebuild the projected handles from the current camera before testing, so
+	# a tap after an orbit or a selection change never uses stale points.
+	_draw_gizmo()
+	var radius := gizmo_hit_radius()
+	var best := ""
+	var best_distance := radius
 	for handle in _gizmo_handles:
-		var handle_pos: Vector2 = handle["pos"]
-		if point.distance_to(handle_pos) <= 22.0:
-			return str(handle["axis"])
-	return ""
+		var distance := point.distance_to(handle["pos"])
+		if distance <= best_distance:
+			best_distance = distance
+			best = str(handle["axis"])
+	return best
 
 func _start_gizmo(axis: String, screen_pos: Vector2) -> void:
 	if doc == null or doc.selected_id == "":
@@ -995,7 +1124,11 @@ func _start_gizmo(axis: String, screen_pos: Vector2) -> void:
 	var origin := doc.get_selected_node().global_position
 	if _gizmo_axis != "free" and not _camera.is_position_behind(origin):
 		var p0 := _to_ui(_camera.unproject_position(origin))
+		# The direction is the projected axis tip, not a fixed screen vector,
+		# so the drag follows the real foreshortened arm.
 		var end_world := origin + _axis_vector(_gizmo_axis) * maxf(0.35, distance * 0.1)
+		if _gizmo != null and _gizmo.visible:
+			end_world = _gizmo.axis_tip_world(_gizmo_axis)
 		if not _camera.is_position_behind(end_world):
 			var p1 := _to_ui(_camera.unproject_position(end_world))
 			if p0.distance_to(p1) > 0.5:
@@ -1102,7 +1235,6 @@ func _draw() -> void:
 	_draw_object_markers()
 	_draw_selection()
 	_draw_gizmo()
-	_draw_compass()
 	_draw_hud()
 
 ## Camera, light and empty locators are drawn in screen space. A world-space
@@ -1172,80 +1304,57 @@ func _draw_selection() -> void:
 			draw_line(a, b, Color(0.01, 0.01, 0.01, 0.45), 3.0, true)
 			draw_line(a, b, color, 1.4, true)
 
+## Update the 3D gizmo and rebuild the projected handles it is tapped through.
+## No gizmo pixels are drawn here: the stage SubViewport owns the geometry, and
+## this overlay only keeps the screen-space hit points in step with it.
 func _draw_gizmo() -> void:
 	_gizmo_handles.clear()
-	if tool == "select" or doc.selected_id == "":
+	if _gizmo == null or _camera == null:
 		return
-	var node: Node3D = doc.nodes.get(doc.selected_id)
-	if node == null or not node.visible:
+	if _gizmo_suppressed:
+		_gizmo.set_visible_gizmo(false)
+		return
+	var on := tool != "select" and doc != null and doc.selected_id != "" and not render_mode
+	var node: Node3D = null
+	if on:
+		node = doc.get_selected_node()
+		if node == null or not node.visible or _camera.is_position_behind(node.global_position):
+			on = false
+	_gizmo.set_visible_gizmo(on)
+	if not on:
+		_hover_axis = ""
 		return
 	var origin := node.global_position
-	if _camera.is_position_behind(origin):
-		return
+	_gizmo.px_per_dp = float(_viewport.size.y) / maxf(1.0, size.y)
+	_gizmo.set_tool(tool)
+	_gizmo.set_active_axis(_gizmo_axis)
+	_gizmo.set_hover_axis(_hover_axis)
+	_gizmo.set_target(origin, _camera, _viewport.size.y, gizmo_scale)
 	var p0 := _to_ui(_camera.unproject_position(origin))
-	var world_len := maxf(0.35, distance * 0.1) * gizmo_scale
-	var arm := 48.0 * gizmo_scale
-	var axes := [
-		["x", Vector3.RIGHT, Kit.AXIS_X],
-		["y", Vector3.UP, Kit.AXIS_Y],
-		["z", Vector3.BACK, Kit.AXIS_Z],
-	]
-	var active_color := Kit.ACCENT_BRIGHT
-	for entry in axes:
-		var axis_name: String = entry[0]
-		var axis_vec: Vector3 = entry[1]
-		var color: Color = entry[2]
-		var end_world := origin + axis_vec * world_len
-		if _camera.is_position_behind(end_world):
-			continue
-		var end_projected := _to_ui(_camera.unproject_position(end_world))
-		var raw := end_projected - p0
-		if raw.length() < 5.0:
-			continue
-		var dir := raw.normalized()
-		var end := p0 + dir * arm
-		var is_active := _gizmo_axis == axis_name
-		var line_color := active_color if is_active else color
-		draw_line(p0, end, Color(0.01, 0.01, 0.01, 0.7), 5.0 * gizmo_scale, true)
-		draw_line(p0, end, line_color, (2.4 if is_active else 1.8) * gizmo_scale, true)
-		draw_circle(end, 7.0 * gizmo_scale, Color(0.06, 0.06, 0.06, 0.95))
-		draw_arc(end, 6.0 * gizmo_scale, 0.0, TAU, 20, line_color, 1.6, true)
-		if is_active:
-			draw_circle(end, 2.6 * gizmo_scale, line_color)
-		_gizmo_handles.append({"axis": axis_name, "pos": end})
-		if _gizmo_axis == axis_name:
-			_gizmo_screen_dir = dir
+	if tool == "rotate":
+		# The torus is the surface. Sample its projected ring so a tap on the
+		# visible ring returns the axis that owns it.
+		for axis_name in ["x", "y", "z"]:
+			for index in 32:
+				var angle := TAU * float(index) / 32.0
+				var point: Vector3 = _gizmo.ring_point_world(axis_name, angle)
+				if _camera.is_position_behind(point):
+					continue
+				_gizmo_handles.append({
+					"axis": axis_name,
+					"pos": _to_ui(_camera.unproject_position(point)),
+				})
+	else:
+		for axis_name in ["x", "y", "z"]:
+			var tip: Vector3 = _gizmo.axis_tip_world(axis_name)
+			if _camera.is_position_behind(tip):
+				continue
+			_gizmo_handles.append({
+				"axis": axis_name,
+				"pos": _to_ui(_camera.unproject_position(tip)),
+			})
 	# Centre handle: screen-plane move, uniform scale, or rotation around Y.
-	var center_color := active_color if _gizmo_axis == "free" else Kit.TEXT_MUTED
-	draw_circle(p0, 6.0, Color(0.06, 0.06, 0.06, 0.95))
-	draw_arc(p0, 5.0, 0.0, TAU, 18, center_color, 1.5, true)
 	_gizmo_handles.append({"axis": "free", "pos": p0})
-	if _gizmo_axis == "free":
-		_gizmo_screen_dir = Vector2.RIGHT
-
-func _draw_compass() -> void:
-	var center := size - Vector2(34.0, 34.0)
-	draw_circle(center, 25.0, Color(0.063, 0.063, 0.063, 0.82))
-	draw_arc(center, 25.0, 0.0, TAU, 36, Kit.BORDER_SOFT, 1.0, true)
-	var inv := _camera.global_transform.basis.inverse()
-	var axes := [
-		["X", inv * Vector3.RIGHT, Kit.AXIS_X],
-		["Y", inv * Vector3.UP, Kit.AXIS_Y],
-		["Z", inv * Vector3.BACK, Kit.AXIS_Z],
-	]
-	axes.sort_custom(func(a, b): return a[1].z < b[1].z)
-	for entry in axes:
-		var label: String = entry[0]
-		var v: Vector3 = entry[1]
-		var dir := Vector2(v.x, -v.y)
-		if dir.length() < 0.01:
-			dir = Vector2(0, -1)
-		dir = dir.normalized()
-		var end := center + dir * 16.0
-		draw_line(center, end, entry[2], 1.4, true)
-		draw_circle(end, 2.2, entry[2])
-		var text_pos := center + dir * 22.0 + Vector2(-3.0, 3.0)
-		draw_string(Kit.font_mono, text_pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, entry[2])
 
 func _draw_hud() -> void:
 	if _hud_text == "":
@@ -1261,6 +1370,17 @@ func _draw_hud() -> void:
 # Still capture
 # -------------------------------------------------------------------------
 
+## Editing chrome never belongs in a capture. A one-shot hide cannot survive
+## the per-frame rebuild, so the depth is held for the whole probe render and
+## released only after the image has been read. Nested captures take one level
+## each; the flag clears when the last holder releases.
+func _set_gizmo_suppressed(on: bool) -> void:
+	_gizmo_suppression = maxi(0, _gizmo_suppression + (1 if on else -1))
+	_gizmo_suppressed = _gizmo_suppression > 0
+	if _gizmo != null:
+		_gizmo.set_suppressed(_gizmo_suppressed)
+
+
 func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image:
 	if _viewport == null or _camera == null:
 		return null
@@ -1275,6 +1395,10 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 		await RenderingServer.frame_post_draw
 	var grid_visible := _grid_on
 	_set_grid_strength(0.0)
+	# The transform gizmo lives in the stage world, so a world-sharing probe
+	# would photograph it. The HUD and navigation gizmo are canvas items of the
+	# main viewport, not part of this probe's world, so they cannot enter.
+	_set_gizmo_suppressed(true)
 	var markers_were_hidden := false
 	if doc != null:
 		markers_were_hidden = doc.markers_hidden
@@ -1302,11 +1426,13 @@ func capture_still(long_edge: int = 1920, msaa: int = Viewport.MSAA_4X) -> Image
 	await RenderingServer.frame_post_draw
 	var image := probe.get_texture().get_image()
 	probe.queue_free()
+	_set_gizmo_suppressed(false)
 	if doc != null:
 		doc.markers_hidden = markers_were_hidden
 		doc.update_marker_scales(_camera)
 	if _grid_mesh != null:
 		_set_grid_strength(1.0 if grid_visible else 0.0)
+	_draw_gizmo()
 	# Resume the draft pass only if the editor is still moving; an idle
 	# capture leaves the viewport at full quality.
 	if was_draft and _draft_enabled and (_interactive or _playback_active):
@@ -1327,6 +1453,10 @@ func capture_with_camera(size: Vector2i, msaa: int, xform: Transform3D, fov: flo
 		await RenderingServer.frame_post_draw
 	var grid_visible := _grid_on
 	_set_grid_strength(0.0)
+	# The transform gizmo lives in the stage world, so a world-sharing probe
+	# would photograph it. The HUD and navigation gizmo are canvas items of the
+	# main viewport, not part of this probe's world, so they cannot enter.
+	_set_gizmo_suppressed(true)
 	var markers_were_hidden := false
 	if doc != null:
 		markers_were_hidden = doc.markers_hidden
@@ -1351,11 +1481,14 @@ func capture_with_camera(size: Vector2i, msaa: int, xform: Transform3D, fov: flo
 	await RenderingServer.frame_post_draw
 	var image := probe.get_texture().get_image()
 	probe.queue_free()
+	_set_gizmo_suppressed(false)
 	if doc != null:
 		doc.markers_hidden = markers_were_hidden
 		doc.update_marker_scales(_camera)
 	if _grid_mesh != null:
 		_set_grid_strength(1.0 if grid_visible else 0.0)
+	if _gizmo != null:
+		_draw_gizmo()
 	if was_draft and _draft_enabled and (_interactive or _playback_active):
 		_begin_draft()
 	queue_redraw()
