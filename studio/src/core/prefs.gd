@@ -18,7 +18,7 @@ const DEFAULTS := {
 	"display.fullscreen": false,
 	"editor.autosave_seconds": 30,
 	"editor.confirm_delete": true,
-	"editor.gizmo_size": 1.0,
+	"editor.gizmo_size": 1.25,
 	"editor.translate_snap": 0.25,
 	"editor.rotate_snap": 15.0,
 	"editor.scale_snap": 0.25,

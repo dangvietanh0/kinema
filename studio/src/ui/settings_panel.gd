@@ -344,7 +344,7 @@ func _editor(parent: Control) -> void:
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Transform"))
-	_number_row(parent, "Gizmo size", "scale", 0.5, 2.0, 0.05, float(Prefs.get_value("editor.gizmo_size", 1.0)), func(value: float) -> void:
+	_number_row(parent, "Gizmo size", "scale", 0.5, 2.0, 0.05, float(Prefs.get_value("editor.gizmo_size", 1.25)), func(value: float) -> void:
 		set_option("editor.gizmo_size", value)
 	)
 	_number_row(parent, "Translate snap", "units", 0.01, 10.0, 0.05, float(Prefs.get_value("editor.translate_snap", 0.25)), func(value: float) -> void:

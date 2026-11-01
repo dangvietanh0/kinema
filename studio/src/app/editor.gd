@@ -2846,7 +2846,7 @@ func _apply_transform_preferences() -> void:
 	if _view == null:
 		return
 	if _view.has_method("set_gizmo_scale"):
-		_view.set_gizmo_scale(float(Prefs.get_value("editor.gizmo_size", 1.0)))
+		_view.set_gizmo_scale(float(Prefs.get_value("editor.gizmo_size", 1.25)))
 	if _view.has_method("set_snap_values"):
 		_view.set_snap_values(
 			float(Prefs.get_value("editor.translate_snap", 0.25)),
