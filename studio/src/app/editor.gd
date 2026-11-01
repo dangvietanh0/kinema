@@ -260,22 +260,6 @@ func _build_body() -> void:
 	_rail.add_requested.connect(_open_add_sheet)
 	_body.add_child(_rail)
 
-	# The persistent scene column lives between the tool rail and the stage.
-	# It is hidden on Compact and on shells too narrow to host the rail; the
-	# outliner then returns to the dock, which is the only modal surface left.
-	_scene_column = PanelContainer.new()
-	_scene_column.visible = false
-	_scene_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var scene_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	scene_style.border_width_right = 1
-	scene_style.content_margin_left = 0
-	scene_style.content_margin_right = 0
-	scene_style.content_margin_top = 0
-	scene_style.content_margin_bottom = 0
-	_scene_column.add_theme_stylebox_override("panel", scene_style)
-	_body.add_child(_scene_column)
-	_build_scene_rail()
-
 	_center = VBoxContainer.new()
 	_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_center.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -332,6 +316,26 @@ func _build_body() -> void:
 
 	_build_timeline()
 
+	# The persistent scene column lives between the stage and the panel rail,
+	# on the right edge of the body (user override 2026-11-01: the scene tree
+	# belongs on the right). It is hidden on Compact and on shells too narrow
+	# to host the rail; the outliner then returns to the dock, which is the
+	# only modal surface left.
+	_scene_column = PanelContainer.new()
+	_scene_column.visible = false
+	_scene_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var scene_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	# The inner edge faces the stage on the column's left side now that the
+	# column hangs off the right edge.
+	scene_style.border_width_left = 1
+	scene_style.content_margin_left = 0
+	scene_style.content_margin_right = 0
+	scene_style.content_margin_top = 0
+	scene_style.content_margin_bottom = 0
+	_scene_column.add_theme_stylebox_override("panel", scene_style)
+	_body.add_child(_scene_column)
+	_build_scene_rail()
+
 	# The right rail is the only permanent panel chrome. The dock itself is an
 	# overlay, so the stage keeps every pixel the old 320 dp column reserved.
 	_panel_rail = PanelRailScript.new()
@@ -342,14 +346,15 @@ func _build_body() -> void:
 	_body.add_child(_panel_rail)
 
 ## The collapsed scene rail is a mount point, not a header: one 44 dp expand
-## action, a vertical SCENE label and the object count. It never pretends to
-## own a list it does not show.
+## action, the layers icon and the object count. It never pretends to own a
+## list it does not show.
 func _build_scene_rail() -> void:
 	_scene_rail = PanelContainer.new()
 	_scene_rail.custom_minimum_size = Vector2(SCENE_RAIL_WIDTH, 0.0)
 	_scene_rail.visible = false
 	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_right = 1
+	# The rail hangs off the right edge; its inner edge faces the stage.
+	style.border_width_left = 1
 	style.content_margin_left = 0
 	style.content_margin_right = 0
 	style.content_margin_top = 0
@@ -366,7 +371,7 @@ func _build_scene_rail() -> void:
 	column.add_theme_constant_override("separation", 4)
 	margin.add_child(column)
 
-	_scene_rail_expand = Kit.icon_button("panel-left", "Expand the scene panel", 44, 20)
+	_scene_rail_expand = Kit.icon_button("panel-right", "Expand the scene panel", 44, 20)
 	_scene_rail_expand.pressed.connect(_on_scene_rail_expand)
 	column.add_child(_scene_rail_expand)
 

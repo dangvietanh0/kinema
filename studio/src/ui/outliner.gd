@@ -148,7 +148,9 @@ func set_persistent_panel(value: bool) -> void:
 		# The column has its own rail; the list inside an expanded column is
 		# always expanded.
 		set_collapsed(false)
-		Kit.set_icon(_collapse_button, "chevron-left")
+		# The column hangs off the right edge, so the collapse chevron points
+		# toward the rail on its right.
+		Kit.set_icon(_collapse_button, "chevron-right")
 		_collapse_button.tooltip_text = "Collapse the scene panel"
 	else:
 		set_collapsed(collapsed)
