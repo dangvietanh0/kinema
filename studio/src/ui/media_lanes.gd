@@ -1,12 +1,10 @@
 extends VBoxContainer
 ## Media lanes under the dope sheet.
 ##
-## Audio rows carry a mute control; video-reference rows are a tap/drag
-## surface. Both keep the 44 dp touch floor. Both lanes are collapsible, show
-## honest empty states, and never invent a waveform or a frame.
-##
 ## Audio rows are 48 dp because they carry a mute control; video-reference rows
-## are 44 dp and select on tap.
+## are 44 dp, are a tap/drag surface, and select on tap. Both keep the 44 dp
+## touch floor. Both lanes are collapsible, show honest empty states, and never
+## invent a waveform or a frame.
 
 signal audio_selected(id: String)
 signal video_selected(id: String)
