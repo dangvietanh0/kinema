@@ -1475,6 +1475,8 @@ func _ready() -> void:
 	print("SMOKE STEP: gizmo")
 	# Gizmo drag must accumulate.
 	var view = editor._view
+	_check(is_equal_approx(float(view.gizmo_scale), float(Prefs.get_value("editor.gizmo_size", 1.25))),
+		"the editor applies the stored gizmo scale")
 	doc.set_selection(mesh_id)
 	view.set_tool("move")
 	await get_tree().process_frame

@@ -15,7 +15,7 @@ const MOVED_TIP := 92.0
 const MIN_ARM := 72.0
 const MAX_ARM := 160.0
 const NAV_SIZE := 116.0
-const CAPTURE_DIR := "/tmp/opencode/i4-followup"
+const CAPTURE_DIR := "/tmp/opencode/i4-fix"
 
 var _failures: Array[String] = []
 var _oks := 0
@@ -86,8 +86,16 @@ func _ready() -> void:
 	await _test_render_priority()
 	print("GIZMO STEP: navigation gizmo")
 	await _test_nav_gizmo()
+	print("GIZMO STEP: navigation density")
+	await _test_nav_density()
+	print("GIZMO STEP: navigation labels")
+	await _test_nav_labels()
 	print("GIZMO STEP: render mode")
 	await _test_render_mode()
+	print("GIZMO STEP: capture suppression")
+	await _test_capture_suppression()
+	print("GIZMO STEP: default gizmo scale")
+	await _test_default_gizmo_scale()
 
 	if _capture_requested():
 		print("GIZMO STEP: captures")
@@ -512,8 +520,10 @@ func _test_nav_gizmo() -> void:
 	_check(nav_viewport != null, "the navigation gizmo owns a SubViewport")
 	if nav_viewport == null:
 		return
-	_check(nav_viewport.size == Vector2i(int(NAV_SIZE), int(NAV_SIZE)),
-		"the navigation SubViewport is %dx%d" % [int(NAV_SIZE), int(NAV_SIZE)])
+	var density: float = _nav.px_per_dp
+	var expected_px := int(round(NAV_SIZE * density))
+	_check(nav_viewport.size == Vector2i(expected_px, expected_px),
+		"the navigation SubViewport is %dx%d px at %.1fx density" % [expected_px, expected_px, density])
 	_check(nav_viewport.transparent_bg, "the navigation SubViewport renders on a transparent background")
 	_check(nav_viewport.world_3d != _view._viewport.world_3d,
 		"the navigation gizmo has its own World3D")
@@ -574,6 +584,84 @@ func _test_nav_gizmo() -> void:
 		"a tap beyond the tip radius misses")
 
 
+## The nav gizmo must render at device density while the Control stays 116 dp.
+func _test_nav_density() -> void:
+	if _nav == null:
+		return
+	_check(_nav.has_method("set_pixel_density"),
+		"the navigation gizmo can render at device density")
+	if not _nav.has_method("set_pixel_density"):
+		return
+	_nav.set_pixel_density(2.0)
+	await get_tree().process_frame
+	_check(_nav.size.is_equal_approx(Vector2(NAV_SIZE, NAV_SIZE)),
+		"2x density keeps the navigation control at %.0f dp" % NAV_SIZE)
+	_check(_nav._viewport.size == Vector2i(int(NAV_SIZE) * 2, int(NAV_SIZE) * 2),
+		"2x density renders the navigation viewport at %d px" % (int(NAV_SIZE) * 2))
+	_nav.set_orientation(_view.yaw, _view.pitch)
+	await get_tree().process_frame
+	for axis_name in AXES:
+		var tip: Vector2 = _nav.tip_position(axis_name)
+		_check(tip.x >= 0.0 and tip.x <= NAV_SIZE and tip.y >= 0.0 and tip.y <= NAV_SIZE,
+			"the %s tip stays in dp space at 2x density" % axis_name.to_upper())
+	_nav.set_pixel_density(3.0)
+	await get_tree().process_frame
+	_check(_nav._viewport.size == Vector2i(int(NAV_SIZE) * 3, int(NAV_SIZE) * 3),
+		"3x density renders the navigation viewport at %d px" % (int(NAV_SIZE) * 3))
+	_nav.set_pixel_density(1.0)
+	await get_tree().process_frame
+	_check(_nav._viewport.size == Vector2i(int(NAV_SIZE), int(NAV_SIZE)),
+		"1x density restores the 116 px navigation viewport")
+	# The editor is the thing that feeds the device scale in.
+	_view.set("_nav_density", -1.0)
+	_view._sync_nav()
+	_check(is_equal_approx(float(_nav.px_per_dp), float(_view._device_pixel_scale())),
+		"the editor drives the navigation render density")
+
+
+func _label_rect(axis: String) -> Rect2:
+	var text := str(NavGizmoScript.AXIS_LABELS[axis])
+	var text_size: Vector2 = Kit.font_mono.get_string_size(
+		text, HORIZONTAL_ALIGNMENT_LEFT, -1, NavGizmoScript.LABEL_SIZE)
+	return Rect2(_nav.label_position(axis), text_size)
+
+
+## Labels must sit outside the arrowhead and inside the control in every view,
+## including the centre-projected axis of a straight-on preset.
+func _test_nav_labels() -> void:
+	if _nav == null:
+		return
+	for preset in ["Persp", "Front", "Right", "Top"]:
+		_view.set_view_preset(preset)
+		await get_tree().process_frame
+		_nav.set_orientation(_view.yaw, _view.pitch)
+		await get_tree().process_frame
+		for axis_name in AXES:
+			var rect := _label_rect(axis_name)
+			var inside := (
+				rect.position.x >= -0.01 and rect.position.y >= -0.01
+				and rect.end.x <= NAV_SIZE + 0.01 and rect.end.y <= NAV_SIZE + 0.01
+			)
+			_check(inside, "the %s label stays inside the control in %s view"
+				% [axis_name.to_upper(), preset])
+			var tip: Vector2 = _nav.tip_position(axis_name)
+			var centre := Vector2(NAV_SIZE, NAV_SIZE) * 0.5
+			# The cone occupies the last 30% of the arm; keep the text clear of
+			# that whole head, not just its apex.
+			var head_centre := centre + (tip - centre) * 0.85
+			var head_radius := (tip - centre).length() * 0.12 + 2.0
+			var closest := Vector2(
+				clampf(head_centre.x, rect.position.x, rect.end.x),
+				clampf(head_centre.y, rect.position.y, rect.end.y)
+			)
+			_check(head_centre.distance_to(closest) >= head_radius,
+				"the %s label clears the arrowhead in %s view (%.1f dp, needs %.1f)"
+				% [axis_name.to_upper(), preset, head_centre.distance_to(closest), head_radius])
+	_view.set_view_preset("Persp")
+	_nav.set_orientation(_view.yaw, _view.pitch)
+	await get_tree().process_frame
+
+
 func _test_render_mode() -> void:
 	if _gizmo == null:
 		return
@@ -591,6 +679,120 @@ func _test_render_mode() -> void:
 	_check(_gizmo.visible, "the transform gizmo returns after render mode")
 	_check(_nav != null and _nav.is_visible_in_tree(), "the navigation gizmo returns after render mode")
 	_check(not _view.has_method("_draw_compass"), "no 2D compass drawing method remains")
+
+
+# -------------------------------------------------------------------------
+# Capture suppression (exports must never contain editing chrome)
+# -------------------------------------------------------------------------
+
+func _renderer_readable() -> bool:
+	return DisplayServer.get_name() != "headless"
+
+
+## Count axis-coloured pixels inside the gizmo's reach. The test scene is a
+## grey cube on a grey stage, so any strongly coloured pixel there is chrome.
+func _axis_pixel_count(image: Image, view_size: Vector2) -> int:
+	if image == null or view_size.x < 1.0 or view_size.y < 1.0:
+		return 0
+	var node: Node3D = _doc.get_selected_node()
+	if node == null:
+		return 0
+	var ratio := Vector2(
+		float(image.get_width()) / view_size.x,
+		float(image.get_height()) / view_size.y
+	)
+	var center: Vector2 = _view.world_to_screen(node.global_position) * ratio
+	var reach := int(ceil(170.0 * maxf(ratio.x, ratio.y)))
+	var x0 := maxi(0, int(center.x) - reach)
+	var x1 := mini(image.get_width() - 1, int(center.x) + reach)
+	var y0 := maxi(0, int(center.y) - reach)
+	var y1 := mini(image.get_height() - 1, int(center.y) + reach)
+	var count := 0
+	for y in range(y0, y1 + 1):
+		for x in range(x0, x1 + 1):
+			var color := image.get_pixel(x, y)
+			if color.a < 0.5:
+				continue
+			var hi := maxf(color.r, maxf(color.g, color.b))
+			var lo := minf(color.r, minf(color.g, color.b))
+			if hi > 0.28 and hi - lo > 0.16:
+				count += 1
+	return count
+
+
+func _test_capture_suppression() -> void:
+	if not _renderer_readable():
+		# frame_post_draw never fires under the dummy renderer, so the probe
+		# awaits cannot complete headless. The xvfb gizmo gates run this.
+		print("GIZMO SKIP: capture suppression needs a real renderer")
+		return
+	_select_default()
+	_view.set_tool("scale")
+	_view.set_gizmo_scale(1.0)
+	await _refresh()
+	_check(_gizmo.visible, "the gizmo is visible before a still capture")
+
+	var still_frames := {"total": 0, "hidden": 0}
+	var still_probe := func() -> void:
+		still_frames["total"] += 1
+		if _view.get("_gizmo_suppressed") == true and not _gizmo.visible:
+			still_frames["hidden"] += 1
+	RenderingServer.frame_post_draw.connect(still_probe)
+	var still: Image = await _view.capture_still(1280, Viewport.MSAA_2X)
+	RenderingServer.frame_post_draw.disconnect(still_probe)
+	_check(int(still_frames["total"]) >= 2, "capture_still renders through probe frames")
+	_check(int(still_frames["hidden"]) == int(still_frames["total"]),
+		"the gizmo stays hidden on every capture_still probe frame (%d/%d)"
+		% [still_frames["hidden"], still_frames["total"]])
+	_check(_view.get("_gizmo_suppressed") != true,
+		"capture_still clears the suppression after reading the image")
+	_check(_gizmo.visible, "the gizmo returns after capture_still")
+	if still == null:
+		_check(false, "capture_still returns an image")
+	elif _renderer_readable():
+		var leaked := _axis_pixel_count(still, Vector2(_view.size))
+		_check(leaked == 0, "the captured still contains no gizmo pixels (%d found)" % leaked)
+
+	# The sequence/GIF/MP4 path shares the same camera-probe render.
+	var cam_frames := {"total": 0, "hidden": 0}
+	var cam_probe := func() -> void:
+		cam_frames["total"] += 1
+		if _view.get("_gizmo_suppressed") == true and not _gizmo.visible:
+			cam_frames["hidden"] += 1
+	RenderingServer.frame_post_draw.connect(cam_probe)
+	var probe_size := Vector2i(_view._viewport.size)
+	var shot: Image = await _view.capture_with_camera(
+		probe_size, Viewport.MSAA_DISABLED,
+		_view._camera.global_transform, _view._camera.fov, false)
+	RenderingServer.frame_post_draw.disconnect(cam_probe)
+	_check(int(cam_frames["total"]) >= 2, "capture_with_camera renders through probe frames")
+	_check(int(cam_frames["hidden"]) == int(cam_frames["total"]),
+		"the gizmo stays hidden on every capture_with_camera probe frame (%d/%d)"
+		% [cam_frames["hidden"], cam_frames["total"]])
+	_check(_view.get("_gizmo_suppressed") != true,
+		"capture_with_camera clears the suppression after reading the image")
+	_check(_gizmo.visible, "the gizmo returns after capture_with_camera")
+	if shot != null and _renderer_readable():
+		var leaked_shot := _axis_pixel_count(shot, Vector2(_view.size))
+		_check(leaked_shot == 0,
+			"the camera capture contains no gizmo pixels (%d found)" % leaked_shot)
+
+
+func _test_default_gizmo_scale() -> void:
+	var PrefsScript = load("res://src/core/prefs.gd")
+	var path := "user://gizmo_default_probe.json"
+	DirAccess.remove_absolute(path)
+	var prefs = PrefsScript.new()
+	prefs.settings_path = path
+	prefs.load_settings()
+	var value := float(prefs.get_value("editor.gizmo_size", 0.0))
+	_check(is_equal_approx(value, 1.25),
+		"a fresh preferences store defaults the gizmo to 1.25 (%.2f)" % value)
+	var size_range: Variant = PrefsScript.RANGES.get("editor.gizmo_size")
+	_check(size_range is Vector2 and (size_range as Vector2).is_equal_approx(Vector2(0.5, 2.0)),
+		"the gizmo size range stays 0.5-2.0")
+	prefs.free()
+	DirAccess.remove_absolute(path)
 
 
 # -------------------------------------------------------------------------
@@ -653,4 +855,8 @@ func _capture_visuals() -> void:
 	var still: Image = await _view.capture_still(1280, Viewport.MSAA_2X)
 	if still != null:
 		still.save_png(out_dir.path_join("still-no-gizmo-%s.png" % tag))
+		if _renderer_readable():
+			var leaked := _axis_pixel_count(still, Vector2(_view.size))
+			_check(leaked == 0,
+				"the saved still capture %s contains no gizmo pixels (%d found)" % [tag, leaked])
 	_view.set_gizmo_scale(1.0)
