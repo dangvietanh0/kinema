@@ -18,6 +18,10 @@ const GIZMO_SIZE := 116.0
 const TIP_RADIUS := 22.0
 const ORTHO_SIZE := 2.8
 const LABEL_SIZE := 12
+## Distance in dp between the arrowhead apex and the nearest edge of a label.
+const LABEL_GAP := 9.0
+
+var px_per_dp := 1.0
 
 var _viewport: SubViewport
 var _camera: Camera3D
@@ -45,7 +49,7 @@ func _ready() -> void:
 func _build_viewport() -> void:
 	_viewport = SubViewport.new()
 	_viewport.name = "NavViewport"
-	_viewport.size = Vector2i(int(GIZMO_SIZE), int(GIZMO_SIZE))
+	_viewport.size = _pixel_size()
 	_viewport.transparent_bg = true
 	_viewport.own_world_3d = true
 	_viewport.world_3d = World3D.new()
@@ -179,6 +183,29 @@ func _place_on_axis(instance: Node3D, axis: String, distance: float) -> void:
 			instance.rotation_degrees = Vector3.ZERO
 
 
+func _pixel_size() -> Vector2i:
+	var px := maxi(1, int(round(GIZMO_SIZE * px_per_dp)))
+	return Vector2i(px, px)
+
+
+## The control stays 116 dp; only the off-screen render resolution follows the
+## device density, matching the stage SubViewport. A 2x/3x phone then shows a
+## crisp gizmo instead of an upscaled 116 px image.
+func set_pixel_density(value: float) -> void:
+	var density := clampf(value, 1.0, 4.0)
+	if is_equal_approx(density, px_per_dp):
+		return
+	px_per_dp = density
+	if _viewport == null:
+		return
+	var px := _pixel_size()
+	if _viewport.size != px:
+		_viewport.size = px
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	_update_tips()
+	queue_redraw()
+
+
 ## Mirror the editor camera orbit direction. Called only when yaw or pitch
 ## actually changes, so the SubViewport renders once per camera change.
 func set_orientation(yaw: float, pitch: float) -> void:
@@ -208,17 +235,52 @@ func _update_tips() -> void:
 	if _camera == null or _viewport == null or _viewport.size.x <= 0 or _viewport.size.y <= 0:
 		return
 	for axis in AXES:
-		var point := _camera.unproject_position(_axis_vector(axis))
+		# unproject_position() is in SubViewport pixels; the Control paints in
+		# dp, so divide by the same density the viewport rendered at.
+		var point := _camera.unproject_position(_axis_vector(axis)) / px_per_dp
 		_tip_points[axis] = point
 		_label_points[axis] = _clamped_label(point, axis)
 
 
+## Labels sit outside the arrowhead, never on the cone. The outward radial
+## direction is preferred; when it would clamp onto the arrowhead at a control
+## edge, a perpendicular offset keeps the letter clear. A tip that points
+## straight at the camera projects onto the centre and gets a stable diagonal,
+## so its glyph never covers the other axes.
 func _clamped_label(tip: Vector2, axis: String) -> Vector2:
 	var text := str(AXIS_LABELS[axis])
 	var text_size := Kit.font_mono.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, LABEL_SIZE)
-	var x := clampf(tip.x - text_size.x * 0.5, 1.0, GIZMO_SIZE - text_size.x - 1.0)
-	var y := clampf(tip.y + text_size.y * 0.38, text_size.y + 1.0, GIZMO_SIZE - 1.0)
-	return Vector2(x, y)
+	var centre := Vector2(GIZMO_SIZE, GIZMO_SIZE) * 0.5
+	var direction := tip - centre
+	if direction.length() < 1.0:
+		direction = Vector2(0.62, -0.78)
+	else:
+		direction = direction.normalized()
+	var head_centre := centre + (tip - centre) * 0.85
+	var head_radius := (tip - centre).length() * 0.12 + 2.0
+	var gap := LABEL_GAP + maxf(text_size.x, text_size.y) * 0.5
+	var candidates := [
+		direction,
+		Vector2(direction.y, -direction.x),
+		Vector2(-direction.y, direction.x),
+		-direction,
+	]
+	var fallback := Vector2.ZERO
+	for candidate in candidates:
+		var anchor: Vector2 = tip + candidate * gap
+		var pos := Vector2(
+			clampf(anchor.x - text_size.x * 0.5, 1.0, GIZMO_SIZE - text_size.x - 1.0),
+			clampf(anchor.y - text_size.y * 0.5, 1.0, GIZMO_SIZE - text_size.y - 1.0)
+		)
+		var rect := Rect2(pos, text_size)
+		var closest := Vector2(
+			clampf(head_centre.x, rect.position.x, rect.end.x),
+			clampf(head_centre.y, rect.position.y, rect.end.y)
+		)
+		if head_centre.distance_to(closest) >= head_radius:
+			return pos
+		fallback = pos
+	return fallback
 
 
 func tip_position(axis: String) -> Vector2:
