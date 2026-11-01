@@ -79,8 +79,19 @@ func _ready() -> void:
 	var separator := Kit.vsep()
 	_check(separator.color == Kit.BORDER_SOFT and separator.custom_minimum_size.y <= 1.5,
 		"a hairline separator survives the black-chrome pass")
-	_check(Kit.theme.get_stylebox("normal", "LineEdit").get_border_width(SIDE_BOTTOM) >= 1,
+	var field_style: StyleBoxFlat = Kit.theme.get_stylebox("normal", "LineEdit")
+	_check(field_style.get_border_width(SIDE_BOTTOM) >= 1,
 		"fields keep their boundary hairline")
+	# Fix round 1: a control boundary is not a decorative divider. The field
+	# hairline has to clear 3:1 against the fill it sits on; the quiet
+	# separator token is deliberately exempt because it never delimits a
+	# control.
+	_check(_contrast(field_style.border_color, field_style.bg_color) >= 3.0,
+		"the field boundary clears 3:1 against its fill")
+	_check(field_style.border_color == Kit.CONTROL_BORDER,
+		"the field hairline uses the control boundary token")
+	_check(_contrast(Kit.BORDER_SOFT, Kit.SURFACE_2) < 3.0,
+		"separators stay quiet rather than turning into control edges")
 	var sharp := Kit.flat_style(Kit.SURFACE)
 	_check(sharp.corner_radius_top_left == 0 and sharp.corner_radius_bottom_right == 0, "panels and inputs are square")
 	_check(Kit.icon_button("play", "Play").custom_minimum_size == Vector2(44, 44), "icon buttons have a 44 dp hit target")
@@ -685,6 +696,20 @@ func _ready() -> void:
 		if chrome_line.color == Kit.BORDER_SOFT and (chrome_line.size.x <= 1.5 or chrome_line.size.y <= 1.5):
 			shell_separators += 1
 	_check(shell_separators > 0, "the shell keeps at least one separator")
+	# Fix round 1: transient cards are floating surfaces too. They separate by
+	# elevation; a 1 px frame re-introduces the outline the override removed.
+	var toast_style: StyleBoxFlat = editor._overlay._toast_panel.get_theme_stylebox("panel")
+	_check(toast_style.get_border_width(SIDE_LEFT) == 0
+		and toast_style.get_border_width(SIDE_TOP) == 0
+		and toast_style.get_border_width(SIDE_RIGHT) == 0
+		and toast_style.get_border_width(SIDE_BOTTOM) == 0,
+		"the toast card draws no border")
+	var hud_style: StyleBoxFlat = editor._render_hud.get_theme_stylebox("panel")
+	_check(hud_style.get_border_width(SIDE_LEFT) == 0
+		and hud_style.get_border_width(SIDE_TOP) == 0
+		and hud_style.get_border_width(SIDE_RIGHT) == 0
+		and hud_style.get_border_width(SIDE_BOTTOM) == 0,
+		"the render HUD card draws no border")
 	var view_before: float = editor._view.size.x
 	editor._toggle_drawer("scene")
 	for _i in 4:
