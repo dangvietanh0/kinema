@@ -15,7 +15,11 @@ const MOVED_TIP := 92.0
 const MIN_ARM := 72.0
 const MAX_ARM := 160.0
 const NAV_SIZE := 116.0
-const CAPTURE_DIR := "/tmp/opencode/i4-fix"
+const CAPTURE_DIR := "/tmp/opencode/i4-fix-r2"
+
+## Fired by the overlapping-capture helper so the test can watch one capture
+## finish while the other is still between its probe awaits.
+signal capture_probe_finished(tag: String)
 
 var _failures: Array[String] = []
 var _oks := 0
@@ -90,10 +94,14 @@ func _ready() -> void:
 	await _test_nav_density()
 	print("GIZMO STEP: navigation labels")
 	await _test_nav_labels()
+	print("GIZMO STEP: navigation label orbit sweep")
+	await _test_nav_label_sweep()
 	print("GIZMO STEP: render mode")
 	await _test_render_mode()
 	print("GIZMO STEP: capture suppression")
 	await _test_capture_suppression()
+	print("GIZMO STEP: nested capture suppression")
+	await _test_nested_capture_suppression()
 	print("GIZMO STEP: default gizmo scale")
 	await _test_default_gizmo_scale()
 
@@ -662,6 +670,86 @@ func _test_nav_labels() -> void:
 	await get_tree().process_frame
 
 
+func _axis_head(axis: String) -> Array:
+	var tip: Vector2 = _nav.tip_position(axis)
+	var centre := Vector2(NAV_SIZE, NAV_SIZE) * 0.5
+	var arm := tip - centre
+	# Mirrors the nav gizmo's head disc: the cone occupies the last 30% of the
+	# arm, so its centre sits at 0.85 and its radius follows the arm length.
+	return [centre + arm * 0.85, arm.length() * 0.12 + 2.0]
+
+
+## The four presets do not cover the orbit the user can actually reach. Sweep
+## a full turn of yaw and the whole pitch range, and check every label against
+## the control edges, every axis head (not just its own) and every other label.
+func _test_nav_label_sweep() -> void:
+	if _nav == null:
+		return
+	var inside_violations := 0
+	var head_violations := 0
+	var label_violations := 0
+	var samples := 0
+	var first_inside := ""
+	var first_head := ""
+	var first_label := ""
+	var yaw_steps := 16
+	var pitch_steps := 19
+	var pitch_samples: Array[float] = []
+	for pi in range(pitch_steps):
+		pitch_samples.append(-1.35 + 2.7 * float(pi) / float(pitch_steps - 1))
+	# The exact negative-pitch orbit the review reported, between two coarse
+	# samples, so that regression cannot slip through the grid.
+	pitch_samples.append(-0.61)
+	for yi in range(yaw_steps):
+		var yaw := TAU * float(yi) / float(yaw_steps)
+		for pitch in pitch_samples:
+			_nav.set_orientation(yaw, pitch)
+			samples += 1
+			var rects := {}
+			for axis_name in AXES:
+				var rect := _label_rect(axis_name)
+				rects[axis_name] = rect
+				if rect.position.x < -0.01 or rect.position.y < -0.01 \
+						or rect.end.x > NAV_SIZE + 0.01 or rect.end.y > NAV_SIZE + 0.01:
+					inside_violations += 1
+					if first_inside == "":
+						first_inside = "%s at yaw %.2f pitch %.2f: %s" % [
+							axis_name.to_upper(), yaw, pitch, str(rect)]
+			for axis_name in AXES:
+				var rect: Rect2 = rects[axis_name]
+				for head_axis in AXES:
+					var head := _axis_head(head_axis)
+					var head_centre: Vector2 = head[0]
+					var head_radius: float = head[1]
+					var closest := Vector2(
+						clampf(head_centre.x, rect.position.x, rect.end.x),
+						clampf(head_centre.y, rect.position.y, rect.end.y))
+					if head_centre.distance_to(closest) < head_radius - 0.01:
+						head_violations += 1
+						if first_head == "":
+							first_head = "%s label over the %s head at yaw %.2f pitch %.2f" % [
+								axis_name.to_upper(), head_axis.to_upper(), yaw, pitch]
+			for i in range(AXES.size()):
+				for j in range(i + 1, AXES.size()):
+					if rects[AXES[i]].intersects(rects[AXES[j]], false):
+						label_violations += 1
+						if first_label == "":
+							first_label = "%s and %s at yaw %.2f pitch %.2f" % [
+								AXES[i].to_upper(), AXES[j].to_upper(), yaw, pitch]
+	_check(inside_violations == 0,
+		"every label stays inside the control across %d orbit samples (%d violations%s)"
+		% [samples, inside_violations, "" if first_inside == "" else ": " + first_inside])
+	_check(head_violations == 0,
+		"no label touches any axis head across %d orbit samples (%d violations%s)"
+		% [samples, head_violations, "" if first_head == "" else ": " + first_head])
+	_check(label_violations == 0,
+		"no two labels overlap across %d orbit samples (%d violations%s)"
+		% [samples, label_violations, "" if first_label == "" else ": " + first_label])
+	_view.set_view_preset("Persp")
+	_nav.set_orientation(_view.yaw, _view.pitch)
+	await get_tree().process_frame
+
+
 func _test_render_mode() -> void:
 	if _gizmo == null:
 		return
@@ -778,6 +866,74 @@ func _test_capture_suppression() -> void:
 			"the camera capture contains no gizmo pixels (%d found)" % leaked_shot)
 
 
+## Launches one capture and reports when it is fully finished. Calling this
+## without await starts it up to its first probe await, which lets the test
+## overlap two captures deterministically.
+func _launch_capture_probe(tag: String) -> void:
+	if tag == "still":
+		await _view.capture_still(1280, Viewport.MSAA_2X)
+	else:
+		var probe_size := Vector2i(_view._viewport.size)
+		await _view.capture_with_camera(
+			probe_size, Viewport.MSAA_DISABLED,
+			_view._camera.global_transform, _view._camera.fov, false)
+	capture_probe_finished.emit(tag)
+
+
+## A single bool cannot represent two overlapping captures: whichever finishes
+## first would clear it while the other is still rendering. The suppression is
+## now a depth counter. The logic half runs headless; the real overlap runs
+## under xvfb, where the probe renderer exists.
+func _test_nested_capture_suppression() -> void:
+	_select_default()
+	_view.set_tool("scale")
+	_view.set_gizmo_scale(1.0)
+	await _refresh()
+	_check(_gizmo.visible, "the gizmo is visible before nested suppression")
+	_view._set_gizmo_suppressed(true)
+	_view._set_gizmo_suppressed(true)
+	_view._set_gizmo_suppressed(false)
+	_check(_view.get("_gizmo_suppressed") == true,
+		"one release does not clear a nested suppression")
+	_check(not _gizmo.visible, "the gizmo stays hidden after one of two releases")
+	_view._set_gizmo_suppressed(false)
+	_check(_view.get("_gizmo_suppressed") != true,
+		"the last release clears the nested suppression")
+	_view._draw_gizmo()
+	_check(_gizmo.visible, "the gizmo returns after the last release")
+
+	if not _renderer_readable():
+		print("GIZMO SKIP: overlapping render captures need a real renderer")
+		return
+
+	var finished: Array[String] = []
+	var on_done := func(tag: String) -> void:
+		finished.append(tag)
+	capture_probe_finished.connect(on_done)
+	# Start the still, let it consume its first probe frame, then start the
+	# camera probe so the still finishes one frame before it.
+	_launch_capture_probe("still")
+	await RenderingServer.frame_post_draw
+	_launch_capture_probe("camera")
+	await RenderingServer.frame_post_draw
+	_check(finished.has("still"), "the first capture finished while the second is in flight")
+	_check(not finished.has("camera"), "the second capture is still between probe awaits")
+	_check(_view.get("_gizmo_suppressed") == true,
+		"the first capture's release does not clear the nested suppression")
+	_check(not _gizmo.visible,
+		"the gizmo stays hidden while the second capture is still rendering")
+	for _i in range(180):
+		if finished.size() >= 2:
+			break
+		await RenderingServer.frame_post_draw
+	capture_probe_finished.disconnect(on_done)
+	_check(finished.size() == 2, "both overlapping captures complete")
+	_check(_view.get("_gizmo_suppressed") != true,
+		"the last overlapping capture clears the suppression")
+	_view._draw_gizmo()
+	_check(_gizmo.visible, "the gizmo returns after the last overlapping capture")
+
+
 func _test_default_gizmo_scale() -> void:
 	var PrefsScript = load("res://src/core/prefs.gd")
 	var path := "user://gizmo_default_probe.json"
@@ -860,3 +1016,16 @@ func _capture_visuals() -> void:
 			_check(leaked == 0,
 				"the saved still capture %s contains no gizmo pixels (%d found)" % [tag, leaked])
 	_view.set_gizmo_scale(1.0)
+	# The sequence/GIF/MP4 path photographs the same world through an explicit
+	# camera. Save one frame with the editor gizmo visible and assert it is
+	# clean, exactly like the still above.
+	var frame: Image = await _view.capture_with_camera(
+		Vector2i(_view._viewport.size), Viewport.MSAA_DISABLED,
+		_view._camera.global_transform, _view._camera.fov, false)
+	if frame != null:
+		frame.save_png(out_dir.path_join("sequence-no-gizmo-%s.png" % tag))
+		if _renderer_readable():
+			var leaked_frame := _axis_pixel_count(frame, Vector2(_view.size))
+			_check(leaked_frame == 0,
+				"the saved sequence frame %s contains no gizmo pixels (%d found)"
+				% [tag, leaked_frame])

@@ -1493,6 +1493,25 @@ func _ready() -> void:
 	_check(not is_equal_approx(step_x, before_x), "gizmo drag changes value")
 	_check(absf(total_x - before_x) > absf(step_x - before_x) + 0.01, "gizmo drag accumulates")
 
+	# Capture entry points share one guard: a still or sequence must not start
+	# while a GIF/MP4/PNG export owns the render path.
+	_check(editor.has_method("_capture_blocked"),
+		"the editor exposes the shared capture guard")
+	if editor.has_method("_capture_blocked"):
+		editor._render_busy = false
+		editor._media_busy = true
+		_check(editor._capture_blocked(), "capture guard blocks during a media export")
+		editor._quick_still()
+		editor._render_still()
+		editor._render_sequence(false)
+		_check(not editor._render_busy,
+			"capture entry points refuse to start during a media export")
+		editor._media_busy = false
+		editor._render_busy = true
+		_check(editor._capture_blocked(), "capture guard blocks during a render")
+		editor._render_busy = false
+		_check(not editor._capture_blocked(), "capture guard opens when idle")
+
 	print("SMOKE STEP: picking")
 	var picked_light := false
 	for obj in doc.objects:
