@@ -61,6 +61,26 @@ func _ready() -> void:
 		_check(is_equal_approx(tone.r, tone.g) and is_equal_approx(tone.g, tone.b), "chrome accents stay monochrome")
 	_check(Kit.TEXT.get_luminance() > Kit.BG.get_luminance() + 0.5, "primary text is high contrast")
 	_check(Kit.BORDER.get_luminance() > Kit.SURFACE.get_luminance(), "hairlines are lighter than their surface")
+	# Black chrome (2026-11-01 override): a pure black window, hierarchy from
+	# near-black elevation, and text contrast as the readability floor.
+	_check(Kit.BG == Color(0, 0, 0), "the app background is pure black")
+	_check(ProjectSettings.get_setting(
+			"rendering/environment/defaults/default_clear_color", Color(0, 0, 0, 1)) == Color(0, 0, 0, 1),
+		"the window clears to pure black")
+	_check(Kit.SURFACE.get_luminance() < Kit.SURFACE_2.get_luminance()
+		and Kit.SURFACE_2.get_luminance() < Kit.SURFACE_3.get_luminance()
+		and Kit.SURFACE_3.get_luminance() < Kit.SURFACE_HOVER.get_luminance()
+		and Kit.SURFACE_HOVER.get_luminance() < Kit.SURFACE_ACTIVE.get_luminance(),
+		"surface elevation is a near-black ladder")
+	_check(_contrast(Kit.BG, Kit.SURFACE_ACTIVE) < 4.0, "every elevation step stays near-black")
+	_check(_contrast(Kit.TEXT_MUTED, Kit.BG) >= 4.5, "muted chrome text keeps 4.5:1 on the stage")
+	_check(_contrast(Kit.TEXT_DIM, Kit.SURFACE_2) >= 4.5, "dim text keeps 4.5:1 on the raised fill")
+	_check(_contrast(Kit.FOCUS_BRIGHT, Kit.BG) >= 3.0, "focus rings keep 3:1 on black")
+	var separator := Kit.vsep()
+	_check(separator.color == Kit.BORDER_SOFT and separator.custom_minimum_size.y <= 1.5,
+		"a hairline separator survives the black-chrome pass")
+	_check(Kit.theme.get_stylebox("normal", "LineEdit").get_border_width(SIDE_BOTTOM) >= 1,
+		"fields keep their boundary hairline")
 	var sharp := Kit.flat_style(Kit.SURFACE)
 	_check(sharp.corner_radius_top_left == 0 and sharp.corner_radius_bottom_right == 0, "panels and inputs are square")
 	_check(Kit.icon_button("play", "Play").custom_minimum_size == Vector2(44, 44), "icon buttons have a 44 dp hit target")
@@ -645,6 +665,26 @@ func _ready() -> void:
 				"a second %s rail press closes the flyout" % page_name)
 	_check(not editor._dock.visible, "studio dock starts closed")
 	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
+
+	print("SMOKE STEP: black chrome")
+	_check(Kit.theme.get_stylebox("panel", "PanelContainer").get_border_width(SIDE_LEFT) == 0,
+		"the default panel stylebox draws no border")
+	for shell_panel_name in ["_dock", "_timeline_panel", "_panel_rail", "_outliner_panel", "_inspector_panel", "_rig_frame"]:
+		var shell_panel = editor.get(shell_panel_name)
+		_check(shell_panel != null, "black chrome: %s is mounted" % shell_panel_name)
+		if shell_panel != null:
+			var shell_style: StyleBoxFlat = shell_panel.get_theme_stylebox("panel")
+			_check(shell_style.get_border_width(SIDE_LEFT) == 0
+				and shell_style.get_border_width(SIDE_TOP) == 0
+				and shell_style.get_border_width(SIDE_RIGHT) == 0
+				and shell_style.get_border_width(SIDE_BOTTOM) == 0,
+				"the shell panel %s draws no border" % shell_panel_name)
+	var shell_separators := 0
+	for node in editor.find_children("*", "ColorRect", true, false):
+		var chrome_line := node as ColorRect
+		if chrome_line.color == Kit.BORDER_SOFT and (chrome_line.size.x <= 1.5 or chrome_line.size.y <= 1.5):
+			shell_separators += 1
+	_check(shell_separators > 0, "the shell keeps at least one separator")
 	var view_before: float = editor._view.size.x
 	editor._toggle_drawer("scene")
 	for _i in 4:
