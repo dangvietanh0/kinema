@@ -8,6 +8,8 @@ extends PanelContainer
 
 signal page_requested(page: String)
 
+const Tokens = preload("res://src/ui/tokens.gd")
+
 const PAGES := [
 	{"id": "scene", "label": "Scene", "icon": "layers"},
 	{"id": "inspector", "label": "Properties", "icon": "sliders-horizontal"},
@@ -24,9 +26,10 @@ func _ready() -> void:
 func _build() -> void:
 	if not _buttons.is_empty():
 		return
-	custom_minimum_size = Vector2(44.0, 0.0)
-	var style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_left = 1
+	custom_minimum_size = Vector2(Tokens.PANEL_RAIL_WIDTH, 0.0)
+	# No outline (2026-11-01 black-chrome override): the rail reads as a raised
+	# column, and the active page keeps its bright-edge treatment instead.
+	var style := Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 0
 	style.content_margin_right = 0
 	style.content_margin_top = 4
@@ -36,6 +39,11 @@ func _build() -> void:
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 2)
 	add_child(column)
+	var descriptions := {
+		"scene": "Open the scene outliner",
+		"inspector": "Open the properties inspector",
+		"rig": "Open the rig page",
+	}
 	for entry in PAGES:
 		var data: Dictionary = entry
 		var page := str(data.get("id", ""))
@@ -45,6 +53,10 @@ func _build() -> void:
 			44,
 			20
 		)
+		# Icon-only buttons must expose a stable name to assistive technology;
+		# the tooltip stays for pointer users.
+		button.accessibility_name = str(data.get("label", page))
+		button.accessibility_description = str(descriptions.get(page, ""))
 		button.pressed.connect(func() -> void: page_requested.emit(page))
 		column.add_child(button)
 		_buttons[page] = button

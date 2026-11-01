@@ -25,7 +25,7 @@ func _ready() -> void:
 	if not slider.value_changed.is_connected(_on_value_changed):
 		slider.value_changed.connect(_on_value_changed)
 	slider.drag_started.connect(_on_drag_started)
-	slider.drag_ended.connect(_on_drag_ended)
+	slider.drag_ended.connect(_on_drag_ended.unbind(1))
 	set_percent_value(_pending_percent, false)
 
 
@@ -85,7 +85,7 @@ func _on_drag_started() -> void:
 	_dragging = true
 
 
-func _on_drag_ended(_changed: bool) -> void:
+func _on_drag_ended() -> void:
 	_dragging = false
 	value_changed.emit(slider.value / 100.0)
 

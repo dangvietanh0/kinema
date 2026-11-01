@@ -23,7 +23,6 @@ var editor: Node = null
 var current_mode := "studio"
 var resolved_mode := "studio"
 var fit_percent := 100.0
-var user_scale_enabled := true
 var clamped := false
 
 var _scale_control: ScaleSliderScript
@@ -46,11 +45,10 @@ func setup(editor_ref: Node) -> void:
 	editor = editor_ref
 
 
-func open(p_current_mode: String, p_fit_percent: float, p_user_scale_enabled: bool, p_clamped: bool) -> void:
+func open(p_current_mode: String, p_fit_percent: float, p_clamped: bool) -> void:
 	current_mode = p_current_mode if p_current_mode in ["auto", "compact", "studio", "desktop"] else "studio"
 	resolved_mode = _resolved_mode()
 	fit_percent = clampf(p_fit_percent, 1.0, 100.0)
-	user_scale_enabled = p_user_scale_enabled
 	clamped = p_clamped
 	_rebuild()
 
@@ -62,21 +60,27 @@ func close() -> void:
 
 ## Keep an open sheet honest when the host reports a new fit (rotation or a
 ## window resize). The sheet structure changes at the fit and warning
-## thresholds, so crossing one rebuilds it once.
-func refresh_fit(percent: float, enabled: bool, is_clamped: bool) -> void:
+## thresholds, and rotation changes the column structure outright, so
+## crossing one rebuilds it once.
+func refresh_fit(percent: float, is_clamped: bool) -> void:
 	var next_fit := clampf(percent, 1.0, 100.0)
 	var needs_fit_label := next_fit < 99.9
 	var needs_warning := is_clamped or next_fit < 60.0
+	# Rotation can flip the sheet between one and two columns without the fit
+	# or the warning crossing a threshold; the stale column structure would
+	# leave a 280 dp secondary column inside a portrait sheet.
+	var next_two_column: bool = editor != null and editor.size.y < 560.0 and editor.size.x >= 780.0
+	var next_stacked: bool = editor == null or editor.size.x < 700.0 or next_two_column
 	var had_fit_label := _fit_label != null
 	var had_warning := _warning != null
 	fit_percent = next_fit
-	user_scale_enabled = enabled
 	clamped = is_clamped
-	if needs_fit_label != had_fit_label or needs_warning != had_warning:
+	if needs_fit_label != had_fit_label or needs_warning != had_warning \
+			or next_two_column != _two_column or next_stacked != _orientation_stacked:
 		_rebuild()
 		return
 	if _fit_label != null:
-		_fit_label.text = "Desktop fit %d%% · UI scale still applies" % int(round(fit_percent))
+		_fit_label.text = "Fit %d%% · UI scale still applies" % int(round(fit_percent))
 	if _scale_control != null:
 		# A fit change never takes the scale away from the user.
 		_scale_control.slider.editable = true
@@ -150,14 +154,16 @@ func _rebuild() -> void:
 	primary.add_child(resolved)
 	if fit_percent < 99.9:
 		_fit_label = Kit.label(
-			"Desktop fit %d%% · UI scale still applies" % int(round(fit_percent)),
+			"Fit %d%% · UI scale still applies" % int(round(fit_percent)),
 			Kit.TYPE_CAPTION,
 			Kit.TEXT
 		)
 		primary.add_child(_fit_label)
 	if clamped or fit_percent < 60.0:
+		# The clamp can come from Compact, Studio or a scaled Desktop, so the
+		# copy must not name a mode. The stored preference is never rewritten.
 		_warning = Kit.label(
-			"Small UI. Desktop stays selected and the whole canvas shrinks to fit. " +
+			"Small UI. Limited to fit this screen so the canvas never overflows. " +
 			"Switch to Studio for larger controls.",
 			Kit.TYPE_CAPTION,
 			Kit.TEXT_MUTED
@@ -253,8 +259,11 @@ func _rebuild() -> void:
 	if not _two_column:
 		secondary.add_child(Kit.vsep())
 	secondary.add_child(Kit.section_label("Interface scale"))
+	# Both branches carry the touch-floor warning: landscape is the priority
+	# orientation, so a terse hint there was the worst possible place to drop it.
 	var scale_hint := Kit.label(
-		"50-200%, applies to the whole workbench." if _two_column else
+		"50-200%, applies to the whole workbench. Below 85% controls render under the 44 dp touch floor."
+		if _two_column else
 		"Applies to the whole workbench. Below 85% controls render under the 44 dp touch floor.",
 		Kit.TYPE_CAPTION,
 		Kit.TEXT_DIM
