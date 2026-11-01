@@ -6,9 +6,7 @@ extends VBoxContainer
 ## the strip, the edge handles trim it and the fade handles resize the
 ## smoothstep envelopes. Overlapping strips are marked with a 1 px hatch.
 
-signal strip_selected(strip_id: String, clip_id: String)
 signal sheet_requested(control: Control, title: String, subtitle: String)
-signal layers_requested
 signal notice(text: String)
 
 const ROW_H := 44.0
@@ -268,7 +266,6 @@ func _select_strip(strip_id: String, clip_id: String) -> void:
 	_selected_strip = strip_id
 	if doc != null and clip_id != "" and doc.active_clip_id() != clip_id:
 		doc.set_active_clip(clip_id)
-	strip_selected.emit(strip_id, clip_id)
 	var sheet := _build_strip_sheet(strip_id)
 	if sheet != null:
 		sheet_requested.emit(sheet, "Strip", "Trim, speed, weight and fades.")
@@ -316,7 +313,6 @@ func _on_add_clip() -> void:
 
 
 func _on_layers() -> void:
-	layers_requested.emit()
 	var script = load(LAYER_SHEET_PATH)
 	if script == null or doc == null:
 		return
