@@ -399,7 +399,7 @@ func _template_card(id: String, title: String, description: String, icon_name: S
 	return panel
 
 func _template_style(active: bool) -> StyleBoxFlat:
-	var style := Kit.flat_style(Kit.SURFACE_ACTIVE if active else Kit.SURFACE_2, Kit.R_CONTROL, Kit.FOCUS if active else Kit.BORDER_SOFT, 1)
+	var style := Kit.flat_style(Kit.SURFACE_ACTIVE if active else Kit.SURFACE_2, Kit.R_CONTROL, Kit.FOCUS if active else Kit.CONTROL_BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 8

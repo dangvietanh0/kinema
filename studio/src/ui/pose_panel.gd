@@ -142,7 +142,7 @@ func _make_chip(pose: Dictionary) -> PanelContainer:
 	var chip := PanelContainer.new()
 	chip.name = "PoseChip"
 	chip.custom_minimum_size.y = CHIP_HEIGHT
-	chip.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+	chip.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.CONTROL_BORDER, 1))
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 2)
 	chip.add_child(body)

@@ -20,8 +20,8 @@ Bản dựng lại giữ nguyên engine, Android host, document model và các p
 | Chế độ | Dùng cho | Cấu trúc |
 |---|---|---|
 | **Compact** | điện thoại dọc (< 600 dp) | một cột; viewport; transport; timeline gập; panel dạng bottom sheet |
-| **Studio** | điện thoại ngang, tablet dọc (600–959 dp) | rail trái + viewport + dock phải; timeline dock dưới |
-| **Desktop** | tablet ngang, DeX, màn hình lớn; **trên điện thoại vẫn chọn được** | menu bar + rail + viewport + dock + timeline + status bar; nếu không vừa, thu nhỏ đều toàn bộ UI cho đến khi vừa |
+| **Studio** | điện thoại ngang, tablet dọc (600–959 dp) | rail trái + viewport + panel rail phải; dock là flyout overlay; timeline gập mặc định |
+| **Desktop** | tablet ngang, DeX, màn hình lớn; **trên điện thoại vẫn chọn được** | menu bar + rail + viewport + panel rail + flyout + status bar; timeline gập mặc định; nếu không vừa, thu nhỏ đều toàn bộ UI |
 
 Cùng một ngôn ngữ hình ảnh cho cả ba: nền graphite đơn sắc, hairline 1 px, góc 0 px, IBM Plex Sans + IBM Plex Mono. Trạng thái được phân biệt bằng **độ sáng**, không bằng hue: trắng gần tuyệt đối cho thao tác UI, xám cho thời gian (key, playhead, transport, selection 3D), và đỏ là tín hiệu màu duy nhất dành cho destructive/error. Mật độ đến từ chữ 11–13 sp, khoảng cách 4/8/12 px và đường kẻ 1 px — không đến từ việc thu nhỏ vùng chạm.
 
@@ -403,19 +403,20 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
   - ≥ 960 dp → Desktop
 - **Mọi mode luôn chọn được.** Không có mode nào bị disable hay tự fallback vì kích thước màn hình.
 - Mode này là **workspace của editor**. Home tự chọn layout list/table theo width của nó; không bị ép theo mode editor đã lưu.
-- `short` khi **layout height** (sau scale) < 520 dp: giảm top bar, gập timeline mặc định, dock chuyển sang tab Scene/Properties.
+- `short` khi **layout height** (sau scale) < 520 dp: giảm top bar, timeline gập mặc định, dock flyout dùng một page Scene/Properties/Rig.
 - Mode được lưu vào `user://settings.json` và áp dụng ngay.
 - **Desktop trên màn hình hẹp (kể cả điện thoại):**
-  - Desktop luôn dùng bố cục Desktop đầy đủ (menu bar + rail + dock + timeline + status bar).
-  - Nếu `layout_width` sau scale thường (trước fit) < 960 dp hoặc `layout_height` < 600 dp, app **giảm `content_scale_factor` đều** cho đến khi canvas logic đạt tối thiểu **960×600 dp**. Toàn bộ UI — chữ, icon, panel, hit target — thu nhỏ cùng một tỉ lệ.
-  - Không chuyển sang Studio, không ẩn panel, không đổi mode. Đây là “thu nhỏ cho đến khi vừa” đã chốt.
+  - Desktop luôn dùng bố cục Desktop đầy đủ (menu bar + rail + panel rail + flyout + status bar); timeline gập mặc định.
+  - `desktop_fit` tính từ density để canvas logic đạt tối thiểu **960×600 dp** ở user scale 100%. Toàn bộ UI — chữ, icon, panel, hit target — thu nhỏ cùng một tỉ lệ.
+  - User scale nhân lên trên fit; slider không bị khoá. Ở scale > 100%, canvas có thể nhỏ hơn 960×600 — đó là lựa chọn của người dùng, sheet cảnh báo thay vì chặn.
+  - Không chuyển sang Studio, không ẩn panel, không đổi mode.
   - Status bar và sheet Workspace hiển thị `Desktop fit 43%` (hoặc tỉ lệ thực). Khi fit < 60%, hiện chip cảnh báo `UI nhỏ` + nút `Chuyển sang Studio`; chỉ là gợi ý, không tự đổi.
   - Hệ quả đã được chấp nhận: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. 44 dp là kích thước **logic**; test chỉ assert 44 dp logic trong mode này.
 - **Phân biệt hai đại lượng:**
   - `device_dp` = physical / density; quyết định mode của `Auto`, không đổi khi user scale.
   - `layout_width` = `size.x` sau `content_scale_factor`; quyết định panel policy bên trong Studio/Compact.
-  - Ở user scale 1.3, tablet 600 dp vẫn là Studio, nhưng nếu `layout_width < 720` thì dock chuyển thành drawer/tab; không tự đổi mode và không tràn.
-  - Desktop không dùng panel policy theo `layout_width`; nó dùng shrink-to-fit để luôn có canvas ≥ 960×600.
+  - Ở user scale 1.3, tablet 600 dp vẫn là Studio; dock luôn là flyout overlay nên không còn ngưỡng `layout_width < 720`, không tự đổi mode và không tràn.
+  - Desktop không dùng panel policy theo `layout_width`; nó dùng fit để giữ canvas ở mức đọc được tại scale 100%.
   - Fit không đổi `device_dp`, nên `Auto` không bị đổi mode khi fit bật; chuyển mode chỉ do người dùng hoặc do device dp thay đổi.
 
 ### 6.2 Compact — điện thoại dọc
@@ -474,10 +475,11 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 ```
 
 - **Top bar 44 dp:** back, title + dirty, undo/redo, render, settings, overflow. Không dùng menu bar kiểu desktop.
-- **Rail 44 dp**, dock phải rộng `clamp(width × 0.28, 280, 340) dp`.
-- **Dock:** Scene trên (38% chiều cao, min 180, max 320), Properties dưới (scroll). Trong `short`, dock chuyển thành tab Scene/Properties để tiết kiệm chiều cao.
-- **Timeline 180 dp** (short: 156 dp), gập còn **56 dp** transport; mặc định mở ở Studio, gập ở short. Lựa chọn gập/mở thủ công sống qua rotation cho đến lần đổi mode kế tiếp.
-- **Panel** vẫn docked; không có scrim. Tap bên trong không đóng vì không có gì để đóng.
+- **Rail trái 44 dp** cho công cụ; **panel rail phải 44 dp** cho `Scene`, `Properties`, `Rig` (mỗi nút 44×44, accessible name, active edge). Xem addendum 2026-10-30.
+- **Dock phải là overlay flyout**, không chiếm cột: một page mỗi lần, rộng tối đa 400 dp, header 44 dp (tên page + close), scrim đóng khi tap ngoài. `_dock_slot` bị xoá.
+- **Timeline gập mặc định ở mọi mode**, còn đúng **56 dp** transport; clip lane và media header chỉ hiện khi sheet mở. Người dùng mở dope sheet từ fold control hoặc bottom-bar Timeline; khi mở, sheet đẩy viewport lên và giữ sàn viewport 96 dp trên màn hình thấp.
+- **Panel rail** thu về nút panel trên top bar khi canvas hẹp hơn sàn Studio 480 dp; cùng một flyout, stage không phải trả giá cho hai rail.
+- **Panel sheets** vẫn là modal/bottom sheet; dock flyout không thay đổi sheet contract.
 - **Sheet** (Add/Settings/Render/Import) dùng modal giữa hoặc bottom sheet tùy chiều cao; trên tablet ưu tiên modal 560–720 dp rộng. Sheet Graphics dùng 860 dp khi editor đủ rộng để hai cột không tràn.
 
 ### 6.4 Desktop — màn hình lớn
@@ -505,8 +507,8 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 - **Menu bar 36 dp:** `Project` (New, Open, Save, Close), `Edit` (Undo, Redo, Delete), `View` (Frame, Grid, Camera, Panels, Layout), `Render` (Still, Sequence, Settings), `Help`. Dùng `PopupMenu` thật, có shortcut.
 - `Project → New/Open/Close` đều confirm lưu nếu dirty, rồi quay về Home; `New` mở New Project sheet ở Home. **Không có Save As** trong bản này (non-goal 2.2); không giả vờ đã copy project.
 - **Rail 40 dp** (vẫn hit 44 bằng padding ngang).
-- **Dock phải** `clamp(width × 0.26, 320, 380) dp`; Scene + Properties stacked; có thể tab nếu height < 600.
-- **Timeline 220 dp**, luôn docked; transport 44 dp.
+- **Panel rail phải 44 dp** cho Scene/Properties/Rig; **dock phải là overlay flyout** một page, rộng tối đa 400 dp, có scrim và close (addendum 2026-10-30). Không còn dock cột 320–380 dp.
+- **Timeline gập mặc định** còn 56 dp transport; mở theo yêu cầu, cao 220 dp khi mở.
 - **Status bar 24 dp:** FPS, frame time, renderer, object count, key count, autosave state. Đây là nơi đặt thông tin kỹ thuật, không phải viewport.
 - **Hover/pointer:** hover state, cursor shape, right-click context menu, scroll wheel zoom, middle-drag orbit, `F` frame, `G/R/S` tools, `Space` play, arrow frame step, `Ctrl+Z/Y`, `Ctrl+S`, `Ctrl+R`.
 - **Desktop trên điện thoại:** vẫn là Desktop đầy đủ; toàn bộ canvas được thu nhỏ đều cho đến khi vừa (xem 6.1, 6.6). Không fallback Studio. Status bar hiển thị tỉ lệ fit; chip `UI nhỏ` + nút chuyển Studio khi fit < 60%. Trên tablet 1280×800 hoặc DeX, fit = 100% và không có thay đổi.
@@ -525,19 +527,19 @@ Mật độ Desktop đến từ top bar thấp hơn, padding ngang nhỏ hơn, n
 - `density = clamp(screen_get_dpi()/160, 1.0, 4.0)` trên Android; nếu dpi <= 0 thì dùng 160. Desktop OS/headless = 1.0.
 - `device_dp = physical_size / density` — chỉ dùng cho `Auto` chọn mode.
 - `base_factor = density` (bỏ công thức `density / stretch` cũ; nó kéo layout về 1280×800 và là một nguyên nhân tràn portrait).
-- `user_scale` 0.85–1.30, step 0.05, default 1.0.
-- `effective_factor = base_factor × user_scale`.
-- `logical_width = physical_width / effective_factor`, `logical_height = physical_height / effective_factor` (trước fit).
+- `user_scale` **0.50–2.00**, step 0.01, default 1.0. Đây là slider liên tục 50–200%, không còn dropdown 10 giá trị. Không disable khi Desktop fit (addendum 2026-10-30).
+- `effective_factor = base_factor × user_scale × desktop_fit`.
+- `logical_width = physical_width / effective_factor`, `logical_height = physical_height / effective_factor`.
 - **Fit theo mode:**
-  - Compact: giữ tối thiểu 320×480; Studio: giữ tối thiểu **480×320** vì landscape là bề mặt ưu tiên. Nếu logical nhỏ hơn, giảm `effective_factor` vừa đủ; hiển thị “UI scale bị giới hạn bởi màn hình.”
+  - Compact: giữ tối thiểu 320×480; Studio: giữ tối thiểu **480×320** vì landscape là bề mặt ưu tiên. Nếu logical nhỏ hơn, giảm `effective_factor` vừa đủ; hiển thị “UI scale bị giới hạn bởi màn hình.” Không ghi đè preference.
   - Điện thoại ngang 915×412 và 800×360 phải resolve **factor 1.0**, không bị thu nhỏ oan vì minimum portrait.
-  - Desktop: nếu `logical_width < 960 dp` hoặc `logical_height < 600 dp`, đặt `fit = min(1, logical_width / 960, logical_height / 600)` và `effective_factor *= fit`. Kết quả là canvas logic đạt tối thiểu 960×600. **Không có sàn fit**; đây là cách Desktop trên điện thoại thu nhỏ cho đến khi vừa. Hiển thị `Desktop fit <fit>%`.
-  - Fit của Desktop là automatic, không phải setting. Khi `fit < 1`, `user_scale` bị **disable** trong mode này kèm hint: “Desktop fit đang giữ UI vừa màn hình. Chuyển sang Studio/Compact để chỉnh UI scale.” Lý do: fit sẽ bù lại mọi thay đổi user scale, nên để slider hoạt động sẽ tạo cảm giác control bị hỏng. Khi `fit = 1`, user scale hoạt động bình thường.
+  - Desktop: `desktop_fit = min(1, physical_width / (density × 960), physical_height / (density × 600))`. Fit tính từ density, **không** từ user scale, để slider còn tác dụng. `effective_factor = density × user_scale × desktop_fit`. Khi user scale > 100%, canvas logic có thể nhỏ hơn 960×600; đây là lựa chọn của người dùng, shell hiển thị fit và cảnh báo thay vì khoá slider.
+  - Khi `desktop_fit < 1`, Workspace/Settings hiển thị `Desktop fit <fit>%` cạnh slider; slider vẫn hoạt động.
 - `content_scale_factor = effective_factor`; áp dụng ngay, không restart; lưu `user_scale` và mode vào `Prefs`.
-- Fit chỉ áp dụng khi **editor đang ở mode Desktop**. Home, Compact và Studio dùng `effective_factor` không fit; rời Desktop phải khôi phục factor ngay trong cùng frame để Home/editor kế tiếp không bị thu nhỏ ké.
+- Fit chỉ áp dụng khi **editor đang ở mode Desktop**. Home, Compact và Studio dùng `effective_factor` không desktop fit; rời Desktop phải khôi phục factor ngay trong cùng frame để Home/editor kế tiếp không bị thu nhỏ ké.
 - Passive scale: density. **Không** dùng OS font scale vì chưa xác nhận; ghi rõ trong code comment và settings.
-- Hệ quả vật lý: ở Desktop fit, 44 dp logic × fit có thể nhỏ hơn 44 dp vật lý. Đây là tradeoff đã chốt; UI phải hiển thị tỉ lệ và gợi ý chuyển mode, không được âm thầm fallback.
-- Test tại 0.85, 1.0, 1.15, 1.30 trên 360×640 và 411×914; thêm Desktop ở 360×640, 411×914, 914×411; assert không tràn, fit đúng, và chuyển về Compact/Studio khôi phục factor.
+- Hệ quả vật lý: ở mức scale dưới 85%, 44 dp logic có thể nhỏ hơn 44 dp vật lý. Đây là lựa chọn của người dùng; sheet cảnh báo rõ, không âm thầm fallback.
+- Test tại 0.50, 0.85, 1.0, 1.15, 1.30, 2.0 trên 360×640 và 411×914; thêm Desktop ở 360×640, 411×914, 914×411; assert không tràn, fit đúng, slider không bị disable, và chuyển về Compact/Studio khôi phục factor.
 
 ### 6.7 Safe area và overflow
 
@@ -757,7 +759,7 @@ Home được dựng lại hoàn toàn, không hero/card.
 - Không dùng `gui_input` trên root để đóng khi bất kỳ tap nào xảy ra.
 - Bottom sheet chỉ đóng khi: tap scrim, back, nút close, hoặc kéo handle xuống quá 25% chiều cao.
 - Test: mở sheet, tap 5 điểm bên trong body (trên/xuống/trái/phải/giữa), assert `overlay.has_modal() == true`; tap scrim, assert false.
-- Drawer Studio/Compact: dock không có scrim; tap bên trong không đóng. Nếu là overlay drawer, chỉ scrim/close/back đóng.
+- Drawer Studio/Compact: dock là flyout overlay; tap bên trong không đóng; chỉ scrim/close/back đóng.
 
 ### 8.2 Cử chỉ viewport
 
@@ -866,7 +868,7 @@ Home được dựng lại hoàn toàn, không hero/card.
 - Focus ring 2 px `FOCUS`, luôn hiện khi keyboard focus; không ẩn bằng outline none.
 - Thứ tự focus theo visual order; modal trap focus; đóng trả focus.
 - Không dùng màu làm tín hiệu duy nhất: selected có nền + viền + icon; autokey có chữ; lỗi có icon + text.
-- UI scale 0.85–1.30; test không cắt chữ; cho phép wrap ở body, ellipsis ở title.
+- UI scale 0.50–2.00 (slider liên tục); test không cắt chữ ở 100%, cảnh báo dưới 85%; cho phép wrap ở body, ellipsis ở title.
 - Reduce motion setting.
 - Screen reader: Godot Android support hạn chế; ghi rõ trong About/Help. Không tuyên bố hỗ trợ đầy đủ.
 - IME: field có label; keyboard type đúng; cuộn field vào view; không che action.
@@ -1223,14 +1225,14 @@ Tất cả setting lưu trong `user://settings.json` (Prefs) hoặc `user://grap
 |---|---|---|
 | Workspace layout | auto/compact/studio/desktop | auto |
 | Orientation | auto/portrait/landscape | auto |
-| UI scale | 0.85–1.30 | 1.0 |
+| UI scale | 0.50–2.00, step 0.01 | 1.0 |
 | Safe area preview | on/off | off |
 | Keep screen on | on/off | on |
 | Fullscreen | on/off | off (desktop OS only) |
 | Reset display | action | — |
 
 - Workspace layout: mọi mode luôn chọn được; Desktop trên màn hình hẹp dùng shrink-to-fit, không fallback.
-- UI scale là scale người dùng; khi Desktop fit < 100%, control bị disable và hiển thị `Fit 43%` thay cho giá trị user scale, kèm hint vì fit sẽ bù lại mọi thay đổi. Khi fit = 100%, control hoạt động bình thường và hiển thị user scale.
+- [Superseded by the 2026-10-30 stage-first addendum] UI scale là scale người dùng; khi fit < 100%, control **không còn bị disable** — scale vẫn chỉnh được và fit tính riêng theo density, user scale nhân lên trên đó. Xem "Free interface scale" trong addendum stage-first shell (2026-10-30).
 - Orientation chỉ hiện trên Android; nếu `FEATURE_ORIENTATION` false, disable + hint.
 - Fullscreen chỉ desktop OS; Android immersive nếu API xác nhận, nếu không ẩn.
 - Safe area preview vẽ inset `WARNING` 1 px + label; chỉ debug.
@@ -1441,9 +1443,9 @@ Với mỗi cặp `(size, mode)`:
   - hit target của các nút chính ≥ 44 dp **logic** (đo `size` hoặc wrapper); trong Desktop fit, không assert 44 dp vật lý;
   - không có horizontal scroll ngoài ý muốn;
   - text essential không bị clip (title được phép ellipsis);
-  - Desktop ở mọi size: `content_scale_factor` được giảm đủ để logical canvas ≥ 960×600; mode vẫn là Desktop; fit indicator hiển thị khi < 100%;
-  - Desktop trên phone: không panel nào bị ẩn/fallback; chuyển Desktop → Compact/Studio khôi phục `content_scale_factor` và không tràn;
-  - Studio ở layout width hẹp: dock chuyển drawer/tab, mode vẫn là Studio.
+  - Desktop ở mọi size: `desktop_fit` giữ logical canvas ≥ 960×600 tại user scale 100%; mode vẫn là Desktop; fit indicator hiển thị khi < 100%;
+  - Desktop trên phone: không fallback; chuyển Desktop → Compact/Studio khôi phục `content_scale_factor` và không tràn;
+  - Studio/Desktop: panel rail 44 dp hiện diện khi canvas đạt sàn Studio 480 dp; dưới ngưỡng đó nút panel trên top bar thay thế. Dock mặc định đóng, viewport chiếm toàn bộ chiều rộng còn lại; timeline gập mặc định chỉ còn 56 dp transport.
 - Nếu fail, in rect của control vi phạm + parent + mode + size + `content_scale_factor`.
 
 ### 15.4 Test interaction
@@ -1452,7 +1454,7 @@ Với mỗi cặp `(size, mode)`:
 - Tap scrim; assert đóng.
 - Back: modal → đóng; back lần nữa → editor/home đúng.
 - Chuyển mode Auto/Compact/Studio/Desktop; assert mode hiệu dụng; Desktop trên 360×640 vẫn là Desktop với fit < 100%, không fallback; restart app (headless reload) → mode + user scale lưu.
-- Đổi UI scale 0.85/1.3 trong Compact/Studio; assert factor + không tràn. Trong Desktop fit < 100%, assert control UI scale disabled + hint; khi fit = 100%, assert control hoạt động.
+- Đổi UI scale 0.5/1.0/1.3/2.0 trong Compact/Studio/Desktop; assert factor + không tràn hoặc clamp có thông báo. Desktop fit < 100% vẫn cho slider hoạt động và hiển thị fit.
 - Orientation setting: mock `DisplayServer`? Không mock được; test persistence + UI state; device verify.
 - Renderer: default trên Android là Mobile, desktop là Forward+; test `build_restart_args()`, preference persistence, pending guard; không restart trong test.
 - Settings: mỗi control đổi → giá trị lưu; reload → còn; reset → default.
@@ -1502,7 +1504,8 @@ Với mỗi cặp `(size, mode)`:
 - [ ] Compact/Studio/Desktop luôn chọn được, lưu; Desktop hẹp thu nhỏ đều đến khi vừa, có indicator, không fallback.
 - [ ] Desktop fit < 100% hiển thị tỉ lệ; chuyển mode khôi phục scale.
 - [ ] Orientation setting hoạt động hoặc disable có lý do.
-- [ ] UI scale 0.85–1.30 không tràn (Compact/Studio); Desktop fit < 100% disable control kèm hint.
+- [ ] UI scale 0.50–2.00 không tràn (Compact/Studio clamp có thông báo); Desktop fit < 100% vẫn cho slider hoạt động.
+- [ ] Studio/Desktop: panel rail 44 dp khi đủ sàn 480 dp, dock flyout mặc định đóng, timeline gập còn 56 dp transport, viewport rộng tối đa.
 - [ ] Renderer mặc định Mobile trên Android; switch Forward+/Compatibility restart thật; backend hiển thị đúng; fallback backend có thông báo.
 - [ ] Settings graphics/performance/editor/display/render/import đầy đủ, lưu bền, reset.
 - [ ] Render still/sequence thật, mở được; MP4 nói rõ không hỗ trợ.
@@ -1547,13 +1550,13 @@ Với mỗi cặp `(size, mode)`:
 1. Cài APK debug trên Android 15, 16 và 17 (nếu có máy); mở app; không crash.
 2. Home: tạo project, mở, rename, delete, search.
 3. Compact: xoay dọc; mở Scene/Properties/Add/Settings/Render; tap trong không đóng; scroll tới cuối.
-4. Studio: xoay ngang; dock/timeline; short height; panel không tràn.
+4. Studio: xoay ngang; panel rail + flyout; timeline gập mặc định; short height; panel không tràn.
 5. Desktop: tablet/DeX; menu bar; status bar; keyboard shortcuts. Trên điện thoại: chọn Desktop, xác nhận UI thu nhỏ đều, không fallback, indicator fit, chuyển lại Studio/Compact.
 6. Keyframe: 2 key, sửa tại B, play, seek; autokey on/off; undo.
 7. Performance: FPS overlay; orbit; kéo gizmo; play; idle; nhiệt/pin 5 phút. Ghi FPS thật; 60 fps không phải gate.
 8. Renderer: fresh install phải là Mobile; đổi Forward+/Compatibility; restart; backend hiển thị đúng; fallback backend.
 9. Orientation: Auto/Portrait/Landscape; app xoay đúng; layout reflow.
-10. UI scale: 0.85/1.0/1.3; không tràn.
+10. UI scale: 0.5/1.0/1.3/2.0; không tràn; cảnh báo dưới 85%.
 11. Render: still PNG mở được; sequence ZIP đủ frame; cancel cleanup.
 12. Import: OBJ+MTL từ bộ nhớ app; glTF/GLB; thử SAF; FBX message.
 13. Safe area: tai thỏ/gesture bar; sheet footer không bị che.
@@ -1608,7 +1611,7 @@ Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài l
 - Desktop **luôn chọn được** trên điện thoại.
 - Nếu không vừa, toàn bộ UI Desktop được thu nhỏ đều cho đến khi vừa; không fallback Studio, không ẩn panel, không đổi mode.
 - Cơ chế: giảm `content_scale_factor` để canvas logic đạt tối thiểu 960×600; xem 6.1 và 6.6.
-- Hệ quả: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. Bạn đã chấp nhận tradeoff này. UI hiển thị tỉ lệ fit và gợi ý chuyển mode, nhưng không tự đổi. Khi fit < 100%, control UI scale bị disable kèm hint vì fit sẽ bù lại mọi thay đổi.
+- Hệ quả: chữ và vùng chạm vật lý nhỏ hơn 44 dp trên điện thoại. Bạn đã chấp nhận tradeoff này. UI hiển thị tỉ lệ fit và gợi ý chuyển mode, nhưng không tự đổi. [Superseded by the 2026-10-30 stage-first addendum] Khi fit < 100%, control UI scale **không bị disable**; fit là density-only và user scale nhân lên trên đó.
 
 ### 18.2 Renderer mặc định trên Android — đã chốt: Mobile
 
@@ -1628,7 +1631,7 @@ Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài l
 Các mục này không cần bạn trả lời; chúng đã được ghi trong doc. Nếu thấy sai, nói rõ.
 
 - Home dạng list/table; liệt kê **tất cả project** qua `Store.list_projects()` mới; `recent_projects()` chỉ dùng để sort; không hiển thị template vì project JSON không lưu.
-- 44 dp logic cho mọi hành động, kể cả Desktop; mật độ đến từ typography/padding. Desktop fit và user scale < 1.0 làm giảm kích thước vật lý; có indicator. Desktop fit < 100% disable UI scale control.
+- 44 dp logic cho mọi hành động, kể cả Desktop; mật độ đến từ typography/padding. Desktop fit và user scale < 1.0 làm giảm kích thước vật lý; có indicator. [Superseded by the 2026-10-30 stage-first addendum] Desktop fit < 100% **không disable** UI scale control.
 - Export: PNG still + PNG sequence ZIP; không MP4.
 - Import: glTF/GLB + OBJ+MTL; FBX báo không hỗ trợ; một document object mỗi file.
 - UI tiếng Anh; single-select; không Save As.

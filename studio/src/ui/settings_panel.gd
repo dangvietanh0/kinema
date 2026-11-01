@@ -39,6 +39,7 @@ const ICONS := {
 }
 const PACKAGE_NAME := "studio.kinema.app"
 const APP_VERSION := "0.1.0"
+const ScaleSliderScript = preload("res://src/ui/components/scale_slider.gd")
 
 var editor: Node = null
 var active := "general"
@@ -46,7 +47,7 @@ var _wide := false
 var _short := false
 var _compact_detail := false
 var _nav_buttons: Dictionary = {}
-var _ui_scale_control: OptionButton
+var _ui_scale_control: ScaleSliderScript
 var _fit_label: Label
 var _stats_labels: Dictionary = {}
 var _renderer_choice := ""
@@ -96,21 +97,17 @@ func sync_preset_buttons() -> void:
 
 ## A live fit change (rotation, window resize, Desktop scale) must reach the
 ## open sheet immediately. Without this the UI-scale row kept saying 100% while
-## the workbench was already scaled down.
+## the workbench was already scaled down. The slider stays live under fit: the
+## fit is a density baseline, so the user scale still has a real effect.
 func refresh_fit() -> void:
 	if _ui_scale_control == null or _fit_label == null:
 		return
 	var fit := 100.0
-	var enabled := true
-	if editor != null:
-		if editor.has_method("fit_percent"):
-			fit = float(editor.call("fit_percent"))
-		if editor.has_method("fit_user_scale_enabled"):
-			enabled = bool(editor.call("fit_user_scale_enabled"))
-	var locked := fit < 99.9 or not enabled
-	_ui_scale_control.disabled = locked
+	if editor != null and editor.has_method("fit_percent"):
+		fit = float(editor.call("fit_percent"))
+	_ui_scale_control.slider.editable = true
 	if fit < 99.9:
-		_fit_label.text = "Fit %d%% · UI scale is locked while Desktop shrinks to fit" % int(round(fit))
+		_fit_label.text = "Fit %d%% · UI scale still applies" % int(round(fit))
 		_fit_label.visible = true
 	else:
 		_fit_label.visible = false
@@ -404,19 +401,20 @@ func _display(parent: Control) -> void:
 	_fit_label.visible = fit < 99.9
 	parent.add_child(_fit_label)
 
-	var scale_values := [0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
-	var scale_options: Array = []
-	for value in scale_values:
-		scale_options.append({"label": "%d%%" % int(round(float(value) * 100.0)), "value": value})
-	_ui_scale_control = _option_control(scale_options, _nearest_scale(float(Prefs.get_value("display.user_scale", 1.0))), func(value: Variant) -> void:
+	_ui_scale_control = ScaleSliderScript.new()
+	_ui_scale_control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ui_scale_control.set_percent_value(float(Prefs.get_value("display.user_scale", 1.0)) * 100.0)
+	_ui_scale_control.value_changed.connect(func(value: float) -> void:
 		set_option("display.user_scale", value)
 	)
-	var scale_row := _row(parent, "UI scale", "Applies to the whole workbench")
+	var scale_row := _row(
+		parent,
+		"UI scale",
+		"Applies to the whole workbench. Below 85% controls render under the 44 dp touch floor."
+	)
 	scale_row.add_child(_ui_scale_control)
-	var scale_locked := fit < 99.9
-	_ui_scale_control.disabled = scale_locked
-	if scale_locked:
-		_fit_label.text = "Fit %d%% · UI scale is locked while Desktop shrinks to fit" % int(round(fit))
+	if fit < 99.9:
+		_fit_label.text = "Fit %d%% · UI scale still applies" % int(round(fit))
 		_fit_label.visible = true
 	else:
 		_fit_label.visible = false
@@ -433,10 +431,6 @@ func _display(parent: Control) -> void:
 
 	parent.add_child(Kit.vsep())
 	_section_reset(parent, "display", "Reset display settings")
-
-
-func _nearest_scale(value: float) -> float:
-	return clampf(roundf(value * 20.0) / 20.0, 0.85, 1.30)
 
 
 func _resolved_mode() -> String:

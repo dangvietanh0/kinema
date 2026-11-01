@@ -27,6 +27,7 @@ const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd
 const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
 const StatusBarScript = preload("res://src/ui/components/status_bar.gd")
 const BottomBarScript = preload("res://src/ui/components/bottom_bar.gd")
+const PanelRailScript = preload("res://src/ui/components/panel_rail.gd")
 const PerfOverlayScript = preload("res://src/ui/components/perf_overlay.gd")
 const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
 const WorkspaceSheetScript = preload("res://src/ui/workspace_sheet.gd")
@@ -48,8 +49,12 @@ const AndroidVideo = preload("res://src/core/android_video.gd")
 const GifEncoder = preload("res://src/core/gif_encoder.gd")
 
 const AUTOSAVE_SECONDS := 30.0
-const WIDE_MIN_WIDTH := 720.0
 const SHORT_MAX_HEIGHT := 520.0
+## The rail is a column only once the shell reaches Studio's minimum logical
+## width. Below that, 48 + 44 dp of rails would push the transport and the
+## media lanes past the canvas edge; the top-bar panel button opens the same
+## flyout instead.
+const PANEL_RAIL_MIN_WIDTH := 480.0
 ## 44 dp transport plus its 1 px rules and vertical padding. Leaving the
 ## folded strip at 52 clipped the ruler baseline on landscape phones.
 const FOLDED_TIMELINE := 56.0
@@ -84,10 +89,11 @@ var _timeline_stack: VBoxContainer
 var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
 var _media_lanes: VBoxContainer
-var _dock_slot: Control
+var _panel_rail: PanelContainer
 var _dock: PanelContainer
 var _dock_box: VBoxContainer
 var _dock_close_row: MarginContainer
+var _dock_title_label: Label
 var _dock_close_button: Button
 var _drawer_scene_tab: Button
 var _drawer_props_tab: Button
@@ -103,7 +109,6 @@ var _overlay: Control
 var _autosave: Timer
 
 var _tool := "select"
-var _wide := true
 var _short := false
 ## True when the user has folded or opened the dope sheet themselves. A manual
 ## choice survives rotation; automatic landscape folding does not override it.
@@ -115,7 +120,7 @@ var _drawer_open := false
 var _compact_tab := "scene"
 var layout_info: Dictionary = {}
 var workbench_mode := "studio"
-var _timeline_visible := true
+var _timeline_visible := false
 var _closing := false
 var _last_save_auto := false
 
@@ -289,9 +294,14 @@ func _build_body() -> void:
 
 	_build_timeline()
 
-	_dock_slot = Control.new()
-	_dock_slot.custom_minimum_size.x = 320
-	_body.add_child(_dock_slot)
+	# The right rail is the only permanent panel chrome. The dock itself is an
+	# overlay, so the stage keeps every pixel the old 320 dp column reserved.
+	_panel_rail = PanelRailScript.new()
+	# The rail stays above the scrim and the flyout: pages are one tap away
+	# while a panel is open, not close-then-reopen.
+	_panel_rail.z_index = 13
+	_panel_rail.page_requested.connect(_toggle_drawer)
+	_body.add_child(_panel_rail)
 
 func _build_status_bar() -> void:
 	_status_bar = StatusBarScript.new()
@@ -308,8 +318,7 @@ func _build_timeline() -> void:
 	_timeline_panel = PanelContainer.new()
 	_timeline_panel.custom_minimum_size.y = 190
 	_timeline_panel.size_flags_vertical = Control.SIZE_FILL
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_top = 0
+	var style := Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0)
 	_timeline_panel.add_theme_stylebox_override("panel", style)
 	_center.add_child(_timeline_panel)
 
@@ -389,13 +398,10 @@ func _build_dock() -> void:
 	_dock.offset_top = 44.0
 	_dock.offset_bottom = 0.0
 	_dock.offset_left = -320.0
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_left = 1
-	style.content_margin_left = 0
-	style.content_margin_right = 0
-	style.content_margin_top = 0
-	style.content_margin_bottom = 0
-	_dock.add_theme_stylebox_override("panel", style)
+	# Black chrome: the flyout separates from the stage by elevation and the
+	# scrim behind it, not by a hairline along the stage edge.
+	_dock.add_theme_stylebox_override("panel",
+		Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
 	add_child(_dock)
 
 	_dock_box = VBoxContainer.new()
@@ -413,6 +419,11 @@ func _build_dock() -> void:
 	var tabs := HBoxContainer.new()
 	tabs.add_theme_constant_override("separation", 4)
 	_dock_close_row.add_child(tabs)
+	_dock_title_label = Kit.label("Scene", 13, Kit.TEXT, 600)
+	_dock_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dock_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_dock_title_label.visible = false
+	tabs.add_child(_dock_title_label)
 	_drawer_scene_tab = Kit.text_toggle("Scene", "layers", true)
 	_drawer_scene_tab.custom_minimum_size.y = 44
 	_drawer_scene_tab.pressed.connect(func() -> void: _set_compact_tab("scene"))
@@ -451,7 +462,7 @@ func _build_dock() -> void:
 
 	_inspector_panel = PanelContainer.new()
 	_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_inspector_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0))
+	_inspector_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
 	_dock_box.add_child(_inspector_panel)
 
 	_inspector = InspectorScript.new()
@@ -464,7 +475,7 @@ func _build_dock() -> void:
 
 	_rig_frame = PanelContainer.new()
 	_rig_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_rig_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0))
+	_rig_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
 	_dock_box.add_child(_rig_frame)
 
 	_rig_panel = RigPanelScript.new()
@@ -485,7 +496,7 @@ func _build_render_hud() -> void:
 	_render_hud.offset_bottom = -24.0
 	_render_hud.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_render_hud.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Kit.BORDER, 1)
+	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Color(0, 0, 0, 0), 0)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 6
@@ -600,7 +611,7 @@ func apply_fit_info(fit_percent: float, user_scale_enabled: bool, clamped: bool)
 	if _settings_panel != null and is_instance_valid(_settings_panel) and _settings_panel.has_method("refresh_fit"):
 		_settings_panel.call("refresh_fit")
 	if _workspace_sheet != null and is_instance_valid(_workspace_sheet) and _workspace_sheet.has_method("refresh_fit"):
-		_workspace_sheet.call("refresh_fit", _fit_percent, _fit_user_scale_enabled, _fit_clamped)
+		_workspace_sheet.call("refresh_fit", _fit_percent, _fit_clamped)
 
 
 func fit_percent() -> float:
@@ -623,20 +634,16 @@ func _apply_workspace_mode(mode: String, notify: bool) -> void:
 		# A mode switch is a deliberate arrangement change, so it resets the
 		# manual sheet choice and uses the mode default.
 		_timeline_user_override = false
-		_timeline_visible = _default_timeline_visible(next)
+		_timeline_visible = _default_timeline_visible()
 	_apply_shell()
 	if changed and notify:
 		workspace_mode_changed.emit(next)
 
 
-## The dope sheet opens by default in a tall workbench and folds on a short
-## landscape phone, where height belongs to the viewport. Compact always folds.
-func _default_timeline_visible(mode: String) -> bool:
-	if mode == "compact":
-		return false
-	if mode == "studio" and size.y < SHORT_MAX_HEIGHT:
-		return false
-	return true
+## The stage is the reason the editor exists. The dope sheet opens only when
+## the user asks for it; every mode starts with the 56 dp transport row.
+func _default_timeline_visible() -> bool:
+	return false
 
 
 func _layout_hosted() -> bool:
@@ -1058,12 +1065,13 @@ func _apply_shell() -> void:
 	if _render_mode:
 		return
 	var compact := workbench_mode == "compact"
-	# Studio is landscape-first. On a narrow portrait screen a side dock would
-	# leave a 150 dp viewport, so the same dock becomes an overlay drawer while
-	# the arrangement still reports Studio. The mode never falls back.
-	var dock_overlay := _dock_overlay_mode()
-	var tabs_only := dock_overlay or size.y < SHORT_MAX_HEIGHT
-	_wide = not tabs_only
+	# The dock is always an overlay. Studio and Desktop keep a 44 dp rail as
+	# the permanent affordance; Compact uses its bottom action bar. The stage
+	# never pays for a reserved panel column again. Below the Studio minimum
+	# width the rail would squeeze the transport, so the top-bar button opens
+	# the same flyout and the stage keeps every pixel.
+	var panel_rail_visible := not compact and size.x >= PANEL_RAIL_MIN_WIDTH
+	var rail_fallback := not compact and not panel_rail_visible
 	var was_short := _short
 	_short = size.y < SHORT_MAX_HEIGHT
 	_viewport_host.custom_minimum_size.y = 96.0 if _short else 120.0
@@ -1071,7 +1079,7 @@ func _apply_shell() -> void:
 	# Rotation between portrait and landscape changes the default. A manual
 	# fold/open choice is respected until the next mode switch.
 	if _short != was_short and not _timeline_user_override:
-		_timeline_visible = _default_timeline_visible(workbench_mode)
+		_timeline_visible = _default_timeline_visible()
 	_top_bar.set_mode(workbench_mode)
 	_top_bar.set_available_width(size.x)
 	_rail.set_mode(workbench_mode)
@@ -1092,52 +1100,45 @@ func _apply_shell() -> void:
 	if _rail.get_parent() != want_parent:
 		_rail.reparent(want_parent, false)
 		want_parent.move_child(_rail, 0)
+	if _panel_rail != null:
+		_panel_rail.visible = panel_rail_visible
+		_panel_rail.set_page(_compact_tab, _drawer_open)
 
-	if dock_overlay:
-		_dock.visible = _drawer_open
-		_drawer_scrim.visible = _drawer_open
-	else:
-		_drawer_open = false
-		_dock.visible = true
-		_drawer_scrim.visible = false
-		_dock.modulate.a = 1.0
-	_dock_close_row.visible = tabs_only
-	# A wide Studio keeps the dock open, so a close button there would be
-	# inert. Every drawer arrangement can dismiss its dock.
-	_dock_close_button.visible = dock_overlay
+	_dock.visible = _drawer_open
+	_drawer_scrim.visible = _drawer_open
+	_dock.modulate.a = 1.0
+	_dock_close_row.visible = true
+	_dock_title_label.visible = not compact
+	# The tabs are visible whenever the rail is hidden: Compact has no rail,
+	# and a sub-480 Studio stage folds the rail into the top-bar button. In
+	# both cases the flyout itself has to carry the three pages or a page
+	# becomes unreachable.
+	var tabbed := compact or rail_fallback
+	_drawer_scene_tab.visible = tabbed
+	_drawer_props_tab.visible = tabbed
+	if _drawer_rig_tab != null:
+		_drawer_rig_tab.visible = tabbed
+	_dock_close_button.visible = true
 	if _top_bar != null:
-		_top_bar.set_panels_button_visible(dock_overlay and not compact)
+		# The rail replaced the old narrow-Studio top-bar toggle. A shell below
+		# the Studio minimum width falls back to it instead of squeezing the
+		# stage with two rails.
+		_top_bar.set_panels_button_visible(rail_fallback)
 		_top_bar.set_panels_open(_drawer_open)
-	_outliner_panel.visible = not tabs_only or _compact_tab == "scene"
-	_inspector_panel.visible = not tabs_only or _compact_tab == "inspector"
-	var rig_tabbed := not tabs_only or _compact_tab == "rig"
-	_rig_frame.visible = rig_tabbed
+	# One page at a time: the flyout is not the old stacked wide dock.
+	_outliner_panel.visible = _compact_tab == "scene"
+	_inspector_panel.visible = _compact_tab == "inspector"
+	_rig_frame.visible = _compact_tab == "rig"
 	# The panel stays mounted and reachable; only its dock frame follows tabs.
 	_rig_panel.visible = true
 	var outliner_collapsed: bool = _outliner != null and _outliner.collapsed
-	var inspector_collapsed: bool = _inspector != null and _inspector.collapsed
 	if outliner_collapsed:
 		_outliner_panel.custom_minimum_size.y = 44.0
 		_outliner_panel.size_flags_vertical = Control.SIZE_FILL
-	elif tabs_only:
-		_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		_outliner_panel.custom_minimum_size.y = 180.0 if _short else 190.0
-	elif inspector_collapsed:
-		# The scene list is the only expanded section, so it takes the dock.
-		_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		_outliner_panel.custom_minimum_size.y = 180.0
 	else:
-		_outliner_panel.size_flags_vertical = Control.SIZE_FILL
-		# The scene list owns roughly 40 percent of the dock; the inspector
-		# scrolls in the rest. A fixed 190 dp cut the list mid-row.
-		var chrome := _top_bar.custom_minimum_size.y
-		if _status_bar.visible:
-			chrome += _status_bar.custom_minimum_size.y
-		if _bottom_bar.visible:
-			chrome += _bottom_bar.custom_minimum_size.y
-		var dock_height := maxf(320.0, size.y - chrome)
-		_outliner_panel.custom_minimum_size.y = clampf(dock_height * 0.38, 180.0, 320.0)
-
+		_outliner_panel.custom_minimum_size.y = 0.0
+		_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var inspector_collapsed: bool = _inspector != null and _inspector.collapsed
 	if inspector_collapsed:
 		_inspector_panel.custom_minimum_size.y = 44.0
 		_inspector_panel.size_flags_vertical = Control.SIZE_FILL
@@ -1145,35 +1146,41 @@ func _apply_shell() -> void:
 		_inspector_panel.custom_minimum_size.y = 0.0
 		_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	# The 400 dp flyout maximum from the spec is an upper bound, not a target:
+	# clamp to it after the content minimum so a growing inspector can never
+	# push the dock past the edge. Compact uses the same cap under its 8%
+	# side margin.
+	var content_min := _dock.get_combined_minimum_size().x
 	var dock_width := 0.0
-	if dock_overlay:
-		dock_width = clampf(size.x * 0.92, 280.0, 420.0)
+	if compact:
+		dock_width = clampf(size.x * 0.92, 280.0, 400.0)
 	else:
-		var ratio := 0.26 if workbench_mode == "desktop" else 0.28
-		var min_width := 320.0 if workbench_mode == "desktop" else 280.0
-		var max_width := 380.0 if workbench_mode == "desktop" else 340.0
-		dock_width = clampf(size.x * ratio, min_width, max_width)
-		# The dock reserves at least its own content minimum. The inspector's
-		# transform fields have a real floor; a dock narrower than that would
-		# grow past the right edge instead of shrinking the viewport.
-		dock_width = maxf(dock_width, _dock.get_combined_minimum_size().x)
-	_dock_slot.visible = not dock_overlay
-	_dock_slot.custom_minimum_size.x = dock_width if not dock_overlay else 0.0
+		dock_width = clampf(size.x * 0.34, 320.0, 400.0)
+	# The inspector's transform fields have a real floor; a dock narrower than
+	# its content would clip controls instead of growing past the edge.
+	dock_width = maxf(dock_width, content_min)
+	dock_width = minf(dock_width, 400.0)
 	# The timeline decides between its full transport and the overflow header.
-	# Give it the width the shell can actually reserve, not the width its own
-	# minimum would force on the center column.
+	# Give it the width the shell can actually reserve, including the new rail.
 	var rail_reserve := 0.0
 	if not compact:
 		rail_reserve = float(_rail.call("rail_width"))
-	var dock_reserve := dock_width if not dock_overlay else 0.0
-	_timeline.set_available_width(size.x - rail_reserve - dock_reserve)
+	var panel_reserve := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
+	_timeline.set_available_width(size.x - rail_reserve - panel_reserve)
 	var bottom_inset := 0.0
 	if _status_bar.visible:
 		bottom_inset += _status_bar.custom_minimum_size.y
 	if _bottom_bar.visible:
 		bottom_inset += _bottom_bar.custom_minimum_size.y
-	_dock.offset_left = -dock_width
-	_dock.offset_right = 0.0
+	# The flyout stops at the rail instead of covering it. Panel pages stay
+	# switchable while a panel is open. Where the stage is tighter than the
+	# 400 dp cap the flyout takes the width that is actually left, inside the
+	# rail inset (or the compact margin).
+	var rail_inset := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
+	var available := size.x * 0.92 if compact else size.x - rail_inset
+	dock_width = minf(dock_width, maxf(available, content_min))
+	_dock.offset_left = -(dock_width + rail_inset)
+	_dock.offset_right = -rail_inset
 	_dock.offset_top = _top_bar.custom_minimum_size.y
 	_dock.offset_bottom = -bottom_inset
 	_drawer_scrim.offset_top = _top_bar.custom_minimum_size.y
@@ -1281,8 +1288,12 @@ func _sync_timeline_visibility() -> void:
 			if not sheet:
 				_timeline_panel.custom_minimum_size.y = FOLDED_TIMELINE
 	var extra: float = _timeline.graph_height_hint() if sheet else 0.0
-	var show_media := _media_lanes != null and media_min > 0.0
-	var show_lane := _clip_lane != null and lane_min > 0.0
+	# Folded, the stage keeps only the 56 dp transport. The sequence lane and
+	# media headers belong to the sheet the user is looking at; leaving a 114 dp
+	# clip canvas under a folded dope sheet was what made the 3D view tiny on a
+	# landscape phone.
+	var show_media := sheet and _media_lanes != null and media_min > 0.0
+	var show_lane := sheet and _clip_lane != null and lane_min > 0.0
 	var base: float = _timeline_panel.custom_minimum_size.y
 	if _short:
 		# The viewport keeps a 96 dp floor; the two 1 px gutters between the
@@ -1332,8 +1343,6 @@ func _restore_clip_after_sequence() -> void:
 	_restoring_clip = false
 
 func _toggle_drawer(tab: String) -> void:
-	if not _dock_overlay_mode():
-		return
 	if _drawer_open and _compact_tab == tab:
 		_close_drawer()
 		return
@@ -1341,8 +1350,6 @@ func _toggle_drawer(tab: String) -> void:
 	_open_drawer()
 
 func _open_drawer() -> void:
-	if not _dock_overlay_mode():
-		return
 	_drawer_open = true
 	_overlay.clear_toast()
 	_drawer_scrim.visible = true
@@ -1358,21 +1365,19 @@ func _open_drawer() -> void:
 	_update_bottom_bar()
 
 func _close_drawer() -> void:
-	if not _dock_overlay_mode():
-		return
 	_drawer_open = false
 	_drawer_scrim.visible = false
 	_dock.visible = false
 	_dock.modulate.a = 1.0
 	_sync_view_header_visibility()
+	_update_drawer_tabs()
 	_update_bottom_bar()
 
 func _dock_overlay_mode() -> bool:
-	# Compact is always a drawer. Studio keeps its dock only when there is
-	# enough width for a real viewport beside it; portrait phones get the same
-	# overlay while staying in Studio. Desktop always shrinks to fit, so its
-	# logical canvas is never this narrow.
-	return workbench_mode == "compact" or (workbench_mode == "studio" and size.x < WIDE_MIN_WIDTH)
+	# Kept for the existing call sites and tests: the dock is an overlay in
+	# every mode now. Compact opens it from the bottom bar; Studio and Desktop
+	# open it from the 44 dp panel rail.
+	return true
 
 func _compact_shell() -> bool:
 	return workbench_mode == "compact"
@@ -1380,11 +1385,10 @@ func _compact_shell() -> bool:
 
 func _set_compact_tab(tab: String) -> void:
 	_compact_tab = tab if tab in ["scene", "inspector", "rig"] else "scene"
-	if (_dock_overlay_mode() or _short) and _dock != null:
+	if _dock != null:
 		_outliner_panel.visible = _compact_tab == "scene"
 		_inspector_panel.visible = _compact_tab == "inspector"
-		var tabbed := _dock_overlay_mode() or _short
-		_rig_frame.visible = not tabbed or _compact_tab == "rig"
+		_rig_frame.visible = _compact_tab == "rig"
 		_rig_panel.visible = true
 	_update_drawer_tabs()
 	_update_bottom_bar()
@@ -1393,13 +1397,29 @@ func _set_compact_tab(tab: String) -> void:
 func _update_drawer_tabs() -> void:
 	if _drawer_scene_tab == null:
 		return
-	var tabbed := _dock_overlay_mode() or _short
+	# Same rule as _apply_shell: the tabs light up wherever the flyout is the
+	# only panel navigation (Compact, or Studio below the rail's minimum).
+	var tabbed := workbench_mode == "compact" \
+		or (workbench_mode != "compact" and size.x < PANEL_RAIL_MIN_WIDTH)
 	_drawer_scene_tab.set_pressed_no_signal(tabbed and _compact_tab == "scene")
 	_drawer_props_tab.set_pressed_no_signal(tabbed and _compact_tab == "inspector")
 	if _drawer_rig_tab != null:
 		_drawer_rig_tab.set_pressed_no_signal(tabbed and _compact_tab == "rig")
+	if _dock_title_label != null:
+		_dock_title_label.text = _panel_page_title(_compact_tab)
+	if _panel_rail != null:
+		_panel_rail.set_page(_compact_tab, _drawer_open)
 	if _top_bar != null:
 		_top_bar.set_panels_open(_drawer_open)
+
+
+func _panel_page_title(page: String) -> String:
+	match page:
+		"inspector":
+			return "Properties"
+		"rig":
+			return "Rig"
+	return "Scene"
 
 func _update_bottom_bar() -> void:
 	if _bottom_bar == null:
@@ -2278,7 +2298,7 @@ func _capture_render_chrome() -> void:
 		"header": _view_header != null and _view_header.visible,
 		"timeline": _timeline_panel != null and _timeline_panel.visible,
 		"dock": _dock != null and _dock.visible,
-		"dock_slot": _dock_slot != null and _dock_slot.visible,
+		"panel_rail": _panel_rail != null and _panel_rail.visible,
 		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
 		"perf": _perf_overlay != null and _perf_overlay.visible,
 		"drawer": _drawer_open,
@@ -2301,10 +2321,8 @@ func _set_render_chrome_hidden() -> void:
 		_timeline_panel.visible = false
 	if _dock != null:
 		_dock.visible = false
-	if _dock_slot != null:
-		# The slot reserves the dock's width in the HBox. Hiding only the dock
-		# panel would leave a dead strip beside the render image.
-		_dock_slot.visible = false
+	if _panel_rail != null:
+		_panel_rail.visible = false
 	if _drawer_scrim != null:
 		_drawer_scrim.visible = false
 	# Neither overlay may draw over the review image: the rig handles and the
@@ -2328,13 +2346,15 @@ func _restore_render_chrome() -> void:
 		_view_header.visible = bool(_render_ui_state.get("header", true))
 	if _timeline_panel != null:
 		_timeline_panel.visible = bool(_render_ui_state.get("timeline", true))
+	if _panel_rail != null:
+		_panel_rail.visible = bool(_render_ui_state.get("panel_rail", true))
 	if _perf_overlay != null:
 		_perf_overlay.visible = bool(_render_ui_state.get("perf", false))
 	if _video_overlay != null:
 		_video_overlay.set_render_mode(false)
-	# The drawer only exists in Compact. _apply_shell reads _drawer_open and
-	# re-shows the dock and scrim together, so restore the flag, not the nodes.
-	_drawer_open = bool(_render_ui_state.get("drawer", false)) and workbench_mode == "compact"
+	# The flyout can be open in any mode now. _apply_shell re-shows the dock
+	# and scrim together from this flag after the render preview exits.
+	_drawer_open = bool(_render_ui_state.get("drawer", false))
 	_render_ui_state.clear()
 	_sync_rig_overlay()
 
@@ -2866,15 +2886,20 @@ func _open_workspace_sheet() -> void:
 	sheet.open(
 		str(Prefs.get_value("display.layout", "auto")),
 		_fit_percent,
-		_fit_user_scale_enabled,
 		_fit_clamped
 	)
+	# A landscape phone has width to spare, so the sheet opens wide enough for
+	# two columns and the scale slider stays above the fold. Portrait keeps the
+	# single 560 dp column.
+	var sheet_width := 560.0
+	if size.y < 560.0 and size.x >= 780.0:
+		sheet_width = clampf(size.x - 120.0, 620.0, 760.0)
 	_overlay.show_sheet(
 		"Workspace",
 		"Choose an arrangement. Desktop shrinks to fit instead of falling back.",
 		sheet,
 		[{"text": "Done", "primary": true}],
-		{"width": 560.0}
+		{"width": sheet_width}
 	)
 
 
@@ -3113,7 +3138,7 @@ func _open_color_sheet(property: String) -> void:
 		swatch.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 		swatch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		swatch.tooltip_text = str(hex)
-		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, Kit.R_CONTROL, Kit.BORDER, 1))
+		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
 		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), Kit.R_CONTROL, Kit.TEXT_MUTED, 1))
 		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), Kit.R_CONTROL, Kit.FOCUS, 1))
 		swatch.pressed.connect(_set_color_value.bind(color))
@@ -3159,7 +3184,7 @@ func _open_color_sheet(property: String) -> void:
 	_sync_color_controls()
 
 func _color_preview_style() -> StyleBoxFlat:
-	var style := Kit.flat_style(_color_value, Kit.R_CONTROL, Kit.BORDER, 1)
+	var style := Kit.flat_style(_color_value, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	return style

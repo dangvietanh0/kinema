@@ -38,7 +38,7 @@ func _ready() -> void:
 	if grouped:
 		add_theme_stylebox_override("panel", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
 	else:
-		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.BORDER_SOFT, 1))
+		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
 
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)

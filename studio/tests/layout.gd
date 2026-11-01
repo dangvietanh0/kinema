@@ -81,6 +81,42 @@ func _ready() -> void:
 			var info: Dictionary = main.layout
 			_check(editor.workspace_mode() == mode, label + ": the workbench mode applies")
 			_check(str(info.get("mode", "")) == mode, label + ": the resolved layout reports the mode")
+			_check(not editor._timeline_visible, label + ": the dope sheet starts folded")
+			_check(editor._dock.size.x <= 400.5,
+				label + ": the panel flyout respects the 400 dp cap")
+			var panel_rail = editor.get("_panel_rail")
+			var rail_expected: bool = mode != "compact" and editor.size.x >= 480.0
+			if mode == "compact":
+				_check(panel_rail == null or not panel_rail.visible,
+					label + ": compact uses the bottom bar instead of a panel rail")
+				_check(not editor._top_bar._panels_button.visible,
+					label + ": compact keeps panels in the bottom bar")
+			elif rail_expected:
+				_check(panel_rail != null and panel_rail.visible,
+					label + ": the stage keeps a right panel rail")
+				_check(not editor._top_bar._panels_button.visible,
+					label + ": the rail replaces the top-bar panel toggle")
+				if panel_rail != null:
+					_check(absf(panel_rail.size.x - 44.0) < 1.0,
+						label + ": the panel rail is 44 dp wide")
+			else:
+				_check(panel_rail == null or not panel_rail.visible,
+					label + ": a sub-minimum stage folds the rail into the top bar")
+				if mode == "studio":
+					_check(editor._top_bar._panels_button.visible,
+						label + ": the top-bar toggle still opens the flyout")
+				else:
+					# Headless cannot apply the Desktop fit, so this is a 412 dp
+					# Desktop canvas that a real window would scale to 960. The
+					# menu bar keeps the panel routes there.
+					_check(editor._top_bar.mode() == "desktop",
+						label + ": desktop keeps its menu-bar panel routes")
+			if mode != "compact":
+				_check(not editor._drawer_open, label + ": the panel flyout starts closed")
+				_check(editor._view.size.x >= size.x - 160.0,
+					label + ": the viewport owns the dock's former width")
+				_check(editor._view.size.y >= 140.0,
+					label + ": the folded timeline leaves a usable 3D height")
 			# Headless cannot render a scaled Desktop canvas, so its pixel
 			# assertions would be fiction. The fit maths below still run.
 			var scaled_desktop: bool = _headless and mode == "desktop" and float(info.get("fit", 1.0)) < 1.0
@@ -94,9 +130,44 @@ func _ready() -> void:
 				_check(float(info.get("fit", 1.0)) < 1.0, label + ": desktop shrinks to fit")
 				var logical: Vector2 = info.get("logical_after", Vector2.ZERO)
 				_check(logical.x >= 959.0 and logical.y >= 599.0, label + ": desktop keeps a 960x600 logical canvas")
-				_check(not bool(info.get("user_scale_enabled", true)), label + ": desktop fit disables UI scale")
+				_check(bool(info.get("user_scale_enabled", false)), label + ": desktop fit keeps UI scale enabled")
 				_check(editor.fit_percent() < 100.0, label + ": the editor reports the fit percentage")
 			print("LAYOUT OK: " + label)
+
+	# A 200% interface is the worst case for the shell: the logical canvas
+	# halves while every control keeps its dp minimum. Headless cannot render
+	# the scaled canvas, so it prints LAYOUT SKIP and the xvfb run proves the
+	# pixels; both runs still prove the mode resolves and the rail survives.
+	Prefs.set_value("display.user_scale", 2.0)
+	for scale_spec in [
+		{"size": Vector2i(1440, 900), "mode": "desktop"},
+		{"size": Vector2i(1280, 800), "mode": "studio"},
+	]:
+		var scaled: Dictionary = scale_spec
+		await _resize(main, scaled["size"])
+		editor.set_workspace_mode(str(scaled["mode"]))
+		await get_tree().process_frame
+		await get_tree().process_frame
+		main.refresh_layout_scale()
+		await get_tree().process_frame
+		var scaled_label := "%dx%d %s at 200%%" % [
+			scaled["size"].x, scaled["size"].y, scaled["mode"]
+		]
+		_check(editor.workspace_mode() == str(scaled["mode"]),
+			scaled_label + ": the workbench mode applies")
+		_check(not editor._timeline_visible,
+			scaled_label + ": the dope sheet starts folded")
+		var scaled_rail = editor.get("_panel_rail")
+		_check(scaled_rail != null and scaled_rail.visible,
+			scaled_label + ": the panel rail survives the double scale")
+		if _headless:
+			print("LAYOUT SKIP (headless 200% scale): " + scaled_label)
+		else:
+			_check_no_overflow(editor, scaled_label)
+			_check_no_overflow(main, scaled_label)
+			_check_hit_targets(editor, str(scaled["mode"]), scaled_label)
+		print("LAYOUT OK: " + scaled_label)
+	Prefs.set_value("display.user_scale", 1.0)
 
 	# The expansion surfaces: clip lane, media lanes and the rig tab. They are
 	# laid out at the three sizes the expansion targets, in the two touch
@@ -126,9 +197,39 @@ func _ready() -> void:
 			await get_tree().process_frame
 			_check(rig_panel != null and rig_panel.is_visible_in_tree(),
 				label + ": the rig tab shows its panel")
+			if mode == "studio" and editor._panel_rail != null and editor._panel_rail.visible:
+				_check(editor._dock.get_global_rect().end.x <=
+					editor._panel_rail.get_global_rect().position.x + 0.5,
+					label + ": the flyout leaves the panel rail reachable")
+				editor._panel_rail.page_button("inspector").pressed.emit()
+				await get_tree().process_frame
+				_check(editor._compact_tab == "inspector" and editor._drawer_open,
+					label + ": the rail switches pages while the flyout is open")
+				editor._panel_rail.page_button("rig").pressed.emit()
+				await get_tree().process_frame
 			_check_no_overflow(editor, label)
 			_check_no_overflow(main, label)
 			_check_hit_targets(editor, mode, label)
+			if size == Vector2i(915, 412) and mode == "studio":
+				# The scale slider is the point of this sheet; a landscape
+				# phone must not hide it below a prose block and a scroll.
+				editor._open_workspace_sheet()
+				for _i in 6:
+					await get_tree().process_frame
+				var workspace = editor._workspace_sheet
+				_check(workspace != null, label + ": workspace sheet opens")
+				_check(workspace.get("_two_column") == true,
+					label + ": workspace keeps two columns on a landscape phone")
+				var slider = workspace._scale_control.slider
+				var body: Rect2 = editor._overlay._body_scroll.get_global_rect()
+				var slider_rect: Rect2 = slider.get_global_rect()
+				_check(editor._overlay._body_scroll.scroll_vertical == 0,
+					label + ": workspace does not need scrolling")
+				_check(body.encloses(slider_rect),
+					label + ": the UI scale slider is fully visible without scrolling")
+				editor._overlay.close_modal(true)
+				for _i in 2:
+					await get_tree().process_frame
 			print("LAYOUT OK: " + label)
 			if media_lanes != null:
 				media_lanes.set_collapsed(true)
@@ -152,6 +253,29 @@ func _ready() -> void:
 		_check(str(main.layout.get("mode", "")) == "desktop", label + ": the shell resolves desktop")
 		_check(editor._status_bar.visible, label + ": the desktop status bar stays visible")
 		_check(editor._top_bar.size.y <= 38.0, label + ": the desktop menu bar stays at most 38 dp")
+
+	# Desktop properties keep their actions on screen. The scroll body holds the
+	# fields; Duplicate and Delete belong to a fixed footer, not to content that
+	# can end a few pixels below the viewport.
+	await _resize(main, Vector2i(1440, 900))
+	editor.set_workspace_mode("desktop")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	editor._set_compact_tab("inspector")
+	editor._open_drawer()
+	for _i in 4:
+		await get_tree().process_frame
+	var actions = editor._inspector.get("_actions_row")
+	_check(actions != null, "desktop properties expose their actions")
+	if actions != null:
+		_check(actions.get_parent() == editor._inspector._footer,
+			"desktop properties keep actions in a fixed footer")
+		var inspector_rect: Rect2 = editor._inspector.get_global_rect()
+		_check(inspector_rect.encloses(actions.get_global_rect()),
+			"desktop properties actions stay inside the panel")
+	editor._close_drawer()
+	await get_tree().process_frame
 
 	# Leave the machine as the matrix found it, and the project folder behind.
 	Prefs.set_value("display.layout", "auto")

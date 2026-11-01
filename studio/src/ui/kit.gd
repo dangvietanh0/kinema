@@ -1,8 +1,11 @@
 extends Node
 ## Shared visual language for Kinema Studio.
 ## Autoloaded as `Kit`. Owns the UI theme, fonts and the small SVG icon set.
-## Everything here is deliberately conservative: graphite surfaces, grey
-## hairlines and luminance-only state. No gradients, no hue in the chrome.
+## Everything here is deliberately conservative: a pure black stage, near-black
+## elevation surfaces and luminance-only state. No gradients, no hue in the
+## chrome, and no panel outlines by default (the 2026-11-01 black-chrome
+## override). Borders that remain are semantic: fields, focus rings, the one
+## destructive red.
 
 const Tokens = preload("res://src/ui/tokens.gd")
 
@@ -14,6 +17,7 @@ const SURFACE_HOVER := Tokens.SURFACE_HOVER
 const SURFACE_ACTIVE := Tokens.SURFACE_ACTIVE
 const BORDER := Tokens.BORDER
 const BORDER_SOFT := Tokens.BORDER_SOFT
+const CONTROL_BORDER := Tokens.CONTROL_BORDER
 const TEXT := Tokens.TEXT
 const TEXT_MUTED := Tokens.TEXT_MUTED
 const TEXT_DIM := Tokens.TEXT_DIM
@@ -187,13 +191,17 @@ func _build_theme() -> void:
 	theme.set_font("font", "Label", font_regular)
 	theme.set_font_size("font_size", "Label", TYPE_BODY)
 
-	# Panels.
-	theme.set_stylebox("panel", "PanelContainer", flat_style(SURFACE, 0, BORDER_SOFT))
-	theme.set_stylebox("panel", "Panel", flat_style(SURFACE, 0, BORDER_SOFT))
+	# Panels carry no outline (2026-11-01 black-chrome override): the fill
+	# elevation alone separates a panel from the black stage. Separators and
+	# hairlines are added explicitly where dense rows need them.
+	theme.set_stylebox("panel", "PanelContainer", flat_style(SURFACE, 0, clear, 0))
+	theme.set_stylebox("panel", "Panel", flat_style(SURFACE, 0, clear, 0))
 
 	# LineEdit. Fields are 44 dp tall everywhere: a comfortable touch target
-	# with 12 dp of horizontal breathing room and a 13 sp value.
-	var field := flat_style(SURFACE_2, R_CONTROL, BORDER_SOFT)
+	# with 12 dp of horizontal breathing room and a 13 sp value. The edge is
+	# a control boundary, so it uses CONTROL_BORDER (>= 3:1 on the fill), not
+	# the quiet separator hairline.
+	var field := flat_style(SURFACE_2, R_CONTROL, CONTROL_BORDER)
 	field.content_margin_left = 12
 	field.content_margin_right = 12
 	field.content_margin_top = 10
@@ -272,13 +280,16 @@ func style_with_margins(color: Color, radius: int, border: Color, border_width: 
 ## Panel bodies are square. Controls carry a 2 px radius; floating surfaces
 ## (menus, dialogs, toasts) carry 4 px. Keeping these three helpers separate
 ## stops a control radius from leaking onto a panel.
-func panel_style(color: Color = SURFACE, border: Color = BORDER_SOFT) -> StyleBoxFlat:
+## Panel helpers default to a transparent border: panels separate by elevation,
+## not by an outline. Call sites that genuinely need a frame (fields, the
+## destructive red, a floating popup) ask for one explicitly.
+func panel_style(color: Color = SURFACE, border: Color = Color(0, 0, 0, 0)) -> StyleBoxFlat:
 	return flat_style(color, R_PANEL, border)
 
-func control_style(color: Color = SURFACE_3, border: Color = BORDER) -> StyleBoxFlat:
+func control_style(color: Color = SURFACE_3, border: Color = Color(0, 0, 0, 0)) -> StyleBoxFlat:
 	return flat_style(color, R_CONTROL, border)
 
-func float_style(color: Color = SURFACE_2, border: Color = BORDER) -> StyleBoxFlat:
+func float_style(color: Color = SURFACE_2, border: Color = Color(0, 0, 0, 0)) -> StyleBoxFlat:
 	return flat_style(color, R_FLOAT, border)
 
 # ---- Small constructors -------------------------------------------------
@@ -499,12 +510,12 @@ func text_toggle(text_value: String, icon_name: String = "", accent: bool = fals
 		b.add_theme_constant_override("h_separation", 5)
 	return b
 
-func panel(color: Color = SURFACE, border: Color = BORDER_SOFT, radius: int = 0) -> PanelContainer:
+func panel(color: Color = SURFACE, border: Color = Color(0, 0, 0, 0), radius: int = 0) -> PanelContainer:
 	var p := PanelContainer.new()
 	p.add_theme_stylebox_override("panel", flat_style(color, radius, border))
 	return p
 
-func style_panel(p: Control, color: Color = SURFACE, border: Color = BORDER_SOFT, radius: int = 0, border_width: int = 1) -> void:
+func style_panel(p: Control, color: Color = SURFACE, border: Color = Color(0, 0, 0, 0), radius: int = 0, border_width: int = 1) -> void:
 	p.add_theme_stylebox_override("panel", flat_style(color, radius, border, border_width))
 
 func line_edit(placeholder: String = "", size: int = TYPE_EMPHASIS) -> LineEdit:

@@ -10,22 +10,22 @@ signal layout_selected(mode: String)
 signal orientation_selected(value: String)
 signal ui_scale_changed(value: float)
 
+const ScaleSliderScript = preload("res://src/ui/components/scale_slider.gd")
+
 const MODES := [
 	{"label": "Auto", "value": "auto"},
 	{"label": "Compact", "value": "compact"},
 	{"label": "Studio", "value": "studio"},
 	{"label": "Desktop", "value": "desktop"},
 ]
-const SCALE_VALUES := [0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
 
 var editor: Node = null
 var current_mode := "studio"
 var resolved_mode := "studio"
 var fit_percent := 100.0
-var user_scale_enabled := true
 var clamped := false
 
-var _scale_control: OptionButton
+var _scale_control: ScaleSliderScript
 var _fit_label: Label
 var _warning: Label
 var _studio_shortcut: Button
@@ -35,17 +35,20 @@ var _orientation_track: PanelContainer
 ## control. Side by side, three options plus a label were crushed into a strip
 ## of loose words on a phone and looked cramped even on a 560 dp sheet.
 var _orientation_stacked := false
+## A landscape phone has width to spare and no height: arrangement on the left,
+## orientation and scale on the right, so the scale slider never hides below a
+## prose block.
+var _two_column := false
 
 
 func setup(editor_ref: Node) -> void:
 	editor = editor_ref
 
 
-func open(p_current_mode: String, p_fit_percent: float, p_user_scale_enabled: bool, p_clamped: bool) -> void:
+func open(p_current_mode: String, p_fit_percent: float, p_clamped: bool) -> void:
 	current_mode = p_current_mode if p_current_mode in ["auto", "compact", "studio", "desktop"] else "studio"
 	resolved_mode = _resolved_mode()
 	fit_percent = clampf(p_fit_percent, 1.0, 100.0)
-	user_scale_enabled = p_user_scale_enabled
 	clamped = p_clamped
 	_rebuild()
 
@@ -57,23 +60,30 @@ func close() -> void:
 
 ## Keep an open sheet honest when the host reports a new fit (rotation or a
 ## window resize). The sheet structure changes at the fit and warning
-## thresholds, so crossing one rebuilds it once.
-func refresh_fit(percent: float, enabled: bool, is_clamped: bool) -> void:
+## thresholds, and rotation changes the column structure outright, so
+## crossing one rebuilds it once.
+func refresh_fit(percent: float, is_clamped: bool) -> void:
 	var next_fit := clampf(percent, 1.0, 100.0)
 	var needs_fit_label := next_fit < 99.9
 	var needs_warning := is_clamped or next_fit < 60.0
+	# Rotation can flip the sheet between one and two columns without the fit
+	# or the warning crossing a threshold; the stale column structure would
+	# leave a 280 dp secondary column inside a portrait sheet.
+	var next_two_column: bool = editor != null and editor.size.y < 560.0 and editor.size.x >= 780.0
+	var next_stacked: bool = editor == null or editor.size.x < 700.0 or next_two_column
 	var had_fit_label := _fit_label != null
 	var had_warning := _warning != null
 	fit_percent = next_fit
-	user_scale_enabled = enabled
 	clamped = is_clamped
-	if needs_fit_label != had_fit_label or needs_warning != had_warning:
+	if needs_fit_label != had_fit_label or needs_warning != had_warning \
+			or next_two_column != _two_column or next_stacked != _orientation_stacked:
 		_rebuild()
 		return
 	if _fit_label != null:
-		_fit_label.text = "Desktop fit %d%%" % int(round(fit_percent))
+		_fit_label.text = "Fit %d%% · UI scale still applies" % int(round(fit_percent))
 	if _scale_control != null:
-		_scale_control.disabled = fit_percent < 99.9 or not user_scale_enabled
+		# A fit change never takes the scale away from the user.
+		_scale_control.slider.editable = true
 
 
 func _resolved_mode() -> String:
@@ -92,13 +102,29 @@ func _rebuild() -> void:
 	_warning = null
 	_studio_shortcut = null
 	_orientation_track = null
-	_orientation_stacked = editor == null or editor.size.x < 700.0
+	_two_column = editor != null and editor.size.y < 560.0 and editor.size.x >= 780.0
+	_orientation_stacked = editor == null or editor.size.x < 700.0 or _two_column
 	add_theme_constant_override("separation", 12)
 
-	add_child(Kit.section_label("Arrangement"))
+	var primary: VBoxContainer = self
+	var secondary: VBoxContainer = self
+	if _two_column:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 24)
+		add_child(row)
+		primary = VBoxContainer.new()
+		primary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		primary.add_theme_constant_override("separation", 12)
+		row.add_child(primary)
+		secondary = VBoxContainer.new()
+		secondary.custom_minimum_size.x = 280.0
+		secondary.add_theme_constant_override("separation", 8)
+		row.add_child(secondary)
+
+	primary.add_child(Kit.section_label("Arrangement"))
 	var track := PanelContainer.new()
 	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
-	add_child(track)
+	primary.add_child(track)
 	var strip := HBoxContainer.new()
 	strip.add_theme_constant_override("separation", 2)
 	track.add_child(strip)
@@ -125,23 +151,25 @@ func _rebuild() -> void:
 		Kit.TYPE_CAPTION,
 		Kit.TEXT_MUTED
 	)
-	add_child(resolved)
+	primary.add_child(resolved)
 	if fit_percent < 99.9:
 		_fit_label = Kit.label(
-			"Desktop fit %d%%" % int(round(fit_percent)),
+			"Fit %d%% · UI scale still applies" % int(round(fit_percent)),
 			Kit.TYPE_CAPTION,
 			Kit.TEXT
 		)
-		add_child(_fit_label)
+		primary.add_child(_fit_label)
 	if clamped or fit_percent < 60.0:
+		# The clamp can come from Compact, Studio or a scaled Desktop, so the
+		# copy must not name a mode. The stored preference is never rewritten.
 		_warning = Kit.label(
-			"Small UI. Desktop stays selected and the whole canvas shrinks to fit. " +
+			"Small UI. Limited to fit this screen so the canvas never overflows. " +
 			"Switch to Studio for larger controls.",
 			Kit.TYPE_CAPTION,
 			Kit.TEXT_MUTED
 		)
 		_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		add_child(_warning)
+		primary.add_child(_warning)
 		_studio_shortcut = Kit.text_button("Switch to Studio", "monitor", false, true)
 		_studio_shortcut.custom_minimum_size.y = 44.0
 		_studio_shortcut.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -149,19 +177,19 @@ func _rebuild() -> void:
 			current_mode = "studio"
 			layout_selected.emit("studio")
 		)
-		add_child(_studio_shortcut)
+		primary.add_child(_studio_shortcut)
 	else:
 		var note := Kit.label(
-			"Auto picks a mode from the screen. Compact, Studio and Desktop stay selected even when they do not match the window; Desktop shrinks to fit. " +
-			"Studio and Desktop keep the clip lane above the dope sheet, media lanes below it and the Rig tab in the dock; Compact folds the sheet to the transport.",
+			"Auto follows the screen. Studio and Desktop keep the dope sheet open with its media lanes; Compact folds it to the transport.",
 			Kit.TYPE_CAPTION,
 			Kit.TEXT_DIM
 		)
 		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		add_child(note)
+		primary.add_child(note)
 
-	add_child(Kit.vsep())
-	add_child(Kit.section_label("Orientation"))
+	if not _two_column:
+		secondary.add_child(Kit.vsep())
+	secondary.add_child(Kit.section_label("Orientation"))
 	var orientation_supported := DisplayServer.has_feature(DisplayServer.FEATURE_ORIENTATION)
 	var orientation_labels := VBoxContainer.new()
 	orientation_labels.add_theme_constant_override("separation", 1)
@@ -181,14 +209,24 @@ func _rebuild() -> void:
 	orientation_strip.add_theme_constant_override("separation", 2)
 	orientation_track.add_child(orientation_strip)
 
-	if _orientation_stacked:
-		add_child(orientation_labels)
-		add_child(Kit.gap(0, 4))
-		add_child(orientation_track)
+	if _two_column:
+		# The section title already names the control; a second "Screen
+		# orientation" row only pushed the scale slider past the fold.
+		secondary.add_child(orientation_track)
+		if not orientation_supported:
+			secondary.add_child(Kit.label(
+				"Orientation is fixed by this platform",
+				Kit.TYPE_CAPTION,
+				Kit.TEXT_DIM
+			))
+	elif _orientation_stacked:
+		secondary.add_child(orientation_labels)
+		secondary.add_child(Kit.gap(0, 4))
+		secondary.add_child(orientation_track)
 	else:
 		var orientation_row := HBoxContainer.new()
 		orientation_row.add_theme_constant_override("separation", 8)
-		add_child(orientation_row)
+		secondary.add_child(orientation_row)
 		orientation_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		orientation_row.add_child(orientation_labels)
 		orientation_track.custom_minimum_size.x = 280.0
@@ -218,57 +256,44 @@ func _rebuild() -> void:
 		)
 		orientation_strip.add_child(button)
 
-	add_child(Kit.vsep())
-	add_child(Kit.section_label("Interface scale"))
-	var scale_row := HBoxContainer.new()
-	scale_row.add_theme_constant_override("separation", 8)
-	add_child(scale_row)
-	var scale_labels := VBoxContainer.new()
-	scale_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scale_labels.add_theme_constant_override("separation", 1)
-	scale_row.add_child(scale_labels)
-	scale_labels.add_child(Kit.label("UI scale", Kit.TYPE_BODY, Kit.TEXT))
+	if not _two_column:
+		secondary.add_child(Kit.vsep())
+	secondary.add_child(Kit.section_label("Interface scale"))
+	# Both branches carry the touch-floor warning: landscape is the priority
+	# orientation, so a terse hint there was the worst possible place to drop it.
 	var scale_hint := Kit.label(
-		"Locked while Desktop shrinks to fit" if fit_percent < 99.9 else "Applies to the whole workbench",
+		"50-200%, applies to the whole workbench. Below 85% controls render under the 44 dp touch floor."
+		if _two_column else
+		"Applies to the whole workbench. Below 85% controls render under the 44 dp touch floor.",
 		Kit.TYPE_CAPTION,
 		Kit.TEXT_DIM
 	)
 	scale_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	scale_labels.add_child(scale_hint)
-	_scale_control = OptionButton.new()
-	_scale_control.custom_minimum_size = Vector2(132, 44)
-	_scale_control.focus_mode = Control.FOCUS_NONE
-	_scale_control.add_theme_font_override("font", Kit.font_medium)
-	_scale_control.add_theme_font_size_override("font_size", Kit.TYPE_BODY)
-	_scale_control.add_theme_color_override("font_color", Kit.TEXT)
-	_scale_control.add_theme_color_override("font_disabled_color", Kit.TEXT_DIM)
-	for state in ["normal", "hover", "pressed", "focus"]:
-		var fill := Kit.SURFACE_2
-		if state == "hover":
-			fill = Kit.SURFACE_HOVER
-		elif state == "pressed":
-			fill = Kit.SURFACE_ACTIVE
-		_scale_control.add_theme_stylebox_override(
-			state,
-			Kit.flat_style(fill, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
-		)
-	_scale_control.add_theme_stylebox_override("disabled", Kit.flat_style(Kit.SURFACE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
-	var selected := 0
-	var current_scale := float(Prefs.get_value("display.user_scale", 1.0))
-	for i in range(SCALE_VALUES.size()):
-		var value := float(SCALE_VALUES[i])
-		_scale_control.add_item("%d%%" % int(round(value * 100.0)), i)
-		_scale_control.set_item_metadata(i, value)
-		if is_equal_approx(value, current_scale):
-			selected = i
-	_scale_control.selected = selected
-	_scale_control.disabled = fit_percent < 99.9 or not user_scale_enabled
-	_scale_control.item_selected.connect(func(index: int) -> void:
-		var value := float(_scale_control.get_item_metadata(index))
+	var scale_row: HBoxContainer = null
+	if _two_column:
+		secondary.add_child(scale_hint)
+	else:
+		scale_row = HBoxContainer.new()
+		scale_row.add_theme_constant_override("separation", 8)
+		secondary.add_child(scale_row)
+		var scale_labels := VBoxContainer.new()
+		scale_labels.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		scale_labels.add_theme_constant_override("separation", 1)
+		scale_row.add_child(scale_labels)
+		scale_labels.add_child(Kit.label("UI scale", Kit.TYPE_BODY, Kit.TEXT))
+		scale_labels.add_child(scale_hint)
+	_scale_control = ScaleSliderScript.new()
+	_scale_control.custom_minimum_size.y = 44.0
+	_scale_control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_scale_control.set_percent_value(float(Prefs.get_value("display.user_scale", 1.0)) * 100.0)
+	_scale_control.value_changed.connect(func(value: float) -> void:
 		Prefs.set_value("display.user_scale", value)
 		ui_scale_changed.emit(value)
 	)
-	scale_row.add_child(_scale_control)
+	if _two_column:
+		secondary.add_child(_scale_control)
+	else:
+		scale_row.add_child(_scale_control)
 
 
 func _select_mode(mode: String) -> void:

@@ -67,7 +67,7 @@ const ENUMS := {
 }
 
 const RANGES := {
-	"display.user_scale": Vector2(0.85, 1.30),
+	"display.user_scale": Vector2(0.50, 2.00),
 	"editor.autosave_seconds": Vector2(0, 600),
 	"editor.gizmo_size": Vector2(0.5, 2.0),
 	"editor.translate_snap": Vector2(0.01, 10.0),
