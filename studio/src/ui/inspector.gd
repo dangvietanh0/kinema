@@ -541,7 +541,7 @@ func _set_swatch(color: Color) -> void:
 	_swatch_value = color
 	if _color_button == null:
 		return
-	var normal := Kit.flat_style(color, Kit.R_CONTROL, Kit.BORDER, 1)
+	var normal := Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1)
 	var hover := Kit.flat_style(color.lightened(0.08), Kit.R_CONTROL, Kit.TEXT_MUTED, 1)
 	var pressed := Kit.flat_style(color.darkened(0.08), Kit.R_CONTROL, Kit.FOCUS, 1)
 	_color_button.add_theme_stylebox_override("normal", normal)
