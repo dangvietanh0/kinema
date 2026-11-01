@@ -1084,6 +1084,8 @@ func set_object_transform(id, position, rotation, p_scale, key := true) -> void:
 | `forward_plus` | Forward+ / Vulkan | `--rendering-method forward_plus --rendering-driver vulkan` |
 | `gl_compatibility` | Compatibility / OpenGL | `--rendering-method gl_compatibility --rendering-driver opengl3` |
 
+> **Superseded (2026-11-01):** Forward+ không khả dụng trên Android/iOS. Gate, repair-on-load và UI rule được đặc tả tại [2026-11-01-renderer-safety-design.md](2026-11-01-renderer-safety-design.md); chọn Forward+ trên Android bị chặn và không bao giờ tạo `--rendering-method forward_plus`.
+
 - **Mặc định trên Android là `mobile`**, không phải `auto`. Trên desktop/headless mặc định là `forward_plus`. `auto` vẫn là lựa chọn và resolve theo nền tảng; UI hiển thị cả giá trị chọn và backend thực.
 - Đổi `project.godot`:
   - `renderer/rendering_method="forward_plus"` (desktop/headless);
@@ -1616,7 +1618,7 @@ Ba mục 18.1–18.3 đã được bạn trả lời trong hội thoại. Tài l
 ### 18.2 Renderer mặc định trên Android — đã chốt: Mobile
 
 - Mặc định trên Android là **Mobile**; desktop/headless là Forward+.
-- `Forward+`, `Mobile`, `Compatibility` chọn được; đổi bằng restart có kiểm chứng. Không có Auto giả.
+- ~~`Forward+`, `Mobile`, `Compatibility` chọn được; đổi bằng restart có kiểm chứng. Không có Auto giả.~~ **Superseded (2026-11-01):** chỉ các renderer nền tảng hỗ trợ mới chọn được — Android/iOS chỉ Mobile và Compatibility; Forward+ bị chặn trên Android. Xem [2026-11-01-renderer-safety-design.md](2026-11-01-renderer-safety-design.md).
 - `project.godot` phải đổi `renderer/rendering_method.mobile` từ `forward_plus` sang `mobile`.
 - Fallback backend (Vulkan → OpenGL) là thật và được hiển thị; không fake.
 

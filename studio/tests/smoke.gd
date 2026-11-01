@@ -12,6 +12,14 @@ func _check(condition: bool, message: String) -> void:
 	else:
 		print("SMOKE OK: " + message)
 
+func _collect_group_buttons(node: Node, acc: Array) -> void:
+	for child in node.get_children():
+		if child is Button:
+			var button := child as Button
+			if button.button_group != null:
+				acc.append(button)
+		_collect_group_buttons(child, acc)
+
 func _ready() -> void:
 	# The stretch mode is disabled, so the headless window would otherwise stay
 	# at its 64x64 default and every shell/sheet measurement would be fiction.
@@ -1962,6 +1970,74 @@ func _ready() -> void:
 	_check(fallback_state["preference"] == "forward_plus", "renderer fallback uses platform default")
 	_check(str(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile")) == "mobile", "project.godot defaults Android to Mobile")
 
+	# Renderer capability gate (ws/renderer-safety): Forward+ is desktop-only.
+	_check(Gfx.supported_renderers("Android").size() == 2, "Android supports exactly Mobile and Compatibility")
+	_check(Gfx.supported_renderers("Android").has("mobile"), "Android capability list includes Mobile")
+	_check(Gfx.supported_renderers("Android").has("gl_compatibility"), "Android capability list includes Compatibility")
+	_check(not Gfx.supported_renderers("Android").has("forward_plus"), "Android capability list omits Forward+")
+	_check(Gfx.supported_renderers("Linux").size() == 3, "desktop capability list includes every renderer")
+	_check(Gfx.supported_renderers("Linux").has("forward_plus"), "desktop capability list includes Forward+")
+	_check(Gfx.is_renderer_supported("forward_plus", "Android") == false, "Forward+ is not supported on Android")
+	_check(Gfx.renderer_unavailable_reason("forward_plus", "Android") != "", "Android names the missing Vulkan feature set for Forward+")
+	_check(Gfx.is_renderer_supported("forward_plus", "Linux") == true, "Forward+ is supported on desktop")
+
+	var sanitized_state: Dictionary = Gfx.sanitize_renderer_state("forward_plus", "forward_plus", "Android")
+	_check(str(sanitized_state["preference"]) == "mobile", "stale Forward+ preference repairs to the platform default")
+	_check(str(sanitized_state["pending"]) == "", "stale Forward+ pending clears on Android")
+	_check(bool(sanitized_state["changed"]), "stale Forward+ state is repaired")
+	var sanitized_again: Dictionary = Gfx.sanitize_renderer_state(str(sanitized_state["preference"]), str(sanitized_state["pending"]), "Android")
+	_check(not bool(sanitized_again["changed"]), "renderer sanitising is idempotent")
+
+	# prepare_renderer_switch mutates the autoload state; restore it afterwards
+	# so the live settings/renderer paths later in the suite see real state.
+	var saved_preference: String = Gfx.renderer_preference
+	var saved_pending: String = Gfx.renderer_pending
+	var saved_attempts: int = Gfx.renderer_attempts
+	var saved_attempt_at: float = Gfx.renderer_attempt_at
+	var saved_choice: String = Gfx.renderer_choice
+	var blocked_result: Dictionary = Gfx.prepare_renderer_switch("forward_plus", "Android")
+	_check(not bool(blocked_result["restart_required"]), "Forward+ restart is not required on Android")
+	_check(bool(blocked_result["blocked"]), "Forward+ switch on Android is blocked")
+	_check(Gfx.build_restart_args("forward_plus", "Android").is_empty(), "Forward+ restart args are empty on Android")
+	_check(Gfx.renderer_preference != "forward_plus", "blocked Forward+ never leaves the preference stored")
+	Gfx.renderer_preference = saved_preference
+	Gfx.renderer_pending = saved_pending
+	Gfx.renderer_attempts = saved_attempts
+	Gfx.renderer_attempt_at = saved_attempt_at
+	Gfx.renderer_choice = saved_choice
+
+	var mobile_restart_args := Gfx.build_restart_args("mobile", "Android")
+	_check(mobile_restart_args.size() == 4, "Mobile restart args are real on Android")
+	_check(mobile_restart_args.has("mobile"), "Mobile restart args carry the mobile method")
+
+	var stale_pending_state: Dictionary = Gfx.resolve_startup_renderer("mobile", "forward_plus", "mobile", 0, "Android")
+	_check(stale_pending_state["action"] == "fallback", "stale pending Forward+ falls back instead of restarting")
+	_check(str(stale_pending_state["pending"]) == "", "stale pending Forward+ clears on fallback")
+	_check(stale_pending_state["args"].size() == 0, "stale pending Forward+ fallback has no restart args")
+
+	var android_entries: Array = Gfx.renderer_entries("Android")
+	var android_entry_count := 0
+	var android_forward_supported := true
+	var android_mobile_supported := true
+	for entry in android_entries:
+		var data: Dictionary = entry
+		android_entry_count += 1
+		var entry_value: String = str(data.get("value", ""))
+		if entry_value == "forward_plus":
+			android_forward_supported = bool(data.get("supported", true))
+		if entry_value == "mobile":
+			android_mobile_supported = bool(data.get("supported", true))
+	_check(android_entry_count == 3, "renderer entries list every renderer")
+	_check(not android_forward_supported, "Android renderer entries mark Forward+ unsupported")
+	_check(android_mobile_supported, "Android renderer entries mark Mobile supported")
+	var linux_entries: Array = Gfx.renderer_entries("Linux")
+	var linux_all_supported := true
+	for entry in linux_entries:
+		var data: Dictionary = entry
+		if not bool(data.get("supported", true)):
+			linux_all_supported = false
+	_check(linux_all_supported, "desktop renderer entries are all supported")
+
 	editor._open_settings("graphics")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -2132,6 +2208,9 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._overlay.has_modal(), "renderer sheet opens")
 	_check(editor._renderer_pending == live_renderer, "renderer sheet starts on the live backend")
+	var sheet_buttons: Array = []
+	_collect_group_buttons(editor._overlay._body_host, sheet_buttons)
+	_check(sheet_buttons.size() == Gfx.supported_renderers(OS.get_name()).size(), "renderer sheet offers the supported renderer set")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 	var draft_view = editor._view

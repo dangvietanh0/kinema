@@ -102,6 +102,19 @@ const TONEMAPS := [
 
 func _ready() -> void:
 	load_preferences()
+	# A preference written by an older build can name a renderer the platform
+	# cannot serve (a stale Forward+ on Android, for instance). Repair it before
+	# anything reads it so the process can never relaunch into a crashing
+	# backend through a stored preference.
+	var clean := sanitize_renderer_state(renderer_preference, renderer_pending, OS.get_name())
+	if bool(clean.get("changed", false)):
+		renderer_preference = str(clean.get("preference", renderer_preference))
+		renderer_pending = str(clean.get("pending", ""))
+		renderer_choice = renderer_preference
+		save_preferences()
+		last_renderer_error = str(clean.get("reason", ""))
+	else:
+		last_renderer_error = ""
 	if renderer_preference == "":
 		renderer_preference = renderer_default_for_platform(OS.get_name())
 	renderer_choice = renderer_preference
@@ -131,6 +144,46 @@ func supports_environment_extras() -> bool:
 	return is_forward()
 
 # -------------------------------------------------------------------------
+# Platform capability gate
+# -------------------------------------------------------------------------
+## The single source of truth for which renderers a platform may launch. The
+## engine selects a rendering method at process start, so a request the platform
+## cannot serve must never reach a restart: the choice is refused before any
+## `--rendering-method` argument is built.
+
+func supported_renderers(platform: String) -> Array[String]:
+	var target := platform if platform != "" else OS.get_name()
+	if target == "Android" or target == "iOS":
+		return ["mobile", "gl_compatibility"]
+	return ["forward_plus", "mobile", "gl_compatibility"]
+
+
+func is_renderer_supported(method: String, platform: String) -> bool:
+	return supported_renderers(platform).has(method)
+
+
+func renderer_unavailable_reason(method: String, platform: String) -> String:
+	var resolved := platform if platform != "" else OS.get_name()
+	if is_renderer_supported(method, resolved):
+		return ""
+	if method == "forward_plus" and (resolved == "Android" or resolved == "iOS"):
+		return "Forward+ requires the desktop Vulkan feature set, which this platform does not provide; the engine can crash during Vulkan initialisation. Mobile and Compatibility are available instead."
+	return "The %s renderer is not supported on this platform." % method
+
+
+func renderer_entries(platform: String) -> Array:
+	var resolved := platform if platform != "" else OS.get_name()
+	var entries: Array = []
+	for value in ["forward_plus", "mobile", "gl_compatibility"]:
+		entries.append({
+			"label": renderer_label(value),
+			"value": value,
+			"supported": is_renderer_supported(value, resolved),
+			"reason": renderer_unavailable_reason(value, resolved),
+		})
+	return entries
+
+# -------------------------------------------------------------------------
 # Renderer selection
 # -------------------------------------------------------------------------
 ## Godot selects a rendering method at process start. These helpers keep the
@@ -143,8 +196,10 @@ func actual_method() -> String:
 func renderer_default_for_platform(platform: String) -> String:
 	return "mobile" if platform == "Android" or platform == "iOS" else "forward_plus"
 
-func build_restart_args(preference: String) -> PackedStringArray:
-	if preference == "auto" or preference == "" or preference not in RENDERERS:
+func build_restart_args(preference: String, platform: String = OS.get_name()) -> PackedStringArray:
+	var resolved := platform if platform != "" else OS.get_name()
+	if preference == "auto" or preference == "" or not is_renderer_supported(preference, resolved):
+		# Refuse before building: an unsupported backend never gets a restart arg.
 		return PackedStringArray()
 	var driver := "opengl3" if preference == "gl_compatibility" else "vulkan"
 	return PackedStringArray(["--rendering-method", preference, "--rendering-driver", driver])
@@ -164,8 +219,51 @@ func capabilities_for(method: String) -> Dictionary:
 		"glow": true,
 	}
 
-func prepare_renderer_switch(preference: String) -> Dictionary:
-	var target := preference if preference in RENDERERS else renderer_default_for_platform(OS.get_name())
+func sanitize_renderer_state(preference: String, pending: String, platform: String) -> Dictionary:
+	var resolved := platform if platform != "" else OS.get_name()
+	var default_method := renderer_default_for_platform(resolved)
+	var safe_preference := preference
+	var safe_pending := pending
+	var changed := false
+	var reason := ""
+	if not is_renderer_supported(safe_preference, resolved):
+		safe_preference = default_method
+		changed = true
+		reason = "Unsupported renderer '%s' on %s. The platform default '%s' is being used." % [str(preference), resolved, default_method]
+	if pending != "" and not is_renderer_supported(pending, resolved):
+		safe_pending = ""
+		changed = true
+		if reason == "":
+			reason = "Pending renderer '%s' on %s is unsupported and was cleared. The platform default '%s' is being used." % [str(pending), resolved, default_method]
+	return {
+		"preference": safe_preference,
+		"pending": safe_pending,
+		"changed": changed,
+		"reason": reason,
+	}
+
+
+func prepare_renderer_switch(preference: String, platform: String = OS.get_name()) -> Dictionary:
+	var resolved := platform if platform != "" else OS.get_name()
+	var usable := preference == "auto" or is_renderer_supported(preference, resolved)
+	if not usable:
+		# Refuse the switch before anything is stored or restarted. An unsupported
+		# backend is never persisted and never gets restart arguments; the running
+		# backend is left alone.
+		renderer_preference = renderer_default_for_platform(resolved)
+		renderer_choice = renderer_preference
+		renderer_pending = ""
+		renderer_attempts = 0
+		renderer_attempt_at = 0.0
+		save_preferences()
+		return {
+			"restart_required": false,
+			"blocked": true,
+			"reason": renderer_unavailable_reason(preference, resolved),
+			"preference": actual_method(),
+			"args": PackedStringArray(),
+		}
+	var target := preference if preference != "auto" else renderer_default_for_platform(resolved)
 	renderer_preference = target
 	renderer_choice = target
 	renderer_pending = ""
@@ -176,17 +274,19 @@ func prepare_renderer_switch(preference: String) -> Dictionary:
 		save_preferences()
 		return {
 			"restart_required": false,
+			"blocked": false,
 			"preference": target,
 			"args": PackedStringArray(),
 			"actual": actual_method(),
 		}
 	renderer_pending = target
 	renderer_attempt_at = Time.get_unix_time_from_system()
-	var args := build_restart_args(target)
+	var args := build_restart_args(target, resolved)
 	_restart_request = args
 	save_preferences()
 	return {
 		"restart_required": true,
+		"blocked": false,
 		"preference": target,
 		"args": args,
 		"actual": actual_method(),
@@ -197,23 +297,36 @@ func prepare_renderer_switch(preference: String) -> Dictionary:
 ## restarts already issued for this pending request.
 func resolve_startup_renderer(preference: String, pending: String, actual: String,
 		attempts: int, platform: String) -> Dictionary:
-	if pending == "":
-		return {"action": "none", "preference": preference, "pending": "", "args": PackedStringArray()}
-	if pending == actual:
-		return {"action": "none", "preference": pending, "pending": "", "args": PackedStringArray()}
+	var resolved := platform if platform != "" else OS.get_name()
+	if pending != "" and not is_renderer_supported(pending, resolved):
+		# A stale or unsupported pending is never retried into: fall back to the
+		# platform default immediately, with restart args only if that default
+		# differs from the backend that is actually running.
+		var fallback := renderer_default_for_platform(resolved)
+		return {
+			"action": "fallback",
+			"preference": fallback,
+			"pending": "",
+			"args": build_restart_args(fallback, resolved) if fallback != actual else PackedStringArray(),
+		}
+	var clean := sanitize_renderer_state(preference, pending, resolved)
+	var safe_preference: String = str(clean.get("preference", preference))
+	var safe_pending: String = str(clean.get("pending", ""))
+	if safe_pending == "" or safe_pending == actual:
+		return {"action": "none", "preference": safe_preference, "pending": "", "args": PackedStringArray()}
 	if attempts < 2:
 		return {
 			"action": "restart",
-			"preference": pending,
-			"pending": pending,
-			"args": build_restart_args(pending),
+			"preference": safe_pending,
+			"pending": safe_pending,
+			"args": build_restart_args(safe_pending, resolved),
 		}
-	var fallback := renderer_default_for_platform(platform)
+	var fallback := renderer_default_for_platform(resolved)
 	return {
 		"action": "fallback",
 		"preference": fallback,
 		"pending": "",
-		"args": build_restart_args(fallback) if fallback != actual else PackedStringArray(),
+		"args": build_restart_args(fallback, resolved) if fallback != actual else PackedStringArray(),
 	}
 
 func ensure_renderer() -> Dictionary:

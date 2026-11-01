@@ -936,12 +936,12 @@ func _open_renderer_sheet() -> void:
 	var strip := _segment_strip(body)
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
-	for entry in [
-		{"label": "Forward+", "value": "forward_plus"},
-		{"label": "Mobile", "value": "mobile"},
-		{"label": "Compatibility", "value": "gl_compatibility"},
-	]:
+	var blocked_reasons: Array[String] = []
+	for entry in Gfx.renderer_entries(OS.get_name()):
 		var data: Dictionary = entry
+		if not bool(data["supported"]):
+			blocked_reasons.append(str(data["reason"]))
+			continue
 		var value := str(data["value"])
 		var button := Kit.text_toggle(str(data["label"]), "", true)
 		_style_segment(button)
@@ -973,11 +973,15 @@ func _open_renderer_sheet() -> void:
 		body.add_child(line)
 
 	var note := Kit.label(
-		"Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag; if this platform ignores the flag, the row above keeps reporting the renderer that is actually in use. Android builds default to Mobile.",
+		"Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag and never launches a backend this platform cannot use; the row above keeps reporting the renderer that is actually in use.",
 		11, Kit.TEXT_DIM
 	)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
+	for reason in blocked_reasons:
+		var reason_label := Kit.label(reason, 11, Kit.TEXT_DIM)
+		reason_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(reason_label)
 	_overlay.show_sheet("Renderer", "Graphics backend reported by the engine", body, [
 		{"text": "Close", "compact": true},
 		{"text": "Restart", "primary": true, "callback": _restart_with_renderer},
@@ -988,10 +992,22 @@ func _restart_with_renderer() -> void:
 	if value == "" or value == Gfx.renderer_name():
 		_overlay.toast("That renderer is already running", "info", Kit.TEXT_MUTED)
 		return
-	Gfx.set_renderer_choice(value)
+	# The gate lives in Gfx: it refuses a backend the platform cannot serve and
+	# only ever hands back engine restart arguments it built itself.
+	var result: Dictionary = Gfx.prepare_renderer_switch(value)
+	if bool(result.get("blocked", false)):
+		_overlay.toast(str(result.get("reason", "")), "triangle-alert", Kit.WARNING)
+		return
+	var args: PackedStringArray = result.get("args", PackedStringArray())
+	if not bool(result.get("restart_required", false)):
+		_overlay.toast("%s is already running" % Gfx.renderer_label(value), "info", Kit.TEXT_MUTED)
+		return
+	if args.is_empty() or DisplayServer.get_name() == "headless":
+		_overlay.toast("The renderer request was stored and will apply on the next launch", "restart", Kit.WARNING)
+		return
 	if doc != null and doc.is_dirty():
 		_save_project(false, true)
-	OS.set_restart_on_exit(true, PackedStringArray(["--rendering-method", value]))
+	OS.set_restart_on_exit(true, args)
 	get_tree().quit()
 
 
@@ -3156,6 +3172,12 @@ func _show_settings_surface(panel: Control) -> void:
 
 func _on_settings_renderer_restart(preference: String) -> void:
 	var result: Dictionary = Gfx.prepare_renderer_switch(preference)
+	if bool(result.get("blocked", false)):
+		if _overlay != null:
+			_overlay.toast(str(result.get("reason", "")), "triangle-alert", Kit.WARNING)
+		if _settings_panel != null and is_instance_valid(_settings_panel):
+			_settings_panel.call("sync_preset_buttons")
+		return
 	if not bool(result.get("restart_required", false)):
 		if _overlay != null:
 			_overlay.toast("%s is already running" % Gfx.renderer_label(preference), "info", Kit.TEXT_MUTED)

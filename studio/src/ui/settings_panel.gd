@@ -453,12 +453,12 @@ func _graphics(parent: Control) -> void:
 	var strip := _segment(parent)
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
-	for entry in [
-		{"label": "Forward+", "value": "forward_plus"},
-		{"label": "Mobile", "value": "mobile"},
-		{"label": "Compatibility", "value": "gl_compatibility"},
-	]:
+	var blocked_reasons: Array[String] = []
+	for entry in Gfx.renderer_entries(OS.get_name()):
 		var data: Dictionary = entry
+		if not bool(data["supported"]):
+			blocked_reasons.append(str(data["reason"]))
+			continue
 		var value := str(data["value"])
 		var button := _segment_button(str(data["label"]))
 		button.button_group = group
@@ -476,9 +476,13 @@ func _graphics(parent: Control) -> void:
 	)
 	parent.add_child(_renderer_restart)
 	_update_renderer_restart()
-	var renderer_note := Kit.label("Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag; the row above keeps reporting the backend actually running if the platform ignores it.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	var renderer_note := Kit.label("Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag and never launches a backend this platform cannot use; the row above keeps reporting the backend actually in use.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	renderer_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(renderer_note)
+	for reason in blocked_reasons:
+		var reason_label := Kit.label(reason, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+		reason_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(reason_label)
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Quality preset"))
