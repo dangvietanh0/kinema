@@ -75,6 +75,10 @@ func capabilities() -> Dictionary:
 			"aac": [],
 			"max_width": 0,
 			"max_height": 0,
+			"supports_4k": false,
+			"supports_1440p": false,
+			"supports_high_profile": false,
+			"supports_vbr": false,
 		}
 	var raw = _encoder.capabilities()
 	var parsed: Variant = JSON.parse_string(str(raw))
@@ -83,6 +87,16 @@ func capabilities() -> Dictionary:
 		result["supported"] = true
 	if not result.has("reason"):
 		result["reason"] = ""
+	# The Java backend reports all four booleans from the real MediaCodecInfo
+	# data. Derive them from the raw advertised limits when an older backend
+	# only returns max sizes and profile arrays, never inventing support.
+	var max_width := int(result.get("max_width", 0))
+	var max_height := int(result.get("max_height", 0))
+	var profiles: Array = result.get("profiles", []) if result.get("profiles", []) is Array else []
+	result["supports_4k"] = bool(result.get("supports_4k", max_width >= 3840 and max_height >= 2160))
+	result["supports_1440p"] = bool(result.get("supports_1440p", max_width >= 2560 and max_height >= 1440))
+	result["supports_high_profile"] = bool(result.get("supports_high_profile", profiles.has(8)))
+	result["supports_vbr"] = bool(result.get("supports_vbr", result.get("vbr", false)))
 	return result
 
 
@@ -190,6 +204,7 @@ func build_manifest(options: Dictionary) -> Dictionary:
 		"height": maxi(2, int(options.get("height", 1080))),
 		"fps": fps,
 		"bitrate": maxi(1, int(options.get("bitrate", 12000000))),
+		"audioBitrate": maxi(8000, int(options.get("audio_bitrate", options.get("audioBitrate", 192000)))),
 		"frameDir": str(options.get("frame_dir", options.get("frameDir", ""))),
 		"framePattern": str(options.get("frame_pattern", options.get("framePattern", DEFAULT_PATTERN))),
 		"frameCount": count,
