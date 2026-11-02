@@ -1278,9 +1278,15 @@ func _draw_selection() -> void:
 	var node: Node3D = doc.nodes.get(doc.selected_id)
 	if node == null or not node.visible:
 		return
-	var aabb: AABB = doc.get_object_aabb(doc.selected_id)
+	var aabb: AABB
+	if doc.selected_part_path != "":
+		aabb = doc.get_selected_part_aabb()   # AABB() highlight stays off if hidden
+	else:
+		aabb = doc.get_object_aabb(doc.selected_id)
 	if aabb.size.length() < 0.002:
-		if not _camera.is_position_behind(node.global_position):
+		# A selected import part is highlighted by its own AABB only. The dot
+		# fallback stays with root objects, so a hidden part draws no glyph.
+		if doc.selected_part_path == "" and not _camera.is_position_behind(node.global_position):
 			var p := _to_ui(_camera.unproject_position(node.global_position))
 			draw_arc(p, 15.0, 0.0, TAU, 28, Kit.ACCENT * Color(1, 1, 1, 0.75), 1.5, true)
 		return
