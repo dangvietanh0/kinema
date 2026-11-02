@@ -528,7 +528,7 @@ func _spawn_object(obj: Dictionary) -> void:
 		"light":
 			_build_light_visual(node, obj)
 		"empty":
-			pass
+			_build_empty_visual(node, obj)
 		"import":
 			_build_import_visual(node, obj)
 		_:
@@ -575,7 +575,7 @@ func _build_camera_visual(node: Node3D, obj: Dictionary) -> void:
 	camera.near = 0.05
 	camera.far = 500.0
 	node.add_child(camera)
-	_add_marker(node, _make_camera_marker(), Color(0.58, 0.58, 0.58))
+	_add_marker(node, _make_camera_marker())
 
 func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	var light_type := str(obj.get("light_type", "directional"))
@@ -595,7 +595,13 @@ func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	light.light_specular = 0.55
 	_configure_shadows(light, obj)
 	node.add_child(light)
-	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.46, 0.46, 0.46))
+	_add_marker(node, _make_light_marker(light_type == "omni"))
+
+func _build_empty_visual(node: Node3D, _obj: Dictionary) -> void:
+	# An empty is a real axis triad at the object origin, not a flat dashed
+	# icon. It lives under the object node so moving or keying the object moves
+	# the triad with it.
+	_add_marker(node, _make_empty_marker())
 
 func _configure_shadows(light: Light3D, obj: Dictionary = {}, profile: Dictionary = {}) -> void:
 	## Shadow quality is driven by the graphics preferences. Directional lights
@@ -695,71 +701,138 @@ func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 	generated.name = "Model"
 	node.add_child(generated)
 
-func _add_marker(node: Node3D, mesh: Mesh, color: Color) -> void:
+func _add_marker(node: Node3D, parts: Array) -> MeshInstance3D:
+	# A marker is one shaded MeshInstance3D named "Marker" so it keeps the
+	# document's existing bounds contract (marker geometry never inflates the
+	# object AABB) while still reading as a solid camera, light or empty.
+	var mesh := ArrayMesh.new()
+	var colors: Array = []
+	for part in parts:
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		st.append_from(part["mesh"] as Mesh, 0, part["transform"] as Transform3D)
+		st.generate_normals()
+		st.set_material(_marker_material(part["color"] as Color))
+		st.commit(mesh)
+		colors.append(part["color"])
 	var marker := MeshInstance3D.new()
 	marker.name = "Marker"
 	marker.mesh = mesh
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.albedo_color = color
-	material.no_depth_test = false
-	marker.material_override = material
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for surface in range(mesh.get_surface_count()):
+		var material := _marker_material(colors[surface] as Color)
+		marker.set_surface_override_material(surface, material)
+	marker.set_meta("kinema_marker_colors", colors)
 	node.add_child(marker)
+	return marker
 
-func _make_camera_marker() -> ImmediateMesh:
-	# A camera reads as a frustum, not a filled triangle. Drawing the base
-	# rectangle and the four lines to the apex keeps the silhouette legible at
-	# the small on-screen size the view-distance scaling produces.
-	var mesh := ImmediateMesh.new()
-	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	var back := [
-		Vector3(-0.36, -0.24, -0.42),
-		Vector3(0.36, -0.24, -0.42),
-		Vector3(0.36, 0.24, -0.42),
-		Vector3(-0.36, 0.24, -0.42),
+func _marker_part(mesh: Mesh, transform: Transform3D, color: Color) -> Dictionary:
+	return {"mesh": mesh, "transform": transform, "color": color}
+
+func _marker_material(color: Color) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	material.albedo_color = color
+	material.roughness = 0.52
+	material.metallic = 0.06
+	material.metallic_specular = 0.45
+	material.rim_enabled = false
+	return material
+
+func _make_camera_marker() -> Array:
+	# Local -Z is the view direction. The body block sits behind the lens
+	# barrel and the brighter ring closes the barrel, so the silhouette reads
+	# as a camera from any orbit angle instead of a generic cube.
+	var body := Color(0.48, 0.50, 0.53)
+	var body_dark := Color(0.34, 0.36, 0.39)
+	var lens := Color(0.66, 0.68, 0.71)
+	var glass := Color(0.12, 0.14, 0.17)
+	var block := BoxMesh.new()
+	block.size = Vector3(0.52, 0.38, 0.40)
+	var hump := BoxMesh.new()
+	hump.size = Vector3(0.24, 0.11, 0.20)
+	var barrel := CylinderMesh.new()
+	barrel.top_radius = 0.15
+	barrel.bottom_radius = 0.17
+	barrel.height = 0.26
+	barrel.radial_segments = 28
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.145
+	ring.outer_radius = 0.21
+	ring.rings = 32
+	ring.ring_segments = 12
+	var glass_mesh := CylinderMesh.new()
+	glass_mesh.top_radius = 0.12
+	glass_mesh.bottom_radius = 0.12
+	glass_mesh.height = 0.02
+	glass_mesh.radial_segments = 24
+	var along_z := Basis(Vector3.RIGHT, PI * 0.5)
+	return [
+		_marker_part(block, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, 0.16)), body),
+		_marker_part(hump, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.24, 0.13)), body_dark),
+		_marker_part(barrel, Transform3D(along_z, Vector3(0.0, 0.0, -0.06)), body_dark),
+		_marker_part(ring, Transform3D(along_z, Vector3(0.0, 0.0, -0.215)), lens),
+		_marker_part(glass_mesh, Transform3D(along_z, Vector3(0.0, 0.0, -0.225)), glass),
 	]
-	var apex := Vector3(0.0, 0.0, 0.38)
-	for i in range(4):
-		mesh.surface_add_vertex(back[i])
-		mesh.surface_add_vertex(back[(i + 1) % 4])
-		mesh.surface_add_vertex(back[i])
-		mesh.surface_add_vertex(apex)
-	# A short top tick makes the camera orientation readable even when the
-	# frustum is seen nearly edge-on.
-	mesh.surface_add_vertex(back[3])
-	mesh.surface_add_vertex(back[3] + Vector3(0.0, 0.22, 0.0))
-	mesh.surface_end()
-	return mesh
 
-func _make_light_marker(omni: bool) -> ImmediateMesh:
-	var mesh := ImmediateMesh.new()
-	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	var r := 0.3
-	var segments := 24
-	for i in range(segments):
-		var a := TAU * float(i) / float(segments)
-		var b := TAU * float(i + 1) / float(segments)
-		mesh.surface_add_vertex(Vector3(cos(a) * r, sin(a) * r, 0))
-		mesh.surface_add_vertex(Vector3(cos(b) * r, sin(b) * r, 0))
-		mesh.surface_add_vertex(Vector3(cos(a) * r, 0, sin(a) * r))
-		mesh.surface_add_vertex(Vector3(cos(b) * r, 0, sin(b) * r))
-		mesh.surface_add_vertex(Vector3(0, cos(a) * r, sin(a) * r))
-		mesh.surface_add_vertex(Vector3(0, cos(b) * r, sin(b) * r))
-	# A centre cross distinguishes a light from an empty orbit ring.
-	mesh.surface_add_vertex(Vector3(-0.12, 0, 0))
-	mesh.surface_add_vertex(Vector3(0.12, 0, 0))
-	mesh.surface_add_vertex(Vector3(0, -0.12, 0))
-	mesh.surface_add_vertex(Vector3(0, 0.12, 0))
-	mesh.surface_add_vertex(Vector3(0, 0, -0.12))
-	mesh.surface_add_vertex(Vector3(0, 0, 0.12))
-	if not omni:
-		for i in range(8):
-			var a := TAU * float(i) / 8.0
-			mesh.surface_add_vertex(Vector3.ZERO)
-			mesh.surface_add_vertex(Vector3(cos(a) * r, sin(a) * r, -1.1))
-	mesh.surface_end()
-	return mesh
+func _make_light_marker(omni: bool) -> Array:
+	var housing := Color(0.46, 0.48, 0.51)
+	var nose := Color(0.34, 0.36, 0.39)
+	var bulb := Color(0.74, 0.74, 0.70)
+	if omni:
+		var globe := SphereMesh.new()
+		globe.radius = 0.20
+		globe.height = 0.42
+		globe.radial_segments = 28
+		globe.rings = 14
+		var neck := CylinderMesh.new()
+		neck.top_radius = 0.09
+		neck.bottom_radius = 0.10
+		neck.height = 0.15
+		neck.radial_segments = 20
+		var base := CylinderMesh.new()
+		base.top_radius = 0.13
+		base.bottom_radius = 0.14
+		base.height = 0.06
+		base.radial_segments = 20
+		return [
+			_marker_part(globe, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.05, 0.0)), bulb),
+			_marker_part(neck, Transform3D(Basis.IDENTITY, Vector3(0.0, -0.20, 0.0)), housing),
+			_marker_part(base, Transform3D(Basis.IDENTITY, Vector3(0.0, -0.30, 0.0)), nose),
+		]
+	var box := BoxMesh.new()
+	box.size = Vector3(0.36, 0.24, 0.34)
+	var collar := CylinderMesh.new()
+	collar.top_radius = 0.17
+	collar.bottom_radius = 0.19
+	collar.height = 0.10
+	collar.radial_segments = 24
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 0.16
+	cone.height = 0.30
+	cone.radial_segments = 24
+	var forward := Basis(Vector3.RIGHT, -PI * 0.5)
+	return [
+		_marker_part(box, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, 0.06)), housing),
+		_marker_part(collar, Transform3D(forward, Vector3(0.0, 0.0, -0.03)), nose),
+		_marker_part(cone, Transform3D(forward, Vector3(0.0, 0.0, -0.22)), nose),
+	]
+
+func _make_empty_marker() -> Array:
+	# A three-axis triad, one surface per axis so the body can brighten with
+	# the selection while keeping the X/Y/Z colour reading.
+	var x_axis := BoxMesh.new()
+	x_axis.size = Vector3(0.36, 0.03, 0.03)
+	var y_axis := BoxMesh.new()
+	y_axis.size = Vector3(0.03, 0.36, 0.03)
+	var z_axis := BoxMesh.new()
+	z_axis.size = Vector3(0.03, 0.03, 0.36)
+	return [
+		_marker_part(x_axis, Transform3D(Basis.IDENTITY, Vector3(0.18, 0.0, 0.0)), Color(0.86, 0.38, 0.36)),
+		_marker_part(y_axis, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.18, 0.0)), Color(0.42, 0.84, 0.52)),
+		_marker_part(z_axis, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, 0.18)), Color(0.40, 0.64, 0.94)),
+	]
 
 func _make_primitive(kind: String) -> Mesh:
 	match kind:
@@ -1972,11 +2045,37 @@ func update_marker_scales(view: Camera3D) -> void:
 		# read as a camera or light instead of a speck, and let the selection
 		# brighten it so the outliner and the viewport agree.
 		marker.scale = Vector3.ONE * clampf(dist * 0.072, 0.05, 3.0)
-		var material := marker.material_override as StandardMaterial3D
-		if material != null:
-			var bright := str(id) == selected_id
-			material.albedo_color = Color(0.86, 0.86, 0.86) if bright else Color(0.5, 0.5, 0.5)
+		_tint_marker(marker, str(id) == selected_id)
 		marker.visible = dist > 0.6 and not view.is_position_behind(node.global_position)
+
+## Brighten every body surface together. The marker is normally one
+## MeshInstance3D with one surface per body part, so a single material walk
+## keeps the block, barrel and ring in step. A future group-of-meshes marker
+## still works because the walk visits every MeshInstance3D underneath.
+func _tint_marker(marker: Node3D, bright: bool) -> void:
+	var colors: Array = marker.get_meta("kinema_marker_colors", [])
+	var color_index := 0
+	var stack: Array[Node] = [marker]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if not node is MeshInstance3D:
+			continue
+		var mesh_instance := node as MeshInstance3D
+		var mesh := mesh_instance.mesh
+		if mesh == null:
+			continue
+		for surface in range(mesh.get_surface_count()):
+			var material := mesh_instance.get_surface_override_material(surface)
+			if material == null:
+				material = mesh_instance.get_active_material(surface)
+			if material is StandardMaterial3D:
+				var base := Color(0.5, 0.5, 0.5)
+				if color_index < colors.size():
+					base = colors[color_index] as Color
+				var tint := base.lerp(Color(0.94, 0.94, 0.94), 0.38) if bright else base
+				(material as StandardMaterial3D).albedo_color = tint
+			color_index += 1
 
 func get_scene_bounds() -> AABB:
 	var result := AABB()

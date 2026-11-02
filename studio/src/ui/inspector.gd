@@ -8,6 +8,8 @@ extends VBoxContainer
 signal add_requested
 signal color_requested(property: String)
 signal collapse_toggled(collapsed: bool)
+## The Camera section asks the editor to enter look-through for this object.
+signal look_through_requested(camera_id: String)
 
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
@@ -360,9 +362,13 @@ func _build_light(obj: Dictionary) -> void:
 func _build_camera(obj: Dictionary) -> void:
 	_content.add_child(Kit.section_label("Camera"))
 	_add_scrub("Field of view", "camera_fov", 12.0, 100.0)
-	var hint := Kit.label("The viewport uses its own editor camera. This camera object is a scene element for layout reference.", 10, Kit.TEXT_DIM)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_content.add_child(hint)
+	# A real view action replaces the old "layout reference only" hint. The
+	# viewport header and editor connect this through one signal.
+	var look: Button = Kit.text_button("Look through", "camera", true)
+	look.custom_minimum_size = Vector2(96.0, 44.0)
+	look.tooltip_text = "Look through this camera without making it the scene camera"
+	look.pressed.connect(func() -> void: look_through_requested.emit(str(obj.get("id", ""))))
+	_content.add_child(look)
 
 func _build_import(obj: Dictionary) -> void:
 	_content.add_child(Kit.section_label("Model"))
