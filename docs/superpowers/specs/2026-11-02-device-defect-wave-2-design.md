@@ -237,3 +237,136 @@ that already owns the code, so this wave does not need a separate fix round.
 - Physical device checks remain unverified and must be listed in the handoff:
   Forward+ boot/fallback, 4K profile/VBR encode, MP4 quality, hierarchy
   chevron, timeline pan two-finger state, nav tips.
+
+## 11. Sky, sunlight and object legibility (2 Nov follow-up)
+
+The user reported three more defects after the five workstreams were
+specified. They are binding for this wave and are assigned to two new
+contracts, W6 and W7. The word-for-word Vietnamese reports are not recorded;
+the entries below are the maintained translations.
+
+7. "missing skybox or environment light — the scene background reads as
+   flat black."
+8. "shadows are too dark; no sunlight is visible."
+9. "camera and light objects still read as 2D/2.5D; their view direction and
+   light direction are not visible."
+
+### 11.1 Ruling W6 — procedural studio sky with a real sun
+
+- Ship a procedural studio sky. Do not add HDRI import in this wave; the
+  user accepted "hdri hoặc khác", and a procedural sky that visibly reads as
+  an environment satisfies the report.
+- The sky is driven by Godot's real sky built-ins: `LIGHT0_ENABLED`,
+  `LIGHT0_DIRECTION`, `LIGHT0_COLOR`, `LIGHT0_ENERGY`, `LIGHT0_SIZE`. No
+  hand-authored fake sun direction and no second source of truth.
+- Exactly one visible `DirectionalLight3D` is the sky sun
+  (`sky_mode = SKY_MODE_LIGHT_AND_SKY`); every other directional light uses
+  `SKY_MODE_LIGHT_ONLY`. When no visible directional light exists the sky
+  built-ins disable themselves and the disc disappears.
+- `studio_sky.gdshader` must show a sun disc plus a wide halo. Angular
+  radius is `max(LIGHT0_SIZE, 0.030)` rad so the disc stays legible even
+  when the light's shadow-softening angle is small. The disc colour is
+  `LIGHT0_COLOR`; brightness scales with `LIGHT0_ENERGY`.
+- Lift the environment so ambient light and the horizon are visibly present:
+  `ambient_light_energy >= 1.35`, lifted sky zenith/horizon/ground values,
+  and `shadow_opacity <= 0.65` on every shadow-casting light.
+- Reduce contact-shadow darkening: SSAO intensity `<= 1.5`,
+  `ssao_light_affect <= 0.10`. Keep SSAO on; this is a correction, not a
+  removal.
+- The blank template gets a real, selectable `Fill Light` omni at
+  `(2.6, 2.2, 3.0)`, energy `0.35`, range `7.0`, shadows off. Add a
+  `light_shadow` object property (default `true`) so the fill is honest in
+  the document and the inspector can show it.
+- Tests: new `tests/environment.tscn` + `environment.gd`. Assert the shader
+  contains the five `LIGHT0_*` built-ins and a halo term; assert ambient
+  energy, SSAO intensity, and shadow opacity thresholds; assert exactly one
+  sky-mode sun and that the blank template has the fill light with shadows
+  off; render a sky capture under xvfb and assert the sun core is brighter
+  than its halo and the halo is brighter than the surrounding sky, and that
+  the sky is not near-black.
+
+### 11.2 Ruling W7 — camera/light bodies, direction, look-through
+
+- Stop hiding the document's 3D markers (`doc.markers_hidden = false` in
+  the editing view). Flat screen-space icons may remain only as a name tag
+  for an off-screen or occluded object; they are not the object's body.
+- Camera body: a solid, shaded 3D body (body block + lens barrel + lens
+  ring) oriented so local `-Z` is the view direction. Attached to the
+  camera node, not the editor camera; `cast_shadow = OFF`. The body uses
+  the same neutral material family as the rest of the stage.
+- Camera frustum: four rays from the lens to the far-plane corners plus the
+  far-plane rectangle, computed from the document camera's real
+  `camera_fov` and the stage aspect. Draw them as a 2 px projected overlay
+  with a 1 px dark underlay so they survive on light and dark pixels. They
+  must update when FOV changes, when the camera moves, and when the stage
+  resizes; they must not be a fixed decorative triangle.
+- Directional light: a solid 3D body plus an arrow along the light's real
+  direction (`-basis.z`) to the ground hit point, an arrowhead, and a ground
+  ring at the hit. The arrow length is clamped to the visible stage; when
+  the light points up, draw the arrow to the stage ceiling or hide the
+  ground ring instead of faking a hit.
+- Omni light: a solid 3D bulb body plus a projected ground footprint circle
+  whose radius is the real `light_range` at the ground plane, with two
+  inner rings. The footprint is the direction/range cue; an omni gets no
+  directional arrow.
+- Empty: a 3D axis triad at the object origin, not a flat dashed icon.
+- Picking: tapping the camera frustum, the light arrow, or the omni
+  footprint selects that object. The existing 22 px origin target stays.
+- Look-through: the inspector's camera section replaces the "layout
+  reference only" hint with a real **Look through** primary action
+  (96×44). It enters a real look-through mode: the editor camera copies the
+  document camera's global transform and FOV; the grid, markers, selection,
+  gizmo, nav gizmo and editor HUD hide; playback and timeline stay live;
+  orbit/pan/gizmo gestures are ignored. A persistent **Exit camera**
+  96×44 control sits at the stage's top-left, 12 dp inset, above the
+  transport and clear of the scene tree; Android back exits look-through
+  before any other navigation. Exit restores the saved editor transform,
+  FOV, grid and marker state. The document camera node itself stays
+  inactive; only the editor camera moves.
+- Tests: new `tests/object_visuals.tscn` + `object_visuals.gd`. Assert the
+  camera body and frustum exist and the frustum corner spread grows with
+  FOV; the directional arrow endpoint matches the light direction and the
+  ground hit; the omni footprint radius matches `light_range`; frustum,
+  arrow and footprint are pickable; look-through copies the transform and
+  FOV, hides editing chrome, blocks orbit, exits via the 96×44 control and
+  restores the exact saved transform/FOV; the inspector hint is gone and
+  the action exists at 96×44. Add an xvfb capture proving the camera body,
+  frustum and light arrow are visible against the sky.
+
+## 12. Dispatch grouping (user ruling, 2 Nov)
+
+The user asked for easy work to be folded into hard work instead of
+occupying its own parallel seat. Five worktrees, not seven:
+
+- **G1 (hard + easy): W1 + W6.** Branch `ws/renderer-environment`,
+  worktree `kinema-renderer-environment`. Both own `gfx.gd`; one owner
+  removes the renderer/environment conflict and keeps the sky tied to the
+  real renderer capability matrix.
+- **G2 (hard + easy): W2 + W4.** Branch `ws/timeline-hierarchy`,
+  worktree `kinema-timeline-hierarchy`. Both are discoverability fixes that
+  share `editor.gd`; one owner keeps the timeline budget and the outliner
+  auto-expand wiring coherent.
+- **G3 (hard): W3.** Branch `ws/rig-blender`, worktree
+  `kinema-rig-blender`.
+- **G4 (hard): W5.** Branch `ws/mp4-quality`, worktree
+  `kinema-mp4-quality`.
+- **G5 (hard): W7.** Branch `ws/camera-lights`, worktree
+  `kinema-camera-lights`.
+
+A grouped branch must satisfy both workstreams' contracts, tests and
+captures; its report lists evidence per workstream. Reviews are scoped to
+the combined diff and may raise findings for either half. The old
+`ws/renderer-android`, `ws/timeline-compact` and `ws/hierarchy-discover`
+branches are retired without merging.
+
+## 13. Verification and handoff additions
+
+The G1 gate adds `environment.tscn`; the G5 gate adds
+`object_visuals.tscn`. Both must run headless and under xvfb for their
+capture assertions. W6 and W7 also run the full existing suite list from §9.
+
+The handoff must add these device-only checks: the sky and sun are visible
+on a real panel, shadows are readable but not black, the camera frustum and
+directional arrow show direction, the omni footprint matches range, and
+look-through exits from the 96×44 control. No APK containing any of this
+wave exists until CI runs `assembleStandardDebug` after the user pushes.
