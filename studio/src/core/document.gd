@@ -1965,17 +1965,23 @@ func import_parts(id: String) -> Array:
 	var root: Node3D = nodes.get(id) as Node3D
 	if root == null:
 		return []
+	var obj := get_object(id)
+	if not _exposes_import_parts(str(obj.get("model", ""))):
+		# Spec §8 keeps Wavefront OBJ a single mesh row. Its runtime parser
+		# still builds a wrapper tree, so the format gate lives here rather
+		# than in every caller.
+		return []
 	var parts: Array = []
-	_collect_import_parts(model, "Model", 1, "", root, parts)
-	# has_children looks at the whole listed subtree, not just direct children.
-	for index in range(parts.size()):
-		var path := str(parts[index]["path"])
-		var prefix := path + "/"
-		for other in parts:
-			if str(other["path"]).begins_with(prefix):
-				parts[index]["has_children"] = true
-				break
+	var index := {}
+	_collect_import_parts(model, "Model", 1, "", root, parts, index)
 	return parts
+
+
+## Only glTF/GLB imports carry a meaningful scene hierarchy. OBJ is imported as
+## one flat mesh by design.
+func _exposes_import_parts(model_rel_path: String) -> bool:
+	var extension := model_rel_path.get_extension().to_lower()
+	return extension == "gltf" or extension == "glb"
 
 
 func get_import_part_node(id: String, part_path: String) -> Node3D:
@@ -2014,9 +2020,10 @@ func get_import_part_aabb(id: String, part_path: String) -> AABB:
 	var node := get_import_part_node(id, part_path)
 	if node == null:
 		return AABB()
-	if not _part_effective_visible(id, part_path):
-		return AABB()
-	return _node_world_aabb(node)
+	# AABB() is reserved for invalid input. Hidden parts still answer their
+	# world bounds here; the stage applies the visibility gate through
+	# get_selected_part_aabb().
+	return _node_world_aabb(node, true)
 
 
 func set_selected_part(id: String, part_path: String) -> void:
@@ -2041,10 +2048,17 @@ func clear_selected_part() -> void:
 func get_selected_part_aabb() -> AABB:
 	if selected_part_object_id == "" or selected_part_path == "":
 		return AABB()
-	var node := get_import_part_node(selected_part_object_id, selected_part_path)
-	if node == null:
+	# One derived list per query: resolve validity and effective visibility
+	# from the same snapshot instead of calling import_parts() twice.
+	var entry: Dictionary = {}
+	for part in import_parts(selected_part_object_id):
+		if str(part.get("path", "")) == selected_part_path:
+			entry = part
+			break
+	if entry.is_empty() or not bool(entry.get("effective_visible", false)):
 		return AABB()
-	if not _part_effective_visible(selected_part_object_id, selected_part_path):
+	var node := _resolve_import_part_node(selected_part_object_id, selected_part_path)
+	if node == null:
 		return AABB()
 	return _node_world_aabb(node)
 
@@ -2067,12 +2081,17 @@ func _resolve_import_part_node(id: String, part_path: String) -> Node3D:
 
 
 func _collect_import_parts(container: Node3D, prefix: String, depth: int,
-		listed_parent: String, root: Node3D, out: Array) -> void:
+		listed_parent: String, root: Node3D, out: Array, index: Dictionary) -> void:
 	for child in container.get_children():
 		if not (child is Node3D):
 			continue
 		var part := child as Node3D
 		var path := prefix + "/" + str(part.name)
+		# The parent entry is appended before its children recurse, so the
+		# whole subtree relation is derived in one pass without a nested scan.
+		if listed_parent != "" and index.has(listed_parent):
+			out[int(index[listed_parent])]["has_children"] = true
+		index[path] = out.size()
 		out.append({
 			"path": path,
 			"name": str(part.name),
@@ -2083,7 +2102,7 @@ func _collect_import_parts(container: Node3D, prefix: String, depth: int,
 			"visible": part.visible,
 			"effective_visible": _visible_through(part, root),
 		})
-		_collect_import_parts(part, path, depth + 1, path, root, out)
+		_collect_import_parts(part, path, depth + 1, path, root, out, index)
 
 
 func _import_part_kind(node: Node3D) -> String:
@@ -2109,13 +2128,6 @@ func _visible_through(node: Node3D, root: Node3D) -> bool:
 	return true
 
 
-func _part_effective_visible(id: String, part_path: String) -> bool:
-	for part in import_parts(id):
-		if str(part.get("path", "")) == part_path:
-			return bool(part.get("effective_visible", false))
-	return false
-
-
 func _apply_import_part_visibility(node: Node3D, obj: Dictionary) -> void:
 	var overrides: Variant = obj.get("part_visibility", {})
 	if not (overrides is Dictionary):
@@ -2131,7 +2143,7 @@ func _apply_import_part_visibility(node: Node3D, obj: Dictionary) -> void:
 			part.visible = bool(overrides[path])
 
 
-func _node_world_aabb(root: Node3D) -> AABB:
+func _node_world_aabb(root: Node3D, include_hidden: bool = false) -> AABB:
 	var result := AABB()
 	var first := true
 	var stack: Array[Node] = [root]
@@ -2148,7 +2160,7 @@ func _node_world_aabb(root: Node3D) -> AABB:
 			# Hidden marker meshes must not contribute bounds. A camera marker
 			# a metre from the editor camera would otherwise project across the
 			# whole viewport and swallow taps meant for nearby lights.
-			if not vi.visible or vi.name == "Marker":
+			if (not include_hidden and not vi.visible) or vi.name == "Marker":
 				continue
 			var local := vi.get_aabb()
 			var xf := vi.global_transform
