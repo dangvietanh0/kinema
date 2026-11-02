@@ -25,6 +25,9 @@ signal rigs_changed
 signal rig_selection_changed(rig_id: String, bone: String)
 signal imported_scene_ready(object_id: String, node: Node)
 signal object_spawned(object_id: String, node: Node)
+## Emitted when the selected import part changes. An empty id/path pair means
+## the part highlight was cleared; the import root stays selected either way.
+signal part_selection_changed(object_id: String, part_path: String)
 
 const CHANNELS := ["position", "rotation", "scale"]
 const CHANNEL_LABELS := {
@@ -59,6 +62,10 @@ var interpolation := "linear"
 var autokey := false
 var snap := true
 var selected_id := ""
+## The selected part belongs to the selected import root; the inspector still
+## edits the root transform.
+var selected_part_object_id := ""
+var selected_part_path := ""
 var objects: Array[Dictionary] = []
 
 var nodes: Dictionary = {}
@@ -162,6 +169,8 @@ func new_project(p_title: String = "Untitled", template: String = "blank") -> vo
 	_next_id = 1
 	objects.clear()
 	selected_id = ""
+	selected_part_object_id = ""
+	selected_part_path = ""
 	_clear_runtime()
 	_ensure_player()
 	_create_animation()
@@ -235,6 +244,8 @@ func to_data() -> Dictionary:
 		"interpolation": interpolation,
 		"current_time": current_time,
 		"selected_id": selected_id,
+		"selected_part_object_id": selected_part_object_id,
+		"selected_part_path": selected_part_path,
 		"autokey": autokey,
 		"snap": snap,
 		"objects": json_objects,
@@ -268,6 +279,8 @@ func _apply_data(data: Dictionary) -> void:
 	snap = bool(data.get("snap", true))
 	current_time = clampf(float(data.get("current_time", 0.0)), 0.0, duration)
 	selected_id = str(data.get("selected_id", ""))
+	selected_part_object_id = str(data.get("selected_part_object_id", ""))
+	selected_part_path = str(data.get("selected_part_path", ""))
 	_next_id = 1
 
 	objects.clear()
@@ -293,6 +306,12 @@ func _apply_data(data: Dictionary) -> void:
 		animation = active
 	_refresh_animation()
 	_ensure_valid_selection()
+	# A saved part path can outlive the model it pointed at. Drop it silently
+	# instead of selecting the import root's stale highlight.
+	if selected_part_object_id == "" or selected_part_path == "" \
+			or get_import_part_node(selected_part_object_id, selected_part_path) == null:
+		selected_part_object_id = ""
+		selected_part_path = ""
 	_queue_all_object_ui_updates()
 
 func _object_to_json(obj: Dictionary) -> Dictionary:
@@ -319,7 +338,23 @@ func _normalize_object(raw: Dictionary) -> Dictionary:
 	obj["light_range"] = float(raw.get("light_range", 8.0))
 	obj["camera_fov"] = float(raw.get("camera_fov", 45.0))
 	obj["model"] = str(raw.get("model", ""))
+	obj["part_visibility"] = _normalize_part_visibility(raw.get("part_visibility", {}))
 	return obj
+
+
+func _normalize_part_visibility(raw: Variant) -> Dictionary:
+	var result := {}
+	if not (raw is Dictionary):
+		return result
+	for key in raw.keys():
+		var value: Variant = raw[key]
+		if not (key is String):
+			continue
+		if not (value is bool):
+			continue
+		result[key] = value
+	return result
+
 
 func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 	return {
@@ -340,6 +375,7 @@ func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 		"light_range": 8.0,
 		"camera_fov": 45.0,
 		"model": "",
+		"part_visibility": {},
 	}
 
 func _build_blank() -> void:
@@ -484,6 +520,10 @@ func _spawn_object(obj: Dictionary) -> void:
 			_build_import_visual(node, obj)
 		_:
 			_build_mesh_visual(node, obj)
+	if kind == "import":
+		# Reapply the saved overrides after the model loads, on fresh imports and
+		# on project load / undo alike.
+		_apply_import_part_visibility(node, obj)
 	if rig_system != null:
 		rig_system.on_object_spawned(obj, node)
 	object_spawned.emit(id, node)
@@ -924,6 +964,9 @@ func delete_object(id: String) -> void:
 	if selected_id == id:
 		selected_id = ""
 		_ensure_valid_selection()
+	if selected_part_object_id == id:
+		selected_part_object_id = ""
+		selected_part_path = ""
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
@@ -979,6 +1022,10 @@ func get_selected_node() -> Node3D:
 func set_selection(id: String) -> void:
 	if id != "" and not nodes.has(id):
 		return
+	if selected_part_object_id != "" and selected_part_object_id != id:
+		selected_part_object_id = ""
+		selected_part_path = ""
+		part_selection_changed.emit("", "")
 	if selected_id == id:
 		return
 	selected_id = id
@@ -1899,6 +1946,190 @@ func get_object_aabb(id: String) -> AABB:
 	if node == null:
 		return AABB()
 	return _node_world_aabb(node)
+
+# -------------------------------------------------------------------------
+# Import hierarchy
+# -------------------------------------------------------------------------
+#
+# Imported glTF/GLB objects keep their generated node tree live. The document
+# stores only the UI state (visibility overrides and the selected part path);
+# the part list itself is derived from the loaded model on every call.
+
+## One entry per listed Node3D descendant of the import's generated model, in
+## deterministic tree order. Returns [] for a non-import, a missing object or a
+## model that failed to load.
+func import_parts(id: String) -> Array:
+	var model := _import_model_node(id)
+	if model == null:
+		return []
+	var root: Node3D = nodes.get(id) as Node3D
+	if root == null:
+		return []
+	var parts: Array = []
+	_collect_import_parts(model, "Model", 1, "", root, parts)
+	# has_children looks at the whole listed subtree, not just direct children.
+	for index in range(parts.size()):
+		var path := str(parts[index]["path"])
+		var prefix := path + "/"
+		for other in parts:
+			if str(other["path"]).begins_with(prefix):
+				parts[index]["has_children"] = true
+				break
+	return parts
+
+
+func get_import_part_node(id: String, part_path: String) -> Node3D:
+	if part_path == "":
+		return null
+	var node: Node3D = _resolve_import_part_node(id, part_path)
+	if node == null:
+		return null
+	# Only listed parts are selectable: the Model wrapper and arbitrary children
+	# of the model are not part rows.
+	for part in import_parts(id):
+		if str(part.get("path", "")) == part_path:
+			return node
+	return null
+
+
+func set_import_part_visible(id: String, part_path: String, visible: bool) -> void:
+	var node := get_import_part_node(id, part_path)
+	if node == null:
+		return
+	var obj := get_object(id)
+	if obj.is_empty():
+		return
+	begin_edit("Toggle part visibility")
+	node.visible = visible
+	var overrides: Dictionary = obj.get("part_visibility", {})
+	var copy := overrides.duplicate()
+	copy[part_path] = visible
+	obj["part_visibility"] = copy
+	end_edit()
+	object_changed.emit(id)
+	scene_changed.emit()
+
+
+func get_import_part_aabb(id: String, part_path: String) -> AABB:
+	var node := get_import_part_node(id, part_path)
+	if node == null:
+		return AABB()
+	if not _part_effective_visible(id, part_path):
+		return AABB()
+	return _node_world_aabb(node)
+
+
+func set_selected_part(id: String, part_path: String) -> void:
+	if get_import_part_node(id, part_path) == null:
+		return
+	# Store the part first: set_selection() clears a part that belongs to a
+	# different root, but never the part of the root we are selecting.
+	selected_part_object_id = id
+	selected_part_path = part_path
+	set_selection(id)
+	part_selection_changed.emit(id, part_path)
+
+
+func clear_selected_part() -> void:
+	if selected_part_object_id == "" and selected_part_path == "":
+		return
+	selected_part_object_id = ""
+	selected_part_path = ""
+	part_selection_changed.emit("", "")
+
+
+func get_selected_part_aabb() -> AABB:
+	if selected_part_object_id == "" or selected_part_path == "":
+		return AABB()
+	var node := get_import_part_node(selected_part_object_id, selected_part_path)
+	if node == null:
+		return AABB()
+	if not _part_effective_visible(selected_part_object_id, selected_part_path):
+		return AABB()
+	return _node_world_aabb(node)
+
+
+func _import_model_node(id: String) -> Node3D:
+	var obj := get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "import":
+		return null
+	var root: Node3D = nodes.get(id) as Node3D
+	if root == null:
+		return null
+	return root.get_node_or_null("Model") as Node3D
+
+
+func _resolve_import_part_node(id: String, part_path: String) -> Node3D:
+	var root: Node3D = nodes.get(id) as Node3D
+	if root == null or not part_path.begins_with("Model/"):
+		return null
+	return root.get_node_or_null(NodePath(part_path)) as Node3D
+
+
+func _collect_import_parts(container: Node3D, prefix: String, depth: int,
+		listed_parent: String, root: Node3D, out: Array) -> void:
+	for child in container.get_children():
+		if not (child is Node3D):
+			continue
+		var part := child as Node3D
+		var path := prefix + "/" + str(part.name)
+		out.append({
+			"path": path,
+			"name": str(part.name),
+			"kind": _import_part_kind(part),
+			"depth": depth,
+			"parent": listed_parent,
+			"has_children": false,
+			"visible": part.visible,
+			"effective_visible": _visible_through(part, root),
+		})
+		_collect_import_parts(part, path, depth + 1, path, root, out)
+
+
+func _import_part_kind(node: Node3D) -> String:
+	if node is Skeleton3D:
+		return "skeleton"
+	if node is Light3D:
+		return "light"
+	if node is Camera3D:
+		return "camera"
+	if node is MeshInstance3D:
+		return "mesh"
+	return "empty"
+
+
+func _visible_through(node: Node3D, root: Node3D) -> bool:
+	var current: Node = node
+	while current != null:
+		if current is Node3D and not (current as Node3D).visible:
+			return false
+		if current == root:
+			break
+		current = current.get_parent()
+	return true
+
+
+func _part_effective_visible(id: String, part_path: String) -> bool:
+	for part in import_parts(id):
+		if str(part.get("path", "")) == part_path:
+			return bool(part.get("effective_visible", false))
+	return false
+
+
+func _apply_import_part_visibility(node: Node3D, obj: Dictionary) -> void:
+	var overrides: Variant = obj.get("part_visibility", {})
+	if not (overrides is Dictionary):
+		return
+	var id := str(obj.get("id", ""))
+	for path in overrides.keys():
+		var part := _resolve_import_part_node(id, str(path))
+		if part == null:
+			# The runtime node may not be registered in `nodes` yet during
+			# spawn; resolve directly from the fresh import object then.
+			part = node.get_node_or_null(NodePath(str(path))) as Node3D
+		if part != null:
+			part.visible = bool(overrides[path])
+
 
 func _node_world_aabb(root: Node3D) -> AABB:
 	var result := AABB()
