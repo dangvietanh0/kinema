@@ -17,6 +17,9 @@ var _scroll: ScrollContainer
 var _content: VBoxContainer
 var _empty_label: Label
 var _sections: VBoxContainer
+var _mode_label: Label
+var _mode_hint: Label
+var _mode := "pose"
 var _rig_picker: OptionButton
 var _tree: VBoxContainer
 var _inspector: VBoxContainer
@@ -92,6 +95,26 @@ func empty_state_visible() -> bool:
 	return _empty_label != null and _empty_label.visible
 
 
+func mode() -> String:
+	return _mode
+
+
+## Mirrors the viewport mode. The panel is a reader here: the overlay owns the
+## mode and the floating toolbar owns the switch.
+func set_mode(mode: String) -> void:
+	_mode = mode if mode in ["pose", "edit"] else "pose"
+	if _mode_label == null:
+		return
+	if _mode == "edit":
+		_mode_label.text = "Edit"
+		_mode_label.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
+		_mode_hint.text = "Edit · drag the head or tail handle. One drag is one undo."
+	else:
+		_mode_label.text = "Pose"
+		_mode_label.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+		_mode_hint.text = "Pose · drag a bone to rotate."
+
+
 func _build_shell() -> void:
 	if _scroll != null:
 		return
@@ -116,6 +139,23 @@ func _build_shell() -> void:
 	add_rig.pressed.connect(_on_add_rig)
 	header.add_child(add_rig)
 	add_child(Kit.vsep())
+
+	var mode_margin := MarginContainer.new()
+	mode_margin.add_theme_constant_override("margin_left", 12)
+	mode_margin.add_theme_constant_override("margin_right", 12)
+	mode_margin.add_theme_constant_override("margin_top", 4)
+	mode_margin.add_theme_constant_override("margin_bottom", 4)
+	add_child(mode_margin)
+	var mode_box := VBoxContainer.new()
+	mode_box.add_theme_constant_override("separation", 2)
+	mode_margin.add_child(mode_box)
+	_mode_label = Kit.mono_label("Pose", Kit.TYPE_CAPTION, Kit.FOCUS_BRIGHT)
+	_mode_label.name = "RigModeLabel"
+	mode_box.add_child(_mode_label)
+	_mode_hint = Kit.label("Pose · drag a bone to rotate.", Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+	_mode_hint.name = "RigModeHint"
+	_mode_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
+	mode_box.add_child(_mode_hint)
 
 	_scroll = ScrollContainer.new()
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
