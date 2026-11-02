@@ -71,6 +71,10 @@ func _apply_startup_display() -> void:
 func _ensure_startup_renderer() -> void:
 	var result: Dictionary = Gfx.ensure_renderer()
 	if str(result.get("action", "none")) != "restart":
+		# This launch reached the shell: the running backend is proven. A
+		# fallback also marks ready so the next launch does not retry a backend
+		# that already failed once. Never mark on the restart path.
+		Gfx.mark_renderer_ready()
 		return
 	var args := Gfx.consume_restart_request()
 	if args.is_empty() or DisplayServer.get_name() == "headless":

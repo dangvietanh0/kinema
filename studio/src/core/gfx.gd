@@ -81,6 +81,10 @@ var renderer_preference := ""
 var renderer_pending := ""
 var renderer_attempt_at := 0.0
 var renderer_attempts := 0
+## True only after a launch reached the editor with the requested backend. A
+## pending switch that never gets here counts as a failed boot on the next
+## launch; Android Forward+ falls back after one failure instead of retrying.
+var renderer_ready := false
 var last_renderer_error := ""
 ## Legacy mirror for callers written before the preference split.
 var renderer_choice := ""
@@ -116,7 +120,11 @@ func _ready() -> void:
 	else:
 		last_renderer_error = ""
 	if renderer_preference == "":
+		# An unset preference is not an error: adopt and persist the platform
+		# default without writing a bogus "unsupported renderer" reason.
 		renderer_preference = renderer_default_for_platform(OS.get_name())
+		renderer_choice = renderer_preference
+		save_preferences()
 	renderer_choice = renderer_preference
 	apply_globals()
 
@@ -154,7 +162,10 @@ func supports_environment_extras() -> bool:
 func supported_renderers(platform: String) -> Array[String]:
 	var target := platform if platform != "" else OS.get_name()
 	if target == "Android" or target == "iOS":
-		return ["mobile", "gl_compatibility"]
+		# Forward+ is restored as an experimental mobile backend. The engine
+		# still picks it at process start; the mobile-safe profile below keeps
+		# its high-end features inside what a phone can sustain.
+		return ["forward_plus", "mobile", "gl_compatibility"]
 	return ["forward_plus", "mobile", "gl_compatibility"]
 
 
@@ -166,20 +177,26 @@ func renderer_unavailable_reason(method: String, platform: String) -> String:
 	var resolved := platform if platform != "" else OS.get_name()
 	if is_renderer_supported(method, resolved):
 		return ""
-	if method == "forward_plus" and (resolved == "Android" or resolved == "iOS"):
-		return "Forward+ requires the desktop Vulkan feature set, which this platform does not provide; the engine can crash during Vulkan initialisation. Mobile and Compatibility are available instead."
 	return "The %s renderer is not supported on this platform." % method
 
 
 func renderer_entries(platform: String) -> Array:
 	var resolved := platform if platform != "" else OS.get_name()
+	var mobile := resolved == "Android" or resolved == "iOS"
 	var entries: Array = []
 	for value in ["forward_plus", "mobile", "gl_compatibility"]:
+		var method := str(value)
+		var experimental: bool = mobile and method == "forward_plus"
+		var note := ""
+		if experimental:
+			note = "Experimental on %s: high-end Forward+ effects are clamped for stability." % resolved
 		entries.append({
-			"label": renderer_label(value),
-			"value": value,
-			"supported": is_renderer_supported(value, resolved),
-			"reason": renderer_unavailable_reason(value, resolved),
+			"label": "Forward+ (Experimental)" if experimental else renderer_label(method),
+			"value": method,
+			"supported": is_renderer_supported(method, resolved),
+			"reason": renderer_unavailable_reason(method, resolved),
+			"experimental": experimental,
+			"note": note,
 		})
 	return entries
 
@@ -205,19 +222,60 @@ func build_restart_args(preference: String, platform: String = OS.get_name()) ->
 	return PackedStringArray(["--rendering-method", preference, "--rendering-driver", driver])
 
 ## Pure capability matrix. A method only claims a feature the engine can
-## actually provide with that backend.
-func capabilities_for(method: String) -> Dictionary:
+## actually provide with that backend. Forward+ on Android/iOS keeps its look
+## but runs a mobile-safe profile: high-end effects are clamped instead of
+## pretending the phone can sustain them.
+func capabilities_for(method: String, platform: String = OS.get_name()) -> Dictionary:
+	var resolved := platform if platform != "" else OS.get_name()
+	var mobile := resolved == "Android" or resolved == "iOS"
 	var forward := method == "forward_plus"
 	var compatibility := method == "gl_compatibility"
 	return {
 		"ssao": not compatibility,
 		"ssao_quality": not compatibility,
-		"ssil": forward,
-		"ssr": forward,
-		"taa": forward,
-		"volumetric_fog": forward,
+		"ssil": forward and not mobile,
+		"ssr": forward and not mobile,
+		"taa": forward and not mobile,
+		"volumetric_fog": forward and not mobile,
 		"glow": true,
+		"mobile_safe": mobile,
+		"msaa_cap": 1 if mobile else 3,
+		"scale_3d_cap": 0.85 if mobile else 1.0,
+		"shadow_quality_cap": 2 if mobile else 3,
+		"max_fps_cap": 60 if mobile else 0,
 	}
+
+## The effective values for the running backend. On Android/iOS Forward+ the
+## stored preference may stay high, but every applied value is clamped so a
+## desktop-quality preset cannot disable the phone in one launch.
+func safe_forward_plus_profile(platform: String = OS.get_name(), actual_method: String = renderer_name()) -> Dictionary:
+	var resolved := platform if platform != "" else OS.get_name()
+	var profile := {
+		"msaa": msaa,
+		"taa": taa,
+		"ssao": ssao,
+		"ssil": ssil,
+		"ssr": ssr,
+		"glow": glow,
+		"volumetric_fog": volumetric_fog,
+		"shadow_quality": shadow_quality,
+		"shadow_distance": shadow_distance,
+		"shadow_splits": shadow_splits,
+		"scale_3d": scale_3d,
+		"max_fps": max_fps,
+	}
+	if actual_method == "forward_plus" and (resolved == "Android" or resolved == "iOS"):
+		profile["taa"] = false
+		profile["ssil"] = false
+		profile["ssr"] = false
+		profile["volumetric_fog"] = false
+		profile["msaa"] = mini(int(profile["msaa"]), 1)
+		profile["scale_3d"] = minf(float(profile["scale_3d"]), 0.85)
+		profile["shadow_quality"] = mini(int(profile["shadow_quality"]), 2)
+		profile["shadow_distance"] = minf(float(profile["shadow_distance"]), 40.0)
+		profile["shadow_splits"] = mini(int(profile["shadow_splits"]), 2)
+		profile["max_fps"] = clampi(int(profile["max_fps"]), 1, 60)
+	return profile
 
 func sanitize_renderer_state(preference: String, pending: String, platform: String) -> Dictionary:
 	var resolved := platform if platform != "" else OS.get_name()
@@ -226,7 +284,11 @@ func sanitize_renderer_state(preference: String, pending: String, platform: Stri
 	var safe_pending := pending
 	var changed := false
 	var reason := ""
-	if not is_renderer_supported(safe_preference, resolved):
+	if safe_preference == "":
+		# An empty preference is unset, not unsupported: adopt the platform
+		# default silently so first run never shows a bogus error.
+		safe_preference = default_method
+	elif not is_renderer_supported(safe_preference, resolved):
 		safe_preference = default_method
 		changed = true
 		reason = "Unsupported renderer '%s' on %s. The platform default '%s' is being used." % [str(preference), resolved, default_method]
@@ -247,20 +309,13 @@ func prepare_renderer_switch(preference: String, platform: String = OS.get_name(
 	var resolved := platform if platform != "" else OS.get_name()
 	var usable := preference == "auto" or is_renderer_supported(preference, resolved)
 	if not usable:
-		# Refuse the switch before anything is stored or restarted. An unsupported
-		# backend is never persisted and never gets restart arguments; the running
-		# backend is left alone.
-		renderer_preference = renderer_default_for_platform(resolved)
-		renderer_choice = renderer_preference
-		renderer_pending = ""
-		renderer_attempts = 0
-		renderer_attempt_at = 0.0
-		save_preferences()
+		# M1: refuse before anything is stored. A blocked switch leaves every
+		# stored field exactly as it was and never writes the preference file.
 		return {
 			"restart_required": false,
 			"blocked": true,
 			"reason": renderer_unavailable_reason(preference, resolved),
-			"preference": actual_method(),
+			"preference": renderer_preference,
 			"args": PackedStringArray(),
 		}
 	var target := preference if preference != "auto" else renderer_default_for_platform(resolved)
@@ -269,7 +324,9 @@ func prepare_renderer_switch(preference: String, platform: String = OS.get_name(
 	renderer_pending = ""
 	renderer_attempts = 0
 	renderer_attempt_at = 0.0
-	if target == actual_method():
+	# A simulated platform (tests) cannot be compared with the live backend:
+	# the same method on another platform is still a real restart request.
+	if target == actual_method() and resolved == OS.get_name():
 		_restart_request = PackedStringArray()
 		save_preferences()
 		return {
@@ -281,6 +338,9 @@ func prepare_renderer_switch(preference: String, platform: String = OS.get_name(
 		}
 	renderer_pending = target
 	renderer_attempt_at = Time.get_unix_time_from_system()
+	# The next launch has not proven this backend yet. If the editor never
+	# appears, the one-failed-boot rule catches it on the following launch.
+	renderer_ready = false
 	var args := build_restart_args(target, resolved)
 	_restart_request = args
 	save_preferences()
@@ -294,51 +354,68 @@ func prepare_renderer_switch(preference: String, platform: String = OS.get_name(
 
 ## Pure startup resolution. A request is retried at most twice; after that the
 ## platform default wins and the UI reports why. `attempts` is the number of
-## restarts already issued for this pending request.
+## restarts already issued for this pending request. `ready` is false when the
+## previous launch never reached the editor; Android/iOS Forward+ falls back
+## after that single failure instead of being retried into.
 func resolve_startup_renderer(preference: String, pending: String, actual: String,
-		attempts: int, platform: String) -> Dictionary:
+		attempts: int, platform: String, ready: bool = true) -> Dictionary:
 	var resolved := platform if platform != "" else OS.get_name()
-	if pending != "" and not is_renderer_supported(pending, resolved):
-		# A stale or unsupported pending is never retried into: fall back to the
-		# platform default immediately, with restart args only if that default
-		# differs from the backend that is actually running.
-		var fallback := renderer_default_for_platform(resolved)
+	var fallback := renderer_default_for_platform(resolved)
+	var mobile := resolved == "Android" or resolved == "iOS"
+	if pending == "forward_plus" and mobile and not ready and pending != actual:
+		# One failed Android/iOS Forward+ boot is enough. Do not retry into a
+		# backend that did not reach the editor.
 		return {
 			"action": "fallback",
 			"preference": fallback,
 			"pending": "",
 			"args": build_restart_args(fallback, resolved) if fallback != actual else PackedStringArray(),
+			"reason": "Forward+ did not reach the editor on the previous launch. The platform default renderer is active.",
+		}
+	if pending != "" and not is_renderer_supported(pending, resolved):
+		# A stale or unsupported pending is never retried into: fall back to the
+		# platform default immediately, with restart args only if that default
+		# differs from the backend that is actually running.
+		return {
+			"action": "fallback",
+			"preference": fallback,
+			"pending": "",
+			"args": build_restart_args(fallback, resolved) if fallback != actual else PackedStringArray(),
+			"reason": "Pending renderer '%s' is unsupported on %s. The platform default is active." % [pending, resolved],
 		}
 	var clean := sanitize_renderer_state(preference, pending, resolved)
 	var safe_preference: String = str(clean.get("preference", preference))
 	var safe_pending: String = str(clean.get("pending", ""))
 	if safe_pending == "" or safe_pending == actual:
-		return {"action": "none", "preference": safe_preference, "pending": "", "args": PackedStringArray()}
+		return {"action": "none", "preference": safe_preference, "pending": "", "args": PackedStringArray(), "reason": ""}
 	if attempts < 2:
 		return {
 			"action": "restart",
 			"preference": safe_pending,
 			"pending": safe_pending,
 			"args": build_restart_args(safe_pending, resolved),
+			"reason": "",
 		}
-	var fallback := renderer_default_for_platform(resolved)
 	return {
 		"action": "fallback",
 		"preference": fallback,
 		"pending": "",
 		"args": build_restart_args(fallback, resolved) if fallback != actual else PackedStringArray(),
+		"reason": "The selected renderer was not accepted after two restarts. The platform default renderer is active.",
 	}
 
 func ensure_renderer() -> Dictionary:
 	if renderer_pending == "":
 		return {"action": "none", "preference": renderer_preference, "pending": "", "args": PackedStringArray()}
+	var request := renderer_pending
 	var now := Time.get_unix_time_from_system()
 	# A stale pending request is not retried forever. If the first attempt is
 	# older than the verification window, treat it as failed.
 	if renderer_attempt_at > 0.0 and now - renderer_attempt_at > 60.0:
 		renderer_attempts = 2
 	var result := resolve_startup_renderer(
-		renderer_preference, renderer_pending, actual_method(), renderer_attempts, OS.get_name()
+		renderer_preference, renderer_pending, actual_method(), renderer_attempts,
+		OS.get_name(), renderer_ready
 	)
 	match str(result.get("action", "none")):
 		"none":
@@ -359,9 +436,31 @@ func ensure_renderer() -> Dictionary:
 			renderer_attempts = 0
 			renderer_attempt_at = 0.0
 			_restart_request = PackedStringArray()
-			last_renderer_error = "The selected renderer was not accepted after two restarts. The platform default is active."
+			if request == "forward_plus":
+				last_renderer_error = "Forward+ did not reach the editor on the previous launch. The platform default renderer is active."
+			else:
+				last_renderer_error = "The selected renderer was not accepted after two restarts. The platform default is active."
 	save_preferences()
 	return result
+
+## Called by the shell once startup resolution is done and this launch reached
+## the editor. Never called before resolution and never on the restart path.
+func mark_renderer_ready() -> void:
+	renderer_ready = true
+	if renderer_pending != "" and renderer_pending == actual_method():
+		renderer_pending = ""
+		renderer_attempts = 0
+		renderer_attempt_at = 0.0
+		_restart_request = PackedStringArray()
+	save_preferences()
+
+## The renderer the project actually requests for this feature set. Both
+## renderer surfaces use this so the mobile override is never ignored.
+func project_renderer_request(features := PackedStringArray()) -> String:
+	var setting := "rendering/renderer/rendering_method"
+	if features.is_empty():
+		return str(ProjectSettings.get_setting_with_override(setting))
+	return str(ProjectSettings.get_setting_with_override_and_custom_features(setting, features))
 
 func consume_restart_request() -> PackedStringArray:
 	var args := _restart_request
@@ -373,25 +472,29 @@ func consume_restart_request() -> PackedStringArray:
 # -------------------------------------------------------------------------
 
 func apply_globals() -> void:
-	Engine.max_fps = max_fps
-	RenderingServer.directional_soft_shadow_filter_set_quality(shadow_quality)
-	RenderingServer.positional_soft_shadow_filter_set_quality(shadow_quality)
-	RenderingServer.directional_shadow_atlas_set_size(SHADOW_ATLAS[clampi(shadow_quality, 0, 3)], false)
+	var profile := safe_forward_plus_profile()
+	var quality := int(profile["shadow_quality"])
+	Engine.max_fps = int(profile["max_fps"])
+	RenderingServer.directional_soft_shadow_filter_set_quality(quality)
+	RenderingServer.positional_soft_shadow_filter_set_quality(quality)
+	RenderingServer.directional_shadow_atlas_set_size(SHADOW_ATLAS[clampi(quality, 0, 3)], false)
 
 func apply_viewport(viewport: Viewport) -> void:
 	if viewport == null:
 		return
-	viewport.msaa_3d = MSAA_MODES[clampi(msaa, 0, 3)]
-	viewport.scaling_3d_scale = clampf(scale_3d, 0.5, 1.0)
-	viewport.use_taa = taa and is_forward()
+	var profile := safe_forward_plus_profile()
+	viewport.msaa_3d = MSAA_MODES[clampi(int(profile["msaa"]), 0, 3)]
+	viewport.scaling_3d_scale = clampf(float(profile["scale_3d"]), 0.5, 1.0)
+	viewport.use_taa = bool(profile["taa"]) and is_forward()
 
 func apply_environment(env: Environment) -> void:
 	if env == null:
 		return
 	var forward := is_forward()
+	var profile := safe_forward_plus_profile()
 	env.tonemap_mode = TONEMAPS[clampi(tonemap, 0, 3)]
 	env.tonemap_exposure = exposure
-	env.ssao_enabled = ssao and forward
+	env.ssao_enabled = bool(profile["ssao"]) and forward
 	# SSAO quality is not an Environment property: in Godot 4.7 it lives on
 	# RenderingServer as a global quality override (very low..ultra).
 	if forward:
@@ -400,10 +503,10 @@ func apply_environment(env: Environment) -> void:
 		RenderingServer.environment_set_ssao_quality(
 			clampi(ssao_quality + 1, 1, 4), false, 1.0, 2, 0.0, 0.0
 		)
-	env.ssil_enabled = ssil and forward
-	env.ssr_enabled = ssr and forward
-	env.glow_enabled = glow
-	env.volumetric_fog_enabled = volumetric_fog and forward
+	env.ssil_enabled = bool(profile["ssil"]) and forward
+	env.ssr_enabled = bool(profile["ssr"]) and forward
+	env.glow_enabled = bool(profile["glow"])
+	env.volumetric_fog_enabled = bool(profile["volumetric_fog"]) and forward
 
 func apply_all() -> void:
 	apply_globals()
@@ -461,6 +564,7 @@ func to_dict() -> Dictionary:
 		"renderer_pending": renderer_pending,
 		"renderer_attempt_at": renderer_attempt_at,
 		"renderer_attempts": renderer_attempts,
+		"renderer_ready": renderer_ready,
 		"renderer_choice": renderer_preference,
 	}
 
@@ -536,7 +640,7 @@ func default_environment(env: Environment) -> void:
 	# backdrop all come from the same studio gradient. This is not a decorative
 	# colour card: changing the sky changes the scene's indirect light.
 	env.background_mode = Environment.BG_SKY
-	env.background_energy_multiplier = 1.0
+	env.background_energy_multiplier = 1.1
 
 	var sky_material := ShaderMaterial.new()
 	sky_material.shader = STUDIO_SKY
@@ -547,7 +651,7 @@ func default_environment(env: Environment) -> void:
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_sky_contribution = 1.0
-	env.ambient_light_energy = 1.15
+	env.ambient_light_energy = 1.45
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
@@ -557,12 +661,12 @@ func default_environment(env: Environment) -> void:
 
 	env.ssao_enabled = true
 	env.ssao_radius = 1.55
-	env.ssao_intensity = 2.35
-	env.ssao_power = 1.6
+	env.ssao_intensity = 1.25
+	env.ssao_power = 1.35
 	env.ssao_detail = 0.65
 	env.ssao_horizon = 0.06
 	env.ssao_sharpness = 0.98
-	env.ssao_light_affect = 0.22
+	env.ssao_light_affect = 0.08
 	env.ssao_ao_channel_affect = 0.0
 
 	env.ssil_enabled = false
