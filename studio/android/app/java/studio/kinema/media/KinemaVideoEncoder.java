@@ -105,6 +105,8 @@ public final class KinemaVideoEncoder {
             JSONArray levels = new JSONArray();
             int maxWidth = 0;
             int maxHeight = 0;
+            boolean highProfile = false;
+            boolean vbr = false;
             MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
             for (MediaCodecInfo info : list.getCodecInfos()) {
                 if (info.isEncoder()) {
@@ -118,9 +120,15 @@ public final class KinemaVideoEncoder {
                             maxWidth = Math.max(maxWidth, video.getSupportedWidths().getUpper());
                             maxHeight = Math.max(maxHeight, video.getSupportedHeights().getUpper());
                         }
+                        if (supportsVbr(caps)) {
+                            vbr = true;
+                        }
                         for (MediaCodecInfo.CodecProfileLevel level : caps.profileLevels) {
                             profiles.put(level.profile);
                             levels.put(level.level);
+                            if (level.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh) {
+                                highProfile = true;
+                            }
                         }
                     }
                 }
@@ -154,11 +162,19 @@ public final class KinemaVideoEncoder {
             out.put("max_width", maxWidth);
             out.put("max_height", maxHeight);
             out.put("aac", aac);
+            out.put("supports_4k", maxWidth >= 3840 && maxHeight >= 2160);
+            out.put("supports_1440p", maxWidth >= 2560 && maxHeight >= 1440);
+            out.put("supports_high_profile", highProfile);
+            out.put("supports_vbr", vbr);
         } catch (Throwable error) {
             out = new JSONObject();
             try {
                 out.put("supported", false);
                 out.put("error", error.getMessage());
+                out.put("supports_4k", false);
+                out.put("supports_1440p", false);
+                out.put("supports_high_profile", false);
+                out.put("supports_vbr", false);
             } catch (Exception ignored) {
             }
         }
@@ -238,6 +254,7 @@ public final class KinemaVideoEncoder {
         int height = manifest.getInt("height");
         int fps = Math.max(1, manifest.getInt("fps"));
         int bitrate = manifest.getInt("bitrate");
+        int audioBitrate = Math.max(8000, manifest.optInt("audioBitrate", 192000));
         String frameDir = manifest.getString("frameDir");
         String pattern = manifest.getString("framePattern");
         int frameCount = manifest.getInt("frameCount");
@@ -259,7 +276,7 @@ public final class KinemaVideoEncoder {
         if (audioEntries != null && audioEntries.length() > 0) {
             short[] mixed = mixAudio(audioEntries, frameCount, fps);
             if (mixed.length > 0) {
-                EncodedAudio encoded = encodeAudio(mixed, 192000);
+                EncodedAudio encoded = encodeAudio(mixed, audioBitrate);
                 audioFormat = encoded.format;
                 audioSamples = encoded.samples;
             }
@@ -316,19 +333,36 @@ public final class KinemaVideoEncoder {
 
     private static List<Sample> encodeVideo(File directory, String pattern, int frameCount,
                                             int width, int height, int fps, int bitrate) throws Exception {
-        MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height);
         MediaCodecInfo codecInfo = findVideoEncoder(width, height);
-        int colorFormat = codecInfo == null
+        MediaCodecInfo.CodecCapabilities caps = codecInfo == null
+                ? null
+                : codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC);
+        int colorFormat = caps == null
                 ? MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
-                : selectColorFormat(codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC));
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
-        format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+                : selectColorFormat(caps);
+        boolean vbr = caps != null && supportsVbr(caps);
+        MediaFormat format = buildVideoFormat(width, height, fps, bitrate, colorFormat, vbr);
+        int[] profileLevel = caps == null ? null : selectProfileLevel(caps, width, height, fps);
+        boolean profileKeysSet = profileLevel != null;
+        if (profileKeysSet) {
+            format.setInteger(MediaFormat.KEY_PROFILE, profileLevel[0]);
+            format.setInteger(MediaFormat.KEY_LEVEL, profileLevel[1]);
+        }
         MediaCodec encoder = codecInfo == null
                 ? MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
                 : MediaCodec.createByCodecName(codecInfo.getName());
-        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        try {
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        } catch (Exception rejected) {
+            if (!profileKeysSet) {
+                throw rejected;
+            }
+            // Some encoders advertise a profile/level they then reject at
+            // configure time. Do the retry once, and only once, without those
+            // two keys; every other format key stays exactly as requested.
+            MediaFormat fallback = buildVideoFormat(width, height, fps, bitrate, colorFormat, vbr);
+            encoder.configure(fallback, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        }
         encoder.start();
         List<Sample> samples = new ArrayList<>();
         MediaFormat outputFormat = null;
@@ -462,6 +496,132 @@ public final class KinemaVideoEncoder {
             }
         }
         return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar;
+    }
+
+    /** The real encoder format. Profile/level are added separately so the
+     *  one-retry fallback can rebuild this without them. */
+    private static MediaFormat buildVideoFormat(int width, int height, int fps, int bitrate,
+                                                int colorFormat, boolean vbr) {
+        MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height);
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
+        format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+        if (vbr) {
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR);
+        }
+        return format;
+    }
+
+    /** VBR is only requested when this encoder advertises the mode. */
+    private static boolean supportsVbr(MediaCodecInfo.CodecCapabilities caps) {
+        MediaCodecInfo.EncoderCapabilities encoderCaps = caps.getEncoderCapabilities();
+        return encoderCaps != null && encoderCaps.isBitrateModeSupported(
+                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR);
+    }
+
+    /** Prefer High, then Main, then Baseline, but only a profile the codec
+     *  actually advertises. Returns {profile, level} or null. */
+    private static int[] selectProfileLevel(MediaCodecInfo.CodecCapabilities caps,
+                                            int width, int height, int fps) {
+        int profile = 0;
+        if (hasProfile(caps, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)) {
+            profile = MediaCodecInfo.CodecProfileLevel.AVCProfileHigh;
+        } else if (hasProfile(caps, MediaCodecInfo.CodecProfileLevel.AVCProfileMain)) {
+            profile = MediaCodecInfo.CodecProfileLevel.AVCProfileMain;
+        } else if (hasProfile(caps, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)) {
+            profile = MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline;
+        }
+        if (profile == 0) {
+            return null;
+        }
+        int level = selectLevel(caps, profile, width, height, fps);
+        if (level == 0) {
+            return null;
+        }
+        return new int[]{profile, level};
+    }
+
+    private static boolean hasProfile(MediaCodecInfo.CodecCapabilities caps, int profile) {
+        for (MediaCodecInfo.CodecProfileLevel level : caps.profileLevels) {
+            if (level.profile == profile) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Smallest advertised level that covers the frame size and frame rate.
+     *  When none covers the target, use the highest advertised level and let
+     *  the configure retry drop the keys. Never invent an unadvertised level. */
+    private static int selectLevel(MediaCodecInfo.CodecCapabilities caps, int profile,
+                                   int width, int height, int fps) {
+        int best = 0;
+        int highest = 0;
+        for (MediaCodecInfo.CodecProfileLevel entry : caps.profileLevels) {
+            if (entry.profile != profile) {
+                continue;
+            }
+            if (highest == 0 || entry.level > highest) {
+                highest = entry.level;
+            }
+            if (levelCovers(entry.level, width, height, fps)
+                    && (best == 0 || entry.level < best)) {
+                best = entry.level;
+            }
+        }
+        return best != 0 ? best : highest;
+    }
+
+    /** H.264 level limits: {max frame size in macroblocks, max macroblocks/s}. */
+    private static long[] levelCapacity(int level) {
+        switch (level) {
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel1:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel1b:
+                return new long[]{99L, 1485L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel1_1:
+                return new long[]{396L, 3000L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel1_2:
+                return new long[]{396L, 6000L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel1_3:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel2:
+                return new long[]{396L, 11880L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel2_1:
+                return new long[]{792L, 19800L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel2_2:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel3:
+                return new long[]{1620L, 40500L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel3_1:
+                return new long[]{3600L, 108000L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel3_2:
+                return new long[]{5120L, 216000L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel4:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel4_1:
+                return new long[]{8192L, 245760L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel4_2:
+                return new long[]{8704L, 522240L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel5:
+                return new long[]{22080L, 589824L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel5_1:
+                return new long[]{36864L, 983040L};
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel5_2:
+                return new long[]{36864L, 2073600L};
+            default:
+                return null;
+        }
+    }
+
+    private static boolean levelCovers(int level, int width, int height, int fps) {
+        long[] capacity = levelCapacity(level);
+        if (capacity == null) {
+            return false;
+        }
+        long macroblockWidth = (width + 15) / 16;
+        long macroblockHeight = (height + 15) / 16;
+        long frameSize = macroblockWidth * macroblockHeight;
+        long frameRate = frameSize * fps;
+        return frameSize <= capacity[0] && frameRate <= capacity[1];
     }
 
     private static void fillNV12(Bitmap bitmap, byte[] out, int width, int height) {
