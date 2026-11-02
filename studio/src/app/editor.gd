@@ -197,6 +197,12 @@ var _render_time_label: Label = null
 var _render_saved_time := 0.0
 var _render_was_playing := false
 var _render_ui_state: Dictionary = {}
+## Look-through is the document camera's view. The view owns the camera and
+## chrome; the editor owns header visibility and Android back precedence.
+var _look_through := false
+var _look_camera_id := ""
+var _look_header_was_visible := true
+var _look_perf_was_visible := false
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -289,6 +295,7 @@ func _build_body() -> void:
 	# free-orbit camera or a grid change; the header writes intent back.
 	_view.view_changed.connect(_on_view_changed)
 	_view.grid_changed.connect(_on_view_grid_changed)
+	_view.look_through_exited.connect(_on_view_look_through_exited)
 	_view.bind_header_controls(_view_header.grid_button(), _view_header.frame_button())
 	_view_header.view_requested.connect(_on_view_requested)
 	_view_header.grid_toggled.connect(_on_view_header_grid_toggled)
@@ -591,6 +598,7 @@ func _build_dock() -> void:
 	_inspector = InspectorScript.new()
 	_inspector.add_requested.connect(_open_add_sheet)
 	_inspector.color_requested.connect(_open_color_sheet)
+	_inspector.look_through_requested.connect(_enter_look_through)
 	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("inspector", collapsed)
 	)
@@ -1174,6 +1182,9 @@ func _leave(save_first: bool = false) -> void:
 	exit_requested.emit()
 
 func handle_back() -> bool:
+	if _look_through:
+		_exit_look_through()
+		return true
 	if _render_mode:
 		_exit_render_mode()
 		return true
@@ -1479,7 +1490,7 @@ func _update_scene_rail_count() -> void:
 func _sync_view_header_visibility() -> void:
 	if _view_header == null:
 		return
-	var covered := _render_mode or _drawer_open
+	var covered := _render_mode or _drawer_open or _look_through
 	if _overlay != null and _overlay.has_modal():
 		covered = true
 	_view_header.visible = not covered
@@ -2575,6 +2586,50 @@ func _file_size(path: String) -> int:
 	file.close()
 	return size
 
+## Look-through is a viewing mode, not a document change. The view copies the
+## document camera; here we hide the editing header and keep the timeline,
+## transport, dock and scene tree exactly as they were.
+func _enter_look_through(camera_id: String) -> void:
+	if _view == null or _render_mode:
+		return
+	if _view.is_look_through():
+		return
+	if not _view.enter_look_through(camera_id):
+		return
+	_look_through = true
+	_look_camera_id = camera_id
+	_look_header_was_visible = _view_header != null and _view_header.visible
+	_look_perf_was_visible = _perf_overlay != null and _perf_overlay.visible
+	if _view_header != null:
+		_view_header.visible = false
+	if _perf_overlay != null:
+		_perf_overlay.visible = false
+	_sync_view_header_visibility()
+
+## The view can leave look-through by itself (the Exit control lives inside
+## it), so the editor restores its own chrome from this one handler. Calling
+## `_exit_look_through()` therefore just asks the view to exit, and the restore
+## happens exactly once from here.
+func _on_view_look_through_exited() -> void:
+	_look_through = false
+	_look_camera_id = ""
+	if _perf_overlay != null:
+		_perf_overlay.visible = _look_perf_was_visible
+	if _view_header != null:
+		_view_header.visible = _look_header_was_visible
+	_sync_view_header_visibility()
+	_apply_shell()
+
+func _exit_look_through() -> void:
+	if _view != null and _view.is_look_through():
+		_view.exit_look_through()
+		return
+	if _look_through:
+		_on_view_look_through_exited()
+
+func is_look_through() -> bool:
+	return _look_through
+
 ## Quick render is the review loop: the editor becomes a live, full-quality
 ## playback surface instead of showing a static capture of the current frame.
 ## Nothing is captured here; the renderer keeps drawing the document in real
@@ -2582,6 +2637,8 @@ func _file_size(path: String) -> int:
 func _enter_render_mode() -> void:
 	if _render_mode or doc == null or _view == null or _render_busy:
 		return
+	if _look_through:
+		_exit_look_through()
 	if _overlay != null and _overlay.has_modal():
 		_overlay.close_modal()
 	# Render preview runs the clip clock. Stop a sequence first so its stop
@@ -3656,7 +3713,7 @@ func _on_modal_opened() -> void:
 	_sync_view_header_visibility()
 
 func _on_modal_closed() -> void:
-	if _view != null and not _render_mode:
+	if _view != null and not _render_mode and not _look_through:
 		_view.set_hud_visible(true)
 	_sync_view_header_visibility()
 	if not _color_sheet_active:

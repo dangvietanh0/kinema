@@ -11,12 +11,29 @@ const DRAFT_SCALE := 0.72
 const DRAFT_CAP := 1400
 const DRAFT_IDLE_DELAY := 0.45
 
+## Projected camera/light chrome. A 2 px colour line over a 1 px dark underlay
+## survives both the black stage and the brightest material, the same
+## technique the selection box uses.
+const MARKER_OVERLAY_WIDTH := 2.0
+const MARKER_OVERLAY_PICK := 12.0
+const MARKER_OVERLAY_COLOR := Color(0.72, 0.74, 0.78, 0.95)
+const MARKER_OVERLAY_SELECTED := Color(0.95, 0.96, 0.98, 1.0)
+const MARKER_OVERLAY_DARK := Color(0.005, 0.005, 0.005, 0.62)
+## A camera's display frustum is legible, not the document's 500 m far plane.
+const FRUSTUM_DISPLAY_SCALE := 0.24
+const FRUSTUM_MIN_DEPTH := 1.2
+const FRUSTUM_MAX_DEPTH := 8.0
+const LOCATOR_EDGE_MARGIN := 28.0
+
 signal quick_render_requested
 signal performance_requested
 ## The viewport header owns the visible camera/grid controls; the view reports
 ## its state so the two never disagree.
 signal view_changed(label: String)
 signal grid_changed(enabled: bool)
+## Emitted when look-through ends from any path, including the Exit control
+## that lives inside the view. The editor restores its own header from this.
+signal look_through_exited
 
 const DocumentScript = preload("res://src/core/document.gd")
 const TransformGizmo3DScript = preload("res://src/viewport/transform_gizmo_3d.gd")
@@ -65,6 +82,16 @@ var _render_grid_was_on := true
 var _render_draft_was_on := true
 var _render_hud_was_on := true
 var _render_markers_were_hidden := true
+
+## Look-through is the document camera's real view. The editor camera is the
+## only camera that moves; the document camera node stays inactive.
+var look_through := false
+var _look_camera_id := ""
+var _look_saved: Dictionary = {}
+var _exit_camera_button: Button = null
+## The editor's own FOV. Look-through copies the document camera's FOV and
+## exit restores this value through the one orbit-camera path.
+var _editor_fov := 46.0
 
 var _touches: Dictionary = {}
 var _mode := "idle"  # idle | orbit | gizmo | multi | pan
@@ -151,6 +178,7 @@ func _build_viewport() -> void:
 	_camera = Camera3D.new()
 	_camera.name = "EditorCamera"
 	_camera.fov = 46.0
+	_editor_fov = _camera.fov
 	_camera.near = 0.04
 	_camera.far = 400.0
 	_camera.current = true
@@ -337,6 +365,33 @@ func _build_hud() -> void:
 	_nav_gizmo.offset_bottom = -12.0
 	_nav_gizmo.view_requested.connect(_on_nav_view_requested)
 	_hud_root.add_child(_nav_gizmo)
+	_build_look_through_control()
+
+## The Exit control is not part of the HUD: look-through hides the HUD, and
+## this button must outlive it. It is a direct child of the view, pinned to the
+## stage's top-left with the 12 dp inset.
+func _build_look_through_control() -> void:
+	_exit_camera_button = Button.new()
+	_exit_camera_button.name = "ExitCamera"
+	_exit_camera_button.text = "Exit camera"
+	_exit_camera_button.focus_mode = Control.FOCUS_NONE
+	_exit_camera_button.custom_minimum_size = Vector2(96.0, 44.0)
+	_exit_camera_button.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_exit_camera_button.offset_left = 12.0
+	_exit_camera_button.offset_top = 12.0
+	_exit_camera_button.offset_right = 108.0
+	_exit_camera_button.offset_bottom = 56.0
+	_exit_camera_button.add_theme_font_size_override("font_size", 12)
+	_exit_camera_button.visible = false
+	_exit_camera_button.z_index = 24
+	_override_hud_button(_exit_camera_button)
+	_exit_camera_button.pressed.connect(exit_look_through)
+	add_child(_exit_camera_button)
+	# Keep the HUD as the last (top) viewport layer for the smoke contract.
+	# Look-through hides the HUD, so the Exit control is the only chrome left
+	# and still receives its tap.
+	if _hud_root != null:
+		move_child(_exit_camera_button, _hud_root.get_index())
 
 func _override_hud_button(button: Button) -> void:
 	# HUD controls read as floating surfaces, not framed cards. State is
@@ -355,11 +410,16 @@ func _override_hud_button(button: Button) -> void:
 func set_document(document: Node3D) -> void:
 	if doc == document:
 		return
+	if look_through:
+		look_through = false
+		_look_camera_id = ""
+		_look_saved.clear()
+		if _exit_camera_button != null:
+			_exit_camera_button.visible = false
 	doc = document
-	# Locators are drawn by the viewport overlay; the document's 3D marker
-	# meshes remain available for tooling and still renders but stay out of
-	# the editing view.
-	doc.markers_hidden = true
+	# Editing shows the document's real 3D marker bodies. A still capture and
+	# render mode hide them, and both restore this editing value on exit.
+	doc.markers_hidden = false
 	_viewport.add_child(doc)
 	doc.scene_changed.connect(_on_scene_changed)
 	doc.selection_changed.connect(_on_selection_changed)
@@ -403,6 +463,8 @@ func set_snap_values(translate: float, rotate: float, scale: float) -> void:
 func set_render_mode(enabled: bool) -> void:
 	if render_mode == enabled:
 		return
+	if enabled and look_through:
+		exit_look_through()
 	render_mode = enabled
 	if enabled:
 		_render_grid_was_on = _grid_on
@@ -497,13 +559,15 @@ func _process(delta: float) -> void:
 				_end_draft()
 	if _camera == null:
 		return
-	var offset := Vector3(
-		cos(pitch) * sin(yaw),
-		sin(pitch),
-		cos(pitch) * cos(yaw)
-	) * distance
-	_camera.global_position = target + offset
-	_camera.look_at(target, Vector3.UP)
+	if look_through:
+		# The editor camera is a copy of the document camera. Orbit state must
+		# never overwrite it, and no editing chrome is rebuilt here; playback
+		# still drives its own updates through playback_changed.
+		if _redraw_needed:
+			_redraw_needed = false
+			queue_redraw()
+		return
+	_apply_orbit_camera()
 	_sync_nav()
 	if doc == null:
 		_draw_gizmo()
@@ -518,6 +582,22 @@ func _process(delta: float) -> void:
 	if _redraw_needed:
 		_redraw_needed = false
 		queue_redraw()
+
+## The only path that derives the editing camera from the orbit target, yaw,
+## pitch and distance. `_process()` and look-through exit both call it so exit
+## is immediate and the test can assert the exact saved transform.
+func _apply_orbit_camera() -> void:
+	if _camera == null or look_through:
+		return
+	var offset := Vector3(
+		cos(pitch) * sin(yaw),
+		sin(pitch),
+		cos(pitch) * cos(yaw)
+	) * distance
+	_camera.global_position = target + offset
+	_camera.look_at(target, Vector3.UP)
+	if not is_equal_approx(_camera.fov, _editor_fov):
+		_camera.fov = _editor_fov
 
 # -------------------------------------------------------------------------
 # Document events and view helpers
@@ -843,6 +923,11 @@ func _gui_input(event: InputEvent) -> void:
 		# The render preview is a viewing surface, not an editing one. The
 		# transport is a sibling control, so its taps still arrive normally.
 		return
+	if look_through:
+		# Look-through is a camera view: orbit, pan, gizmo and tap selection
+		# are all editing gestures and are ignored. The Exit control is a
+		# child button and receives its own press before this handler.
+		return
 	if Kit.is_emulated_mouse(event):
 		return
 	if event is InputEventScreenTouch:
@@ -956,7 +1041,7 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 ## so a drag never depends on a hover state.
 func _update_hover(point: Vector2) -> void:
 	var next := ""
-	if not render_mode and tool != "select" and doc != null and doc.selected_id != "":
+	if not render_mode and not look_through and tool != "select" and doc != null and doc.selected_id != "":
 		next = _hit_gizmo(point)
 	if next == _hover_axis:
 		return
@@ -1009,7 +1094,7 @@ func _update_multi_gesture() -> void:
 # -------------------------------------------------------------------------
 
 func _pick(point: Vector2) -> void:
-	if doc == null or render_mode:
+	if doc == null or render_mode or look_through:
 		return
 	var best_id := ""
 	var best_depth := INF
@@ -1029,19 +1114,53 @@ func _pick(point: Vector2) -> void:
 			if rect.has_area() and rect.grow(5.0).has_point(point):
 				hit = true
 				depth = _camera.global_position.distance_to(aabb.get_center())
-		if not hit and (kind == "camera" or kind == "light" or kind == "empty"):
-			# Camera, light and empty markers shrink with distance, so their
-			# bounds alone make them hard to tap. Give them a fixed screen-space
-			# target around the object origin.
+		if kind == "camera" or kind == "light" or kind == "empty":
+			# The projected frustum/arrow/footprint and the fixed 26 px origin
+			# target share one hit test with the drawing helpers, so the two
+			# can never drift apart.
+			var overlay_distance := _marker_overlay_distance(id, point)
+			if overlay_distance <= MARKER_OVERLAY_PICK:
+				hit = true
+				depth = minf(depth, _camera.global_position.distance_to(node.global_position))
 			if not _camera.is_position_behind(node.global_position):
 				var screen := _to_ui(_camera.unproject_position(node.global_position))
 				if screen.distance_to(point) < 26.0:
 					hit = true
-					depth = _camera.global_position.distance_to(node.global_position)
+					depth = minf(depth, _camera.global_position.distance_to(node.global_position))
 		if hit and depth < best_depth:
 			best_depth = depth
 			best_id = id
 	doc.set_selection(best_id)
+
+## Overlay-only picking used by tests and any future hit-test consumer. It
+## returns the closest visible camera/light/empty whose projected frustum,
+## arrow, footprint or 26 px origin target contains `point`.
+func pick_marker_overlay(point: Vector2) -> String:
+	if doc == null or _camera == null or render_mode or look_through:
+		return ""
+	var best_id := ""
+	var best_depth := INF
+	for obj in doc.objects:
+		var kind := str(obj.get("kind", ""))
+		if kind != "camera" and kind != "light" and kind != "empty":
+			continue
+		var id := str(obj.get("id", ""))
+		if id == "" or not bool(obj.get("visible", true)):
+			continue
+		var node: Node3D = doc.nodes.get(id)
+		if node == null or not node.visible:
+			continue
+		var hit := _marker_overlay_distance(id, point) <= MARKER_OVERLAY_PICK
+		if not hit and not _camera.is_position_behind(node.global_position):
+			var screen := _to_ui(_camera.unproject_position(node.global_position))
+			hit = screen.distance_to(point) < 26.0
+		if not hit:
+			continue
+		var depth := _camera.global_position.distance_to(node.global_position)
+		if depth < best_depth:
+			best_depth = depth
+			best_id = id
+	return best_id
 
 func _project_aabb_rect(aabb: AABB) -> Rect2:
 	var corners := _aabb_corners(aabb)
@@ -1094,7 +1213,7 @@ func gizmo_hit_radius() -> float:
 
 
 func _hit_gizmo(point: Vector2) -> String:
-	if render_mode or tool == "select" or doc == null or doc.selected_id == "":
+	if render_mode or look_through or tool == "select" or doc == null or doc.selected_id == "":
 		return ""
 	# Rebuild the projected handles from the current camera before testing, so
 	# a tap after an orbit or a selection change never uses stale points.
@@ -1228,19 +1347,35 @@ func _pixel_length_for_axis(axis: Vector3) -> float:
 func _draw() -> void:
 	if _camera == null or doc == null:
 		return
-	if render_mode:
-		# Render mode is the clean frame. Locators, selection, gizmo, compass
-		# and transient HUD text would all leak editing chrome into the shot.
+	if render_mode or look_through:
+		# Render mode is the clean frame. Look-through is the document camera's
+		# view; locators, selection, gizmo, compass and transient HUD text are
+		# all editing chrome and must not leak into it.
 		return
 	_draw_object_markers()
+	_draw_object_overlays()
 	_draw_selection()
 	_draw_gizmo()
 	_draw_hud()
 
-## Camera, light and empty locators are drawn in screen space. A world-space
-## wireframe shrinks into an unreadable speck at typical edit distances; the
-## same glyphs the outliner uses stay legible and make the scene structure
-## obvious without adding chrome to the viewport.
+## Editing uses the document's solid 3D marker bodies. This overlay keeps only
+## the name tag for an object the editor camera cannot see: off-screen or
+## behind the camera. Drawing and the test share `flat_locator_needed()` so an
+## on-screen body never gets a flat icon drawn over it.
+func flat_locator_needed(id: String) -> bool:
+	if doc == null or _camera == null:
+		return false
+	var node: Node3D = doc.nodes.get(id)
+	if node == null or not node.visible:
+		return false
+	if _camera.is_position_behind(node.global_position):
+		return true
+	if not _camera.is_position_behind(node.global_position):
+		var p := _to_ui(_camera.unproject_position(node.global_position))
+		if p.x < -24.0 or p.y < -24.0 or p.x > size.x + 24.0 or p.y > size.y + 24.0:
+			return true
+	return false
+
 func _draw_object_markers() -> void:
 	if doc == null or _camera == null:
 		return
@@ -1249,16 +1384,12 @@ func _draw_object_markers() -> void:
 		if kind != "camera" and kind != "light" and kind != "empty":
 			continue
 		var id := str(obj.get("id", ""))
+		if not flat_locator_needed(id):
+			continue
 		var node: Node3D = doc.nodes.get(id)
-		if node == null or not node.visible:
+		if node == null:
 			continue
-		if _camera.is_position_behind(node.global_position):
-			continue
-		if _camera.global_position.distance_to(node.global_position) < 0.6:
-			continue
-		var p := _to_ui(_camera.unproject_position(node.global_position))
-		if p.x < -24.0 or p.y < -24.0 or p.x > size.x + 24.0 or p.y > size.y + 24.0:
-			continue
+		var p := _locator_screen_point(node)
 		var icon_name := "camera"
 		if kind == "light":
 			icon_name = "lightbulb"
@@ -1269,8 +1400,327 @@ func _draw_object_markers() -> void:
 		var texture := Kit.icon_texture(icon_name)
 		draw_texture_rect(texture, Rect2(box.position + Vector2(1, 1), box.size), false, Color(0, 0, 0, 0.6))
 		draw_texture_rect(texture, box, false, Kit.TEXT if selected else Kit.TEXT_MUTED)
+		# The name tag is the locator's whole job now. It reads at the screen
+		# edge without pretending to be the object's body.
+		var label := str(obj.get("name", ""))
+		if label != "":
+			var font := Kit.font_mono
+			var text_size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10)
+			var tag := Rect2(p + Vector2(15, -9), text_size + Vector2(8, 16))
+			draw_rect(tag, Color(0.02, 0.02, 0.02, 0.78), true)
+			draw_string(font, tag.position + Vector2(4, text_size.y + 1), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Kit.TEXT if selected else Kit.TEXT_MUTED)
 		if selected:
 			draw_arc(p, 15.0, 0.0, TAU, 28, Kit.ACCENT * Color(1, 1, 1, 0.7), 1.0, true)
+
+## Pin a name tag to the screen edge when the object is behind the editor
+## camera. In front, clamp the projected origin so an off-screen object still
+## gets a reachable tag.
+func _locator_screen_point(node: Node3D) -> Vector2:
+	if _camera == null:
+		return Vector2.ZERO
+	var half := size * 0.5
+	if not _camera.is_position_behind(node.global_position):
+		var p := _to_ui(_camera.unproject_position(node.global_position))
+		return Vector2(
+			clampf(p.x, LOCATOR_EDGE_MARGIN, maxf(LOCATOR_EDGE_MARGIN, size.x - LOCATOR_EDGE_MARGIN)),
+			clampf(p.y, LOCATOR_EDGE_MARGIN, maxf(LOCATOR_EDGE_MARGIN, size.y - LOCATOR_EDGE_MARGIN))
+		)
+	var local := _camera.global_transform.affine_inverse() * node.global_position
+	var direction := Vector2(local.x, -local.y)
+	if direction.length() < 0.001:
+		direction = Vector2.RIGHT
+	direction = direction.normalized()
+	var reach_x := maxf(1.0, half.x - LOCATOR_EDGE_MARGIN)
+	var reach_y := maxf(1.0, half.y - LOCATOR_EDGE_MARGIN)
+	var t := minf(
+		reach_x / maxf(0.001, absf(direction.x)),
+		reach_y / maxf(0.001, absf(direction.y))
+	)
+	return half + direction * t
+
+# -------------------------------------------------------------------------
+# Projected overlay geometry
+# -------------------------------------------------------------------------
+
+## The real stage aspect (width / height) used by the camera frustum.
+func stage_aspect() -> float:
+	var base := Vector2.ZERO
+	if _viewport != null:
+		base = Vector2(_viewport.size)
+	if base.x <= 1.0 or base.y <= 1.0:
+		base = size
+	return clampf(base.x / maxf(1.0, base.y), 0.1, 10.0)
+
+## The four far-plane corners in camera-local space. Godot's Camera3D uses a
+## vertical FOV with KEEP_HEIGHT, so half-height = tan(fov/2) * depth and
+## half-width = half-height * aspect. The camera looks down local -Z.
+func frustum_corners(fov_deg: float, aspect: float, depth: float) -> Array[Vector3]:
+	var d := maxf(0.01, depth)
+	var half_h := tan(deg_to_rad(clampf(fov_deg, 1.0, 179.0)) * 0.5) * d
+	var half_w := half_h * maxf(0.01, aspect)
+	var corners: Array[Vector3] = [
+		Vector3(-half_w, half_h, -d),
+		Vector3(half_w, half_h, -d),
+		Vector3(half_w, -half_h, -d),
+		Vector3(-half_w, -half_h, -d),
+	]
+	return corners
+
+## A legible display depth derived from view distance and the same marker
+## scale the document uses. The FOV and aspect above are always the real ones.
+func camera_display_depth(id: String) -> float:
+	var node: Node3D = doc.nodes.get(id) if doc != null else null
+	if node == null or _camera == null:
+		return 2.0
+	var dist := _camera.global_position.distance_to(node.global_position)
+	return clampf(dist * FRUSTUM_DISPLAY_SCALE, FRUSTUM_MIN_DEPTH, FRUSTUM_MAX_DEPTH)
+
+func camera_frustum_segments(id: String) -> Array:
+	var segments: Array = []
+	if doc == null or _camera == null:
+		return segments
+	var obj := doc.get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "camera":
+		return segments
+	var node: Node3D = doc.nodes.get(id)
+	if node == null or not node.visible:
+		return segments
+	var fov := clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
+	var corners := frustum_corners(fov, stage_aspect(), camera_display_depth(id))
+	var lens := node.global_transform * Vector3(0.0, 0.0, -0.24)
+	var world_corners: Array = []
+	for corner in corners:
+		world_corners.append(node.global_transform * corner)
+	for corner in world_corners:
+		_append_projected(segments, lens, corner)
+	_append_projected_ring(segments, world_corners)
+	return segments
+
+func _append_projected(out: Array, a: Vector3, b: Vector3) -> void:
+	if _camera == null:
+		return
+	if _camera.is_position_behind(a) or _camera.is_position_behind(b):
+		return
+	out.append(PackedVector2Array([
+		_to_ui(_camera.unproject_position(a)),
+		_to_ui(_camera.unproject_position(b)),
+	]))
+
+func _append_projected_ring(out: Array, world_points: Array) -> void:
+	if _camera == null or world_points.size() < 2:
+		return
+	var points := PackedVector2Array()
+	for point in world_points:
+		var world: Vector3 = point
+		if _camera.is_position_behind(world):
+			return
+		points.append(_to_ui(_camera.unproject_position(world)))
+	if points.size() >= 2:
+		points.append(points[0])
+		out.append(points)
+
+## Analytic intersection of a light ray with the ground plane y = 0. No hit is
+## reported for an upward or horizontal ray, so the drawing path cannot fake
+## a ground ring for a light that never reaches the floor.
+func light_ground_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var dir := direction
+	if dir.length() < 0.00001:
+		return {"visible": false, "point": origin}
+	dir = dir.normalized()
+	if dir.y >= -0.0001 or origin.y <= 0.0:
+		return {"visible": false, "point": origin}
+	var t := -origin.y / dir.y
+	if t <= 0.0:
+		return {"visible": false, "point": origin}
+	return {"visible": true, "point": origin + dir * t}
+
+func _light_direction(node: Node3D) -> Vector3:
+	return (-node.global_transform.basis.z).normalized()
+
+func _light_max_length(origin: Vector3) -> float:
+	if _camera == null:
+		return 12.0
+	return clampf(_camera.global_position.distance_to(origin) * 2.2, 5.0, 32.0)
+
+func _light_hit(id: String) -> Dictionary:
+	if doc == null:
+		return {"visible": false, "point": Vector3.ZERO}
+	var obj := doc.get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "light" or str(obj.get("light_type", "directional")) == "omni":
+		return {"visible": false, "point": Vector3.ZERO}
+	var node: Node3D = doc.nodes.get(id)
+	if node == null or not node.visible:
+		return {"visible": false, "point": Vector3.ZERO}
+	return light_ground_hit(node.global_position, _light_direction(node))
+
+## The displayed arrow endpoint. A real ground hit is used while it stays
+## inside the visible stage; otherwise the arrow is clamped along the real
+## direction, and the ground ring is not drawn.
+func arrow_endpoint(id: String) -> Vector3:
+	if doc == null:
+		return Vector3.ZERO
+	var obj := doc.get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "light" or str(obj.get("light_type", "directional")) == "omni":
+		return Vector3.ZERO
+	var node: Node3D = doc.nodes.get(id)
+	if node == null:
+		return Vector3.ZERO
+	var origin := node.global_position
+	var direction := _light_direction(node)
+	var max_length := _light_max_length(origin)
+	var hit := light_ground_hit(origin, direction)
+	if bool(hit.get("visible", false)):
+		var point: Vector3 = hit.get("point", origin)
+		if origin.distance_to(point) <= max_length:
+			return point
+		return origin + direction * max_length
+	var end := origin + direction * max_length
+	end.y = clampf(end.y, 0.0, 8.0)
+	return end
+
+func light_ground_ring_visible(id: String) -> bool:
+	var obj := doc.get_object(id) if doc != null else {}
+	if obj.is_empty() or str(obj.get("kind", "")) != "light":
+		return false
+	var node: Node3D = doc.nodes.get(id)
+	if node == null or not node.visible:
+		return false
+	var hit := _light_hit(id)
+	if not bool(hit.get("visible", false)):
+		return false
+	var point: Vector3 = hit.get("point", Vector3.ZERO)
+	return node.global_position.distance_to(point) <= _light_max_length(node.global_position)
+
+func light_arrow_segments(id: String) -> Array:
+	var segments: Array = []
+	if doc == null or _camera == null:
+		return segments
+	var obj := doc.get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "light":
+		return segments
+	if str(obj.get("light_type", "directional")) == "omni":
+		return segments
+	var node: Node3D = doc.nodes.get(id)
+	if node == null or not node.visible:
+		return segments
+	var origin := node.global_position
+	var end := arrow_endpoint(id)
+	_append_projected(segments, origin, end)
+	var length := origin.distance_to(end)
+	if length > 0.05:
+		var direction := (end - origin).normalized()
+		var side := direction.cross(Vector3.UP)
+		if side.length() < 0.001:
+			side = direction.cross(Vector3.RIGHT)
+		side = side.normalized()
+		var back := end - direction * minf(0.5, length * 0.28)
+		_append_projected(segments, end, back + side * 0.24)
+		_append_projected(segments, end, back - side * 0.24)
+	if light_ground_ring_visible(id):
+		var hit := _light_hit(id)
+		var point: Vector3 = hit.get("point", Vector3.ZERO)
+		var ring: Array = []
+		var radius := 0.45
+		for index in range(49):
+			var angle := TAU * float(index) / 48.0
+			ring.append(Vector3(
+				point.x + cos(angle) * radius,
+				0.02,
+				point.z + sin(angle) * radius
+			))
+		_append_projected_ring(segments, ring)
+	return segments
+
+## The footprint radius is the object's real light_range at the ground plane,
+## per the W7 contract.
+func footprint_radius(obj: Dictionary) -> float:
+	return maxf(0.0, float(obj.get("light_range", 8.0)))
+
+func footprint_visible(id: String) -> bool:
+	if doc == null or _camera == null:
+		return false
+	var obj := doc.get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "light":
+		return false
+	if str(obj.get("light_type", "directional")) != "omni":
+		return false
+	var node: Node3D = doc.nodes.get(id)
+	if node == null or not node.visible:
+		return false
+	# At or below the ground plane the projected disc would fake a hit.
+	return node.global_position.y > 0.01 and footprint_radius(obj) > 0.001
+
+func footprint_segments(id: String) -> Array:
+	var segments: Array = []
+	if not footprint_visible(id):
+		return segments
+	var obj := doc.get_object(id)
+	var node: Node3D = doc.nodes.get(id)
+	if node == null:
+		return segments
+	var radius := footprint_radius(obj)
+	var center := Vector3(node.global_position.x, 0.02, node.global_position.z)
+	for ratio in [1.0, 0.66, 0.33]:
+		var ring: Array = []
+		for index in range(49):
+			var angle := TAU * float(index) / 48.0
+			ring.append(Vector3(
+				center.x + cos(angle) * radius * float(ratio),
+				center.y,
+				center.z + sin(angle) * radius * float(ratio)
+			))
+		_append_projected_ring(segments, ring)
+	return segments
+
+func _marker_overlay_segments(id: String) -> Array:
+	if doc == null:
+		return []
+	var obj := doc.get_object(id)
+	if obj.is_empty():
+		return []
+	match str(obj.get("kind", "")):
+		"camera":
+			return camera_frustum_segments(id)
+		"light":
+			if str(obj.get("light_type", "directional")) == "omni":
+				return footprint_segments(id)
+			return light_arrow_segments(id)
+	return []
+
+func _marker_overlay_distance(id: String, point: Vector2) -> float:
+	var best := INF
+	for poly in _marker_overlay_segments(id):
+		var points: PackedVector2Array = poly
+		for index in range(points.size() - 1):
+			var closest := Geometry2D.get_closest_point_to_segment(point, points[index], points[index + 1])
+			best = minf(best, point.distance_to(closest))
+	return best
+
+## Draw the projected frustum, directional arrow and omni footprint. Every
+## segment comes from the same helpers the hit test uses.
+func _draw_object_overlays() -> void:
+	if doc == null or _camera == null:
+		return
+	for obj in doc.objects:
+		var kind := str(obj.get("kind", ""))
+		if kind != "camera" and kind != "light":
+			continue
+		var id := str(obj.get("id", ""))
+		if id == "" or not bool(obj.get("visible", true)):
+			continue
+		var node: Node3D = doc.nodes.get(id)
+		if node == null or not node.visible:
+			continue
+		var segments := _marker_overlay_segments(id)
+		if segments.is_empty():
+			continue
+		var color := MARKER_OVERLAY_SELECTED if id == doc.selected_id else MARKER_OVERLAY_COLOR
+		for poly in segments:
+			var points: PackedVector2Array = poly
+			if points.size() < 2:
+				continue
+			draw_polyline(points, MARKER_OVERLAY_DARK, MARKER_OVERLAY_WIDTH + 1.0, true)
+			draw_polyline(points, color, MARKER_OVERLAY_WIDTH, true)
 
 ## The stage feedback for the current selection: an AABB box, a dot for a
 ## visible object with no drawable geometry, or nothing at all. Drawing and the
@@ -1337,6 +1787,9 @@ func _draw_gizmo() -> void:
 	_gizmo_handles.clear()
 	if _gizmo == null or _camera == null:
 		return
+	if look_through:
+		_gizmo.set_visible_gizmo(false)
+		return
 	if _gizmo_suppressed:
 		_gizmo.set_visible_gizmo(false)
 		return
@@ -1391,6 +1844,117 @@ func _draw_hud() -> void:
 	draw_rect(rect, Color(0.063, 0.063, 0.063, 0.92), true)
 	draw_rect(rect, Kit.BORDER, false, 1.0)
 	draw_string(font, rect.position + Vector2(10, text_size.y + 2), _hud_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Kit.ACCENT_BRIGHT)
+
+# -------------------------------------------------------------------------
+# Look-through
+# -------------------------------------------------------------------------
+
+func is_look_through() -> bool:
+	return look_through
+
+func look_through_camera_id() -> String:
+	return _look_camera_id
+
+func look_through_exit_button() -> Button:
+	return _exit_camera_button
+
+## Editing chrome is everything the clean document-camera view must not show.
+func editing_chrome_visible() -> bool:
+	return not render_mode and not look_through
+
+## Enter the document camera's real view. The editor camera copies the node's
+## transform and FOV; the document camera node itself never becomes current.
+func enter_look_through(camera_id: String) -> bool:
+	if doc == null or _camera == null:
+		return false
+	var obj := doc.get_object(camera_id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "camera":
+		return false
+	var node: Node3D = doc.nodes.get(camera_id)
+	if node == null or not node.visible:
+		return false
+	if look_through:
+		if _look_camera_id == camera_id:
+			return true
+		exit_look_through()
+	_look_saved = {
+		"target": target,
+		"yaw": yaw,
+		"pitch": pitch,
+		"distance": distance,
+		"fov": _camera.fov,
+		"grid": _grid_on,
+		"hud": _hud_root != null and _hud_root.visible,
+		"nav": _nav_gizmo != null and _nav_gizmo.visible,
+		"markers_hidden": doc.markers_hidden,
+	}
+	look_through = true
+	_look_camera_id = camera_id
+	_camera.global_transform = node.global_transform
+	_camera.fov = clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
+	var doc_camera := node.get_node_or_null("Camera") as Camera3D
+	if doc_camera != null:
+		# Only the editor camera moves. The document camera stays a scene
+		# element and is never switched current.
+		doc_camera.current = false
+	_grid_on = false
+	grid_changed.emit(false)
+	_set_grid_strength(0.0)
+	doc.markers_hidden = true
+	doc.update_marker_scales(_camera)
+	set_hud_visible(false)
+	if _nav_gizmo != null:
+		_nav_gizmo.visible = false
+	if _gizmo != null:
+		_gizmo.set_visible_gizmo(false)
+	_gizmo_handles.clear()
+	if _exit_camera_button != null:
+		_exit_camera_button.visible = true
+	_touches.clear()
+	_mode = "idle"
+	_tap_candidate = false
+	_gizmo_axis = ""
+	_hover_axis = ""
+	_hud_text = ""
+	if _viewport != null:
+		_viewport.render_target_update_mode = (
+			SubViewport.UPDATE_ALWAYS if doc.is_playing else SubViewport.UPDATE_ONCE
+		)
+	_redraw_needed = true
+	queue_redraw()
+	return true
+
+## Restore the exact editing state saved on entry. `_apply_orbit_camera()` is
+## the same path `_process()` uses, so the restore is immediate and testable.
+func exit_look_through() -> void:
+	if not look_through:
+		return
+	look_through = false
+	var saved := _look_saved
+	_look_saved = {}
+	_look_camera_id = ""
+	if not saved.is_empty():
+		target = saved.get("target", target)
+		yaw = float(saved.get("yaw", yaw))
+		pitch = float(saved.get("pitch", pitch))
+		distance = float(saved.get("distance", distance))
+		_editor_fov = float(saved.get("fov", _editor_fov))
+	_apply_orbit_camera()
+	if doc != null:
+		doc.markers_hidden = bool(saved.get("markers_hidden", false))
+		doc.update_marker_scales(_camera)
+	_grid_on = bool(saved.get("grid", _grid_on))
+	grid_changed.emit(_grid_on)
+	_set_grid_strength(1.0 if _grid_on else 0.0)
+	set_hud_visible(bool(saved.get("hud", true)))
+	if _nav_gizmo != null:
+		_nav_gizmo.visible = bool(saved.get("nav", true))
+	if _exit_camera_button != null:
+		_exit_camera_button.visible = false
+	_redraw_needed = true
+	_repaint()
+	queue_redraw()
+	look_through_exited.emit()
 
 # -------------------------------------------------------------------------
 # Still capture
