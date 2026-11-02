@@ -353,6 +353,50 @@ func add_bone(rig_id: String, name: String, parent: String, rest: Dictionary) ->
 	return (rig["bones"] as Array).size() - 1
 
 
+## The next free `Bone N` name. The scan never advances a counter, so deleting
+## a bone can never make a future add collide with an existing one.
+func next_bone_name(rig_id: String) -> String:
+	var rig := _rig_for_object(rig_id)
+	if rig.is_empty():
+		return ""
+	var number := 1
+	while _bone_index(rig, "Bone %d" % number) >= 0:
+		number += 1
+	return "Bone %d" % number
+
+
+## Extrude a new child at `parent`'s rest tail. An empty parent (or the missing
+## active bone the viewport passes) adds a root. The new bone becomes active and
+## the whole add is a single "Add bone" undo entry through add_bone.
+func extrude_bone(rig_id: String, parent: String = "") -> String:
+	var rig := _rig_for_object(rig_id)
+	if rig.is_empty() or bool(rig.get("imported", false)):
+		return ""
+	var parent_index := -1
+	if parent != "":
+		parent_index = _bone_index(rig, parent)
+		if parent_index < 0:
+			return ""
+	var parent_global := Transform3D.IDENTITY
+	var head := Vector3.ZERO
+	if parent_index >= 0:
+		parent_global = _bone_global_rest(rig, parent_index)
+		var parent_length := float((rig["bones"] as Array)[parent_index].get("length", DEFAULT_BONE_LENGTH))
+		head = parent_global.origin + parent_global.basis.y.normalized() * parent_length
+	var local_origin := head if parent_index < 0 else parent_global.affine_inverse() * head
+	var name := next_bone_name(rig_id)
+	var index := add_bone(rig_id, name, parent, {
+		"p": local_origin,
+		"r": Quaternion.IDENTITY,
+		"s": Vector3.ONE,
+		"length": DEFAULT_BONE_LENGTH,
+	})
+	if index < 0:
+		return ""
+	set_active_bone(rig_id, name)
+	return name
+
+
 func _normalize_rest(rest: Dictionary, parent: int) -> Dictionary:
 	return {
 		"name": "",

@@ -38,6 +38,7 @@ const ClipLaneScript = preload("res://src/ui/clip_lane.gd")
 const MediaLanesScript = preload("res://src/ui/media_lanes.gd")
 const RigPanelScript = preload("res://src/ui/rig_panel.gd")
 const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
+const RigToolbarScript = preload("res://src/ui/rig_toolbar.gd")
 const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overlay.gd")
 const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
 const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
@@ -98,6 +99,8 @@ var _viewport_host: Control
 var _view: Control
 var _perf_overlay: PanelContainer
 var _rig_overlay: Control
+var _rig_toolbar: Control
+var _rig_mode := false
 var _video_overlay: Control
 var _timeline_panel: PanelContainer
 var _timeline_frame: VBoxContainer
@@ -299,9 +302,22 @@ func _build_body() -> void:
 	_viewport_host.add_child(_perf_overlay)
 
 	# Rig mode lives on its own overlay: it draws bones over the image and
-	# takes the pointer only while the Rig tab is the active dock page.
+	# takes the pointer only while rig mode is engaged.
 	_rig_overlay = RigOverlayScript.new()
 	_viewport_host.add_child(_rig_overlay)
+	_rig_overlay.mode_changed.connect(_on_overlay_mode_changed)
+
+	# The floating Pose/Edit toolbar belongs to the stage, not the dock. It
+	# sits above the overlay so it stays reachable after the Rig dock closes.
+	_rig_toolbar = RigToolbarScript.new()
+	_rig_toolbar.name = "RigToolbar"
+	_viewport_host.add_child(_rig_toolbar)
+	_rig_toolbar.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_rig_toolbar.position = Vector2(12, 12)
+	_rig_toolbar.visible = false
+	_rig_toolbar.mode_changed.connect(_on_toolbar_mode_changed)
+	_rig_toolbar.add_bone_requested.connect(_on_rig_add_bone)
+	_rig_toolbar.done_requested.connect(_on_rig_done)
 
 	# The rotoscope layer sits on the preview surface itself: above the 3D
 	# texture (which renders behind its parent) and below the HUD layer, so
@@ -819,6 +835,7 @@ func open_loaded(meta: Dictionary, data: Dictionary) -> void:
 
 func _adopt_document(document: Node3D) -> void:
 	doc = document
+	_rig_mode = false
 	if not Gfx.changed.is_connected(_on_graphics_changed):
 		Gfx.changed.connect(_on_graphics_changed)
 	doc.apply_graphics()
@@ -850,7 +867,7 @@ func _adopt_document(document: Node3D) -> void:
 	_clip_time_before_sequence = float(doc.current_time)
 	_sequence_was_playing = false
 	if _rig_overlay != null:
-		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
+		_rig_overlay.set_rig("")
 		_sync_rig_overlay()
 	if _video_overlay != null:
 		_video_overlay.refresh()
@@ -867,25 +884,78 @@ func _on_document_scene_changed() -> void:
 	_update_scene_rail_count()
 
 func _on_document_rigs_changed() -> void:
-	if doc != null and _rig_overlay != null:
+	if doc != null and _rig_overlay != null and _rig_mode:
 		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
 	_sync_rig_overlay()
 
 func _on_rig_mode_changed(_enabled: bool) -> void:
 	_sync_rig_overlay()
 
-func _sync_rig_overlay() -> void:
-	if _rig_overlay == null:
+func _on_overlay_mode_changed(mode: String) -> void:
+	if _rig_toolbar != null:
+		_rig_toolbar.set_mode(mode)
+	if _rig_panel != null:
+		_rig_panel.set_mode(mode)
+
+func _on_toolbar_mode_changed(mode: String) -> void:
+	if _rig_overlay != null:
+		_rig_overlay.set_mode(mode)
+
+func _on_rig_add_bone() -> void:
+	if doc == null or doc.rig_system == null:
 		return
-	# Rig mode is a workbench viewport layer: it follows the rig tab being the
-	# visible dock page (RigPanel reports the same via rig_mode_changed), gated
-	# by the preference and suppressed in render mode.
-	var enabled: bool = _rig_panel != null and _rig_panel.is_visible_in_tree()
-	enabled = enabled and bool(Prefs.get_value("rig.show_overlay", true))
-	enabled = enabled and not _render_mode
-	if doc == null:
-		enabled = false
-	_rig_overlay.set_enabled(enabled)
+	var rig_id: String = doc.rig_system.active_rig_id()
+	if rig_id == "":
+		return
+	var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+	if rig.is_empty() or bool(rig.get("imported", false)):
+		return
+	var created: String = doc.rig_system.extrude_bone(rig_id, str(rig.get("active_bone", "")))
+	if created == "":
+		return
+	if _rig_mode and _rig_overlay != null:
+		_rig_overlay.set_rig(rig_id)
+	if _rig_panel != null:
+		# The new bone is active in rig_system; refresh re-renders the tree row
+		# and inspector so the selection is visible, not just stored.
+		_rig_panel.refresh()
+	_sync_rig_overlay()
+
+func _on_rig_done() -> void:
+	# Done leaves the rig in the document. It only clears the workbench state:
+	# the overlay stops drawing and the floating toolbar goes away.
+	_rig_mode = false
+	if _rig_overlay != null:
+		_rig_overlay.set_rig("")
+		_rig_overlay.set_enabled(false)
+	if _rig_toolbar != null:
+		_rig_toolbar.visible = false
+	_sync_rig_overlay()
+
+func _sync_rig_overlay() -> void:
+	var active := ""
+	var imported := false
+	if doc != null:
+		active = doc.rig_system.active_rig_id()
+		if active != "":
+			imported = bool(doc.rig_system.get_rig(active).get("imported", false))
+	var engaged := _rig_mode and active != "" and not _render_mode
+	if _rig_overlay != null:
+		if engaged:
+			if str(_rig_overlay._rig_id) != active:
+				_rig_overlay.set_rig(active)
+		elif not _rig_mode:
+			_rig_overlay.set_rig("")
+		if imported and _rig_overlay.mode() == "edit":
+			_rig_overlay.set_mode("pose")
+		_rig_overlay.set_enabled(engaged and bool(Prefs.get_value("rig.show_overlay", true)))
+	if _rig_toolbar != null:
+		_rig_toolbar.visible = engaged
+		_rig_toolbar.set_imported(imported)
+		if _rig_overlay != null:
+			_rig_toolbar.set_mode(_rig_overlay.mode())
+	if _rig_panel != null and _rig_overlay != null:
+		_rig_panel.set_mode(_rig_overlay.mode())
 
 func _on_graphics_changed() -> void:
 	if doc != null:
@@ -1729,6 +1799,10 @@ func _compact_shell() -> bool:
 
 func _set_compact_tab(tab: String) -> void:
 	_compact_tab = tab if tab in ["scene", "inspector", "rig"] else "scene"
+	if _compact_tab == "rig":
+		# Selecting the Rig page is how the workbench enters rig mode. Closing
+		# the dock or showing another page does not leave it.
+		_rig_mode = true
 	if _dock != null:
 		if _outliner_panel.get_parent() == _dock_box:
 			_outliner_panel.visible = _compact_tab == "scene"
@@ -2737,6 +2811,8 @@ func _set_render_chrome_hidden() -> void:
 		_video_overlay.set_render_mode(true)
 	if _rig_overlay != null:
 		_rig_overlay.set_enabled(false)
+	if _rig_toolbar != null:
+		_rig_toolbar.visible = false
 
 
 func _restore_render_chrome() -> void:
