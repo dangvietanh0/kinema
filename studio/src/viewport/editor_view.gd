@@ -1272,43 +1272,63 @@ func _draw_object_markers() -> void:
 		if selected:
 			draw_arc(p, 15.0, 0.0, TAU, 28, Kit.ACCENT * Color(1, 1, 1, 0.7), 1.0, true)
 
-func _draw_selection() -> void:
-	if doc.selected_id == "":
-		return
+## The stage feedback for the current selection: an AABB box, a dot for a
+## visible object with no drawable geometry, or nothing at all. Drawing and the
+## hierarchy suite share this decision so a selectable part never looks
+## unselected just because it has no mesh.
+func selection_feedback() -> Dictionary:
+	if doc == null or doc.selected_id == "":
+		return {}
+	if doc.selected_part_path != "":
+		var part: Node3D = doc.get_import_part_node(doc.selected_part_object_id, doc.selected_part_path)
+		# Only an effectively hidden part is quiet; a visible light, camera,
+		# skeleton or geometry-less empty gets the dot below.
+		if part == null or not part.is_visible_in_tree():
+			return {}
+		var part_aabb := doc.get_selected_part_aabb()
+		if part_aabb.size.length() >= 0.002:
+			return {"aabb": part_aabb}
+		return {"dot": part.global_position}
 	var node: Node3D = doc.nodes.get(doc.selected_id)
 	if node == null or not node.visible:
+		return {}
+	var aabb := doc.get_object_aabb(doc.selected_id)
+	if aabb.size.length() >= 0.002:
+		return {"aabb": aabb}
+	return {"dot": node.global_position}
+
+
+func _draw_selection() -> void:
+	var feedback := selection_feedback()
+	if feedback.is_empty():
 		return
-	var aabb: AABB
-	if doc.selected_part_path != "":
-		aabb = doc.get_selected_part_aabb()   # AABB() highlight stays off if hidden
-	else:
-		aabb = doc.get_object_aabb(doc.selected_id)
-	if aabb.size.length() < 0.002:
-		# A selected import part is highlighted by its own AABB only. The dot
-		# fallback stays with root objects, so a hidden part draws no glyph.
-		if doc.selected_part_path == "" and not _camera.is_position_behind(node.global_position):
-			var p := _to_ui(_camera.unproject_position(node.global_position))
-			draw_arc(p, 15.0, 0.0, TAU, 28, Kit.ACCENT * Color(1, 1, 1, 0.75), 1.5, true)
+	var aabb: AABB = feedback.get("aabb", AABB())
+	if aabb.size.length() >= 0.002:
+		var corners := _aabb_corners(aabb)
+		var points: Array = []
+		for c in corners:
+			if _camera.is_position_behind(c):
+				points.append(null)
+			else:
+				points.append(_to_ui(_camera.unproject_position(c)))
+		var edges := [
+			[0, 1], [1, 3], [3, 2], [2, 0],
+			[4, 5], [5, 7], [7, 6], [6, 4],
+			[0, 4], [1, 5], [2, 6], [3, 7],
+		]
+		var color := Kit.ACCENT * Color(1, 1, 1, 0.8)
+		for edge in edges:
+			var a = points[edge[0]]
+			var b = points[edge[1]]
+			if a != null and b != null:
+				draw_line(a, b, Color(0.01, 0.01, 0.01, 0.45), 3.0, true)
+				draw_line(a, b, color, 1.4, true)
 		return
-	var corners := _aabb_corners(aabb)
-	var points: Array = []
-	for c in corners:
-		if _camera.is_position_behind(c):
-			points.append(null)
-		else:
-			points.append(_to_ui(_camera.unproject_position(c)))
-	var edges := [
-		[0, 1], [1, 3], [3, 2], [2, 0],
-		[4, 5], [5, 7], [7, 6], [6, 4],
-		[0, 4], [1, 5], [2, 6], [3, 7],
-	]
-	var color := Kit.ACCENT * Color(1, 1, 1, 0.8)
-	for edge in edges:
-		var a = points[edge[0]]
-		var b = points[edge[1]]
-		if a != null and b != null:
-			draw_line(a, b, Color(0.01, 0.01, 0.01, 0.45), 3.0, true)
-			draw_line(a, b, color, 1.4, true)
+	var world: Vector3 = feedback.get("dot", Vector3.ZERO)
+	if _camera.is_position_behind(world):
+		return
+	var p := _to_ui(_camera.unproject_position(world))
+	draw_arc(p, 15.0, 0.0, TAU, 28, Kit.ACCENT * Color(1, 1, 1, 0.75), 1.5, true)
 
 ## Update the 3D gizmo and rebuild the projected handles it is tapped through.
 ## No gizmo pixels are drawn here: the stage SubViewport owns the geometry, and
