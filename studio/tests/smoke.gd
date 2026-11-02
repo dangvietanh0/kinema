@@ -979,10 +979,11 @@ func _ready() -> void:
 	for _i in 3:
 		await get_tree().process_frame
 	_check(editor._timeline_visible, "the overlay opens from the transport")
-	var dope_height := minf(240.0, maxf(56.0 + 72.0, overlay_host.size.y * 0.42))
-	dope_height = minf(dope_height, maxf(56.0 + 72.0, overlay_host.size.y - 96.0))
+	var dope_height := minf(208.0, maxf(56.0 + 48.0, overlay_host.size.y * 0.34))
 	_check(absf(editor._timeline_panel.size.y - dope_height) < 1.0,
-		"the open dope overlay respects the 42 percent / 240 dp budget")
+		"the open dope overlay respects the compact 34 percent / 208 dp budget")
+	_check(editor._timeline_panel.size.y >= 56.0 + 48.0 - 0.5,
+		"the open dope overlay keeps the transport plus a 48 dp sheet")
 	_check(is_equal_approx(editor._view.size.x, overlay_view_before.x) and
 		is_equal_approx(editor._view.size.y, overlay_view_before.y),
 		"opening the overlay does not resize the 3D view")
@@ -1021,8 +1022,94 @@ func _ready() -> void:
 	time_tl.pan_time_view(1.0)
 	_check(absf(time_tl.time_view().x) < 0.001,
 		"panning a full-duration view is a no-op")
-	_check(time_tl.scrollbar_track_rect().size.x <= 0.0,
-		"the scrollbar stays hidden while the whole duration is in view")
+	var fit_track: Rect2 = time_tl.scrollbar_track_rect()
+	_check(fit_track.size.x > 0.0,
+		"the scrollbar track is painted even when the whole duration fits")
+	var fit_thumb: Rect2 = time_tl.scrollbar_thumb_rect()
+	_check(is_equal_approx(fit_thumb.size.x, fit_track.size.x),
+		"fit mode paints a full-width thumb")
+	_check(not time_tl.scrollbar_owns_press(fit_track.position + fit_track.size * 0.5),
+		"fit mode never lets the scrollbar steal a press")
+	_check(time_tl.has_method("scrollbar_caption"),
+		"the sheet exposes its scrollbar caption")
+	if time_tl.has_method("scrollbar_caption"):
+		_check(time_tl.scrollbar_caption() == "Fit · pinch to zoom",
+			"fit mode captions the pinch gesture")
+	# Duration truth: the chip always names the active clip and, when the
+	# sequence is longer, keeps the two clocks visibly distinct.
+	var clip_id: String = doc.active_clip_id()
+	var layer_id: String = doc.animation_system.active_layer_id()
+	var long_clip: String = doc.animation_system.create_clip(
+		"Duration probe", maxf(duration + 3.0, 10.0))
+	var long_strip: String = doc.animation_system.add_strip(layer_id, long_clip, 0.0)
+	doc.animation_system.set_active_clip(clip_id)
+	await get_tree().process_frame
+	_check(doc.sequence_duration() > doc.duration + 0.05,
+		"the duration probe makes the sequence longer than the clip")
+	_check(time_tl.has_method("duration_chip_text"),
+		"the sheet exposes the duration chip text")
+	if time_tl.has_method("duration_chip_text"):
+		var chip_text: String = time_tl.duration_chip_text()
+		_check(chip_text.contains("Seq"), "the chip names the longer sequence clock")
+		_check(chip_text.contains("s"), "the chip names the clip length in seconds")
+	_check(time_tl.has_method("duration_chip") and time_tl.has_method("open_duration_row"),
+		"the chip is a tappable control")
+	if time_tl.has_method("duration_chip") and time_tl.has_method("open_duration_row"):
+		time_tl.duration_chip().pressed.emit()
+		await get_tree().process_frame
+		_check(time_tl.duration_row_visible(), "tapping the chip opens the duration row")
+		_check(time_tl._duration_row.get_combined_minimum_size().y >= 44.0 - 0.5,
+			"the duration row keeps a 44 dp target")
+		_check(time_tl._duration_field.min_value <= 0.25 + 0.001
+			and time_tl._duration_field.max_value >= 3599.0,
+			"the duration field spans 0.25 to 3600 seconds")
+		_check(time_tl._match_button.visible,
+			"Match sequence appears while the sequence is longer")
+		var keys_before_extend: int = doc.get_channel_keys(key_id, "position").size()
+		var before_extend: float = doc.duration
+		time_tl._extend_button.pressed.emit()
+		await get_tree().process_frame
+		_check(absf(doc.duration - (before_extend + 1.0)) < 0.01,
+			"Extend +1 s grows the active clip")
+		_check(doc.get_channel_keys(key_id, "position").size() == keys_before_extend,
+			"extending the clip never deletes keys")
+		# A shrink that would delete keys asks first and leaves the document
+		# untouched until the editor's confirmation runs.
+		var confirmations := [0]
+		var confirmation_value := [0.0]
+		time_tl.duration_confirmation_requested.connect(
+			func(value: float, _message: String) -> void:
+				confirmations[0] += 1
+				confirmation_value[0] = value)
+		var before_shrink: float = doc.duration
+		var applied: bool = time_tl.request_duration(0.25)
+		_check(not applied and confirmations[0] == 1,
+			"a destructive shrink asks for confirmation before applying")
+		_check(absf(confirmation_value[0] - 0.25) < 0.001,
+			"the confirmation carries the requested duration")
+		_check(absf(doc.duration - before_shrink) < 0.001,
+			"the unconfirmed shrink leaves the clip duration alone")
+		# The editor owns the confirmation surface. Dismiss it so the rest of
+		# the smoke run continues with an unobstructed stage.
+		_check(editor._overlay.has_modal(),
+			"the shrink request opens the editor confirmation sheet")
+		editor._overlay.close_modal()
+		await get_tree().process_frame
+		# Match sequence applies the longer sequence clock, and the clip can
+		# then return to its original length without touching in-range keys.
+		time_tl.open_duration_row()
+		time_tl._match_button.pressed.emit()
+		await get_tree().process_frame
+		_check(absf(doc.duration - doc.sequence_duration()) < 0.01,
+			"Match sequence sets the clip to the sequence length")
+		time_tl.request_duration(duration)
+		_check(absf(doc.duration - duration) < 0.01,
+			"the clip duration returns to its original value")
+	if long_strip != "":
+		doc.animation_system.delete_strip(long_strip)
+	if long_clip != "":
+		doc.animation_system.delete_clip(long_clip)
+	await get_tree().process_frame
 	time_tl.set_time_view(duration * 0.1, duration * 0.7)
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -1066,6 +1153,28 @@ func _ready() -> void:
 	shift_wheel.position = Vector2(time_tl._grid_left + time_tl._grid_width * 0.5, 40.0)
 	time_tl._sheet_input(shift_wheel, sheet)
 	_check(time_tl.time_view().x > pan_before, "shift+wheel pans the window")
+	_check(time_tl.scrollbar_caption() == "Drag to pan",
+		"a zoomed window captions drag-to-pan")
+	# M3: horizontal wheel buttons pan instead of falling through to a scrub.
+	var wheel_pan_before: float = time_tl.time_view().x
+	var time_before_wheel: float = doc.current_time
+	var wheel_left := InputEventMouseButton.new()
+	wheel_left.button_index = MOUSE_BUTTON_WHEEL_LEFT
+	wheel_left.pressed = true
+	wheel_left.position = Vector2(time_tl._grid_left + time_tl._grid_width * 0.5, 40.0)
+	time_tl._sheet_input(wheel_left, sheet)
+	var after_left: float = time_tl.time_view().x
+	_check(after_left < wheel_pan_before,
+		"wheel-left pans the time window backwards")
+	_check(is_equal_approx(doc.current_time, time_before_wheel) and not time_tl._scrubbing,
+		"wheel-left never starts a scrub")
+	var wheel_right := InputEventMouseButton.new()
+	wheel_right.button_index = MOUSE_BUTTON_WHEEL_RIGHT
+	wheel_right.pressed = true
+	wheel_right.position = wheel_left.position
+	time_tl._sheet_input(wheel_right, sheet)
+	_check(time_tl.time_view().x > after_left + 0.001,
+		"wheel-right pans the time window forwards")
 
 	# Dragging the scrollbar thumb pans the window.
 	time_tl.set_time_view(duration * 0.1, duration * 0.4)
@@ -1132,6 +1241,101 @@ func _ready() -> void:
 		lift.position = Vector2(300, 5)
 		time_tl._sheet_input(lift, sheet)
 	_check(not time_tl._panning_view, "lifting both fingers ends the gesture")
+
+	# I1: a two-finger gesture that starts on a key row must roll back the
+	# seek, pause and key edit the first touch began. No key is retimed, no
+	# undo entry is pushed and the document returns to its snapshot.
+	time_tl.set_time_view(duration * 0.1, duration * 0.6)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(doc.has_method("has_open_edit"), "the document reports a pending edit")
+	doc.seek(duration * 0.3)
+	doc.pause()
+	var undo_before: int = doc._undo_stack.size()
+	var position_keys: Array = doc.get_channel_keys(key_id, "position")
+	var gesture_key_index := -1
+	var key_time_before := 0.0
+	for ki in range(position_keys.size()):
+		var candidate := float(position_keys[ki]["time"])
+		if candidate > time_tl.time_view().x + 0.05 and candidate < time_tl.time_view().y - 0.05:
+			gesture_key_index = ki
+			key_time_before = candidate
+			break
+	_check(gesture_key_index >= 0, "the key-row gesture has a visible position key")
+	if gesture_key_index >= 0:
+		var key_x: float = time_tl._time_to_x(key_time_before, sheet)
+		var key_y: float = time_tl._ruler_h + time_tl._row_h * 0.5
+		var time_snapshot: float = doc.current_time
+		var key_touch_a := InputEventScreenTouch.new()
+		key_touch_a.index = 0
+		key_touch_a.pressed = true
+		key_touch_a.position = Vector2(key_x, key_y)
+		time_tl._sheet_input(key_touch_a, sheet)
+		_check(time_tl._dragging_key and doc.has_open_edit(),
+			"the first touch on a key row starts the normal retime edit")
+		var key_touch_b := InputEventScreenTouch.new()
+		key_touch_b.index = 1
+		key_touch_b.pressed = true
+		key_touch_b.position = Vector2(key_x + 120.0, key_y)
+		time_tl._sheet_input(key_touch_b, sheet)
+		_check(not time_tl._dragging_key and not doc.has_open_edit(),
+			"the second touch cancels the pending key edit")
+		_check(absf(doc.current_time - time_snapshot) < 0.001 and not doc.is_playing,
+			"the second touch restores the paused snapshot time")
+		_check(doc._undo_stack.size() == undo_before,
+			"the cancelled gesture pushes no undo entry")
+		var restored_keys: Array = doc.get_channel_keys(key_id, "position")
+		_check(restored_keys.size() == position_keys.size() and
+			absf(float(restored_keys[gesture_key_index]["time"]) - key_time_before) < 0.001,
+			"the key keeps its time through the cancelled gesture")
+		var view_before_key_gesture: float = time_tl.time_view().x
+		var key_drag_a := InputEventScreenDrag.new()
+		key_drag_a.index = 0
+		key_drag_a.position = Vector2(key_x - 20.0, key_y)
+		time_tl._sheet_input(key_drag_a, sheet)
+		var key_drag_b := InputEventScreenDrag.new()
+		key_drag_b.index = 1
+		key_drag_b.position = Vector2(key_x + 100.0, key_y)
+		time_tl._sheet_input(key_drag_b, sheet)
+		_check(time_tl.time_view().x > view_before_key_gesture,
+			"the key-row gesture still pans the view window")
+		_check(doc._undo_stack.size() == undo_before and not doc.has_open_edit(),
+			"panning after the cancel leaves no edit behind")
+		for index in [0, 1]:
+			var lift_key := InputEventScreenTouch.new()
+			lift_key.index = index
+			lift_key.pressed = false
+			lift_key.position = Vector2(key_x, key_y)
+			time_tl._sheet_input(lift_key, sheet)
+
+	# A playing snapshot resumes after the second touch; a paused snapshot
+	# stays paused. This is the same gesture path, starting on the ruler.
+	doc.seek(duration * 0.2)
+	doc.play()
+	var playing_snapshot: bool = doc.is_playing
+	var play_time_snapshot: float = doc.current_time
+	var play_touch_a := InputEventScreenTouch.new()
+	play_touch_a.index = 0
+	play_touch_a.pressed = true
+	play_touch_a.position = Vector2(320, 5)
+	time_tl._sheet_input(play_touch_a, sheet)
+	_check(not doc.is_playing, "the first touch pauses playback for the gesture")
+	var play_touch_b := InputEventScreenTouch.new()
+	play_touch_b.index = 1
+	play_touch_b.pressed = true
+	play_touch_b.position = Vector2(420, 5)
+	time_tl._sheet_input(play_touch_b, sheet)
+	_check(playing_snapshot and doc.is_playing,
+		"the second touch resumes playback that was running before the gesture")
+	_check(absf(doc.current_time - play_time_snapshot) < 0.12,
+		"the resumed gesture restores the snapshot playhead")
+	for index in [0, 1]:
+		var lift_play := InputEventScreenTouch.new()
+		lift_play.index = index
+		lift_play.pressed = false
+		lift_play.position = Vector2(320, 5)
+		time_tl._sheet_input(lift_play, sheet)
+	doc.pause()
 
 	# Ruler scrub and key retime still hit-test through the zoomed viewport.
 	time_tl.set_time_view(duration * 0.1, duration * 0.7)
@@ -1430,12 +1634,11 @@ func _ready() -> void:
 			await get_tree().process_frame
 			var open_panel: float = editor._timeline_panel.size.y
 			var open_host: Control = editor._viewport_host
-			var open_budget := minf(240.0, maxf(56.0 + 72.0, open_host.size.y * 0.42))
-			open_budget = minf(open_budget, maxf(56.0 + 72.0, open_host.size.y - 96.0))
+			var open_budget := minf(208.0, maxf(56.0 + 48.0, open_host.size.y * 0.34))
 			_check(open_panel <= open_budget + 0.5,
-				"opening the stage keeps the overlay inside the 42 percent budget")
-			_check(open_panel >= 56.0 + 72.0 - 0.5,
-				"the open sheet keeps the transport plus a 72 dp sheet")
+				"opening the stage keeps the overlay inside the compact 34 percent budget")
+			_check(open_panel >= 56.0 + 48.0 - 0.5,
+				"the open sheet keeps the transport plus a 48 dp sheet")
 			# Fold order: the media body shrinks inside its header, then the
 			# clip lane folds. On a 412 dp canvas the preferred sheet and the
 			# transport leave no room for the lane, but the media header stays.
@@ -1840,10 +2043,9 @@ func _ready() -> void:
 		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
 		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
 		var short_graph_host: Control = editor._viewport_host
-		var short_graph_budget := minf(240.0, maxf(56.0 + 72.0, short_graph_host.size.y * 0.42))
-		short_graph_budget = minf(short_graph_budget, maxf(56.0 + 72.0, short_graph_host.size.y - 96.0))
+		var short_graph_budget := minf(208.0, maxf(56.0 + 48.0, short_graph_host.size.y * 0.34))
 		_check(editor._timeline_panel.size.y <= short_graph_budget + 0.5,
-			"915x412 graph sheet stays inside the 42 percent budget")
+			"915x412 graph sheet stays inside the compact budget")
 		_check(
 			editor._timeline_panel.size.y <= editor._view.size.y - 96.0 + 1.0,
 			"915x412 graph overlay leaves at least 96 dp of stage"
@@ -1854,10 +2056,9 @@ func _ready() -> void:
 		await get_tree().process_frame
 		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
 		var tiny_graph_host: Control = editor._viewport_host
-		var tiny_graph_budget := minf(240.0, maxf(56.0 + 72.0, tiny_graph_host.size.y * 0.42))
-		tiny_graph_budget = minf(tiny_graph_budget, maxf(56.0 + 72.0, tiny_graph_host.size.y - 96.0))
+		var tiny_graph_budget := minf(208.0, maxf(56.0 + 48.0, tiny_graph_host.size.y * 0.34))
 		_check(editor._timeline_panel.size.y <= tiny_graph_budget + 0.5,
-			"800x360 graph sheet stays inside the 42 percent budget")
+			"800x360 graph sheet stays inside the compact budget")
 		_check(
 			editor._timeline_panel.size.y <= editor._view.size.y - 96.0 + 1.0,
 			"800x360 graph overlay leaves at least 96 dp of stage"
@@ -2495,6 +2696,36 @@ func _ready() -> void:
 			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
 			_check(normals.size() >= 3 and normals[0].length() > 0.9, "obj normals generated")
 			_check((arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size() == 6, "obj quad triangulated")
+		# Import success toast: OBJ stays one mesh; a glTF import names its
+		# part count so the hierarchy is discoverable from the confirmation.
+		editor._on_model_selected(true, PackedStringArray([fixture.path_join("sample.obj")]), 0)
+		await get_tree().process_frame
+		_check(editor._overlay._toast_label.text.begins_with("Imported ") and
+			editor._overlay._toast_label.text.ends_with("· single mesh"),
+			"an OBJ import toast says single mesh")
+		var toast_root := Node3D.new()
+		toast_root.name = "ToastModel"
+		var toast_mesh := MeshInstance3D.new()
+		toast_mesh.name = "ToastBody"
+		toast_mesh.mesh = BoxMesh.new()
+		toast_root.add_child(toast_mesh)
+		add_child(toast_root)
+		await get_tree().process_frame
+		var toast_glb := fixture.path_join("toast_fixture.glb")
+		var toast_gltf := GLTFDocument.new()
+		var toast_state := GLTFState.new()
+		var toast_err := toast_gltf.append_from_scene(toast_root, toast_state)
+		if toast_err == OK:
+			toast_err = toast_gltf.write_to_filesystem(toast_state, toast_glb)
+		toast_root.queue_free()
+		await get_tree().process_frame
+		_check(toast_err == OK, "the toast GLB fixture is written")
+		if toast_err == OK:
+			editor._on_model_selected(true, PackedStringArray([toast_glb]), 0)
+			await get_tree().process_frame
+			_check(editor._overlay._toast_label.text.begins_with("Imported ") and
+				editor._overlay._toast_label.text.ends_with("· 1 hierarchy nodes"),
+				"a glTF import toast names its hierarchy node count")
 		DirAccess.remove_absolute(fixture.path_join("sample.obj"))
 		DirAccess.remove_absolute(fixture.path_join("sample.mtl"))
 		DirAccess.remove_absolute(fixture.path_join("tex.png"))

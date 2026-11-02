@@ -300,29 +300,47 @@ func _ready() -> void:
 	editor._sync_timeline_visibility()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	# M8: the formula itself in each regime. The budget never drops below
-	# transport + 72 dp sheet and never grows past 240 dp.
-	_check(absf(editor._timeline_overlay_budget(1000.0) - 240.0) < 0.5,
-		"a tall stage caps the overlay at 240 dp")
-	_check(absf(editor._timeline_overlay_budget(500.0) - 210.0) < 0.5,
-		"a mid stage uses 42 percent of its host")
-	_check(absf(editor._timeline_overlay_budget(320.0) - 134.4) < 0.5,
-		"a 320 dp stage host uses the 42 percent budget")
-	_check(320.0 - editor._timeline_overlay_budget(320.0) >= 320.0 * 0.55 - 0.5,
-		"a 320 dp stage host keeps at least 55 percent")
-	_check(absf(editor._timeline_overlay_budget(200.0) - (FOLDED_TIMELINE + 72.0)) < 0.5,
-		"a short stage keeps the transport plus a 72 dp sheet")
+	# M4: literal breakpoints, not a live recomputation of the same formula.
+	# Contract: min(208, max(104, stage * 0.34)). The 104 dp floor binds below
+	# ~306 dp (transport 56 + 48 dp sheet floor); the 208 dp cap binds above
+	# ~612 dp. The stage-96 cap can only bind under the 104 floor and therefore
+	# never wins at these independent heights.
+	_check(absf(editor._timeline_overlay_budget(1000.0) - 208.0) < 0.5,
+		"stage 1000 hits the 208 dp cap")
+	_check(absf(editor._timeline_overlay_budget(500.0) - 170.0) < 0.5,
+		"stage 500 uses 34 percent of its host")
+	_check(absf(editor._timeline_overlay_budget(320.0) - 108.8) < 0.5,
+		"stage 320 uses the literal 108.8 dp budget")
+	_check(absf(editor._timeline_overlay_budget(200.0) - 104.0) < 0.5,
+		"stage 200 keeps the 104 dp floor above the cap")
 	var overlay_stage_h: float = overlay_host.size.y
-	# Binding 2026-11-01 budget: 42 percent of the stage host, capped at 240
-	# dp, never below transport 56 + sheet 72.
-	var dope_budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, overlay_stage_h * 0.42))
-	dope_budget = minf(dope_budget, maxf(FOLDED_TIMELINE + 72.0, overlay_stage_h - 96.0))
+	# Binding 2026-11-02 compact budget: min(208, max(104, stage * 0.34)).
+	var dope_budget := minf(208.0, maxf(FOLDED_TIMELINE + 48.0, overlay_stage_h * 0.34))
 	_check(editor._timeline_panel.size.y <= dope_budget + 0.5,
-		"the dope overlay stays inside the 42 percent budget")
-	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 72.0 - 0.5,
-		"the dope overlay keeps the transport plus a 72 dp sheet")
+		"the dope overlay stays inside the compact 34 percent budget")
+	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 48.0 - 0.5,
+		"the dope overlay keeps the transport plus a 48 dp sheet")
 	_check(overlay_stage_h - editor._timeline_panel.size.y >= overlay_stage_h * 0.55 - 1.0,
 		"the open dope overlay leaves at least 55 percent of the stage")
+	# More is session-only: it raises the cap to min(260, stage * 0.46) and
+	# returns to the compact budget on the next open.
+	_check(editor.has_method("_on_timeline_more_requested"),
+		"the editor owns the session-only More state")
+	if editor.has_method("_on_timeline_more_requested"):
+		var compact_open: float = editor._timeline_panel.size.y
+		editor._on_timeline_more_requested()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var full_budget := minf(260.0, maxf(FOLDED_TIMELINE + 48.0, overlay_stage_h * 0.46))
+		_check(editor._timeline_panel.size.y <= full_budget + 0.5,
+			"More stays inside the 46 percent / 260 dp cap")
+		_check(editor._timeline_panel.size.y >= compact_open - 0.5,
+			"More never shrinks the open sheet")
+		editor._on_timeline_more_requested()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(is_equal_approx(editor._timeline_panel.size.y, compact_open),
+			"leaving More restores the compact open height")
 	_check(is_equal_approx(editor._view.size.x, view_before_overlay.x) and
 		is_equal_approx(editor._view.size.y, view_before_overlay.y),
 		"opening the timeline does not resize the 3D view")
@@ -369,20 +387,59 @@ func _ready() -> void:
 	editor._sync_timeline_visibility()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	var short_budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, short_host.size.y * 0.42))
-	short_budget = minf(short_budget, maxf(FOLDED_TIMELINE + 72.0, short_host.size.y - 96.0))
+	var short_budget := minf(208.0, maxf(FOLDED_TIMELINE + 48.0, short_host.size.y * 0.34))
 	_check(editor._timeline_panel.size.y <= short_budget + 0.5,
-		"915x412 dope stays inside the 42 percent budget")
-	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 72.0 - 0.5,
-		"915x412 dope keeps transport plus a 72 dp sheet")
+		"915x412 dope stays inside the compact 34 percent budget")
+	_check(editor._timeline_panel.size.y <= 112.5,
+		"915x412 compact open height stays at or below 112 dp")
+	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 48.0 - 0.5,
+		"915x412 dope keeps transport plus a 48 dp sheet")
 	_check(short_host.size.y - editor._timeline_panel.size.y >= short_host.size.y * 0.55 - 1.0,
 		"915x412 dope leaves at least 55 percent of the stage")
 	_check(not editor._clip_lane.visible and not editor._media_lanes.visible,
-		"915x412 folds the clip lane and media header before shrinking the sheet")
+		"915x412 compact folds the clip lane and media header first")
+	# The compact pass still exposes the transport, the ruler and one key lane.
+	_check(editor._timeline.transport_panel().is_visible_in_tree(),
+		"915x412 keeps the transport visible")
+	_check(editor._timeline.sheet_visible() and editor._timeline._sheet.is_visible_in_tree(),
+		"915x412 keeps the dope sheet visible")
+	var compact_sheet_h: float = editor._timeline.sheet_min_height()
+	editor._timeline._geometry(editor._timeline._sheet)
+	_check(compact_sheet_h >= FOLDED_TIMELINE + 48.0 - FOLDED_TIMELINE - 0.5,
+		"915x412 keeps a 48 dp sheet floor")
+	_check(editor._timeline._ruler_h + editor._timeline._row_h <= compact_sheet_h + 1.0,
+		"915x412 exposes the ruler and at least one key lane")
+	# More reveals the folded lanes without leaving the compact budget class.
+	if editor.has_method("_on_timeline_more_requested"):
+		editor._on_timeline_more_requested()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var short_full := minf(260.0, maxf(FOLDED_TIMELINE + 48.0, short_host.size.y * 0.46))
+		_check(editor._timeline_panel.size.y <= short_full + 0.5,
+			"915x412 More stays inside the 46 percent cap")
+		_check(editor._media_lanes.visible,
+			"915x412 More reveals the folded media header")
+		editor._on_timeline_more_requested()
+		await get_tree().process_frame
 	editor._timeline_visible = false
 	editor._sync_timeline_visibility()
 	await get_tree().process_frame
 
+	# M6: the nav gizmo sits above the 56 dp folded transport strip, and every
+	# axis tip stays inside the stage and left of the scene column at 915x412.
+	var nav = editor._view.get("_nav_gizmo")
+	_check(nav != null, "the stage mounts the navigation gizmo")
+	if nav != null:
+		_check(-nav.offset_bottom >= FOLDED_TIMELINE + 12.0 - 0.5,
+			"the nav gizmo clears the folded 56 dp transport strip")
+		var stage_rect: Rect2 = editor._viewport_host.get_global_rect()
+		var column_rect: Rect2 = editor._scene_column.get_global_rect()
+		for axis_name in ["x", "y", "z"]:
+			var tip_global: Vector2 = nav.get_global_rect().position + nav.tip_position(axis_name)
+			_check(stage_rect.has_point(tip_global),
+				"the %s nav tip stays inside the stage at 915x412" % axis_name.to_upper())
+			_check(tip_global.x <= column_rect.position.x + 0.5,
+				"the scene column never covers the %s nav tip" % axis_name.to_upper())
 	editor.set_scene_panel_expanded(false)
 	await get_tree().process_frame
 	await get_tree().process_frame
