@@ -177,8 +177,8 @@ func bone_at(screen: Vector2) -> String:
 		var segment := _bone_world_segment(bones, index, skeleton, use_rest, {})
 		if segment.is_empty():
 			continue
-		var head_screen: Vector2 = view.world_to_screen(segment["head"])
-		var tail_screen: Vector2 = view.world_to_screen(segment["tail"])
+		var head_screen: Vector2 = view.world_to_screen(skeleton.to_global(segment["head"]))
+		var tail_screen: Vector2 = view.world_to_screen(skeleton.to_global(segment["tail"]))
 		var distance := _distance_to_segment_2d(screen, head_screen, tail_screen)
 		if distance < best_distance:
 			best_distance = distance

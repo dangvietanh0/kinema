@@ -68,6 +68,7 @@ func _ready() -> void:
 	await _test_imported_adoption()
 	await _test_ui()
 	await _test_overlay()
+	await _test_overlay_hit_transform()
 	await _test_octahedral_bones()
 	await _test_rig_toolbar()
 	await _test_viewport_modes()
@@ -984,6 +985,31 @@ func _test_overlay() -> void:
 	var far := screen + Vector2(300, 300)
 	_check(overlay.bone_at(far) == "", "the overlay rejects a tap outside the hit radius")
 	_check(overlay.hit_radius() == 22.0, "the overlay hit radius is 22 dp")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+## The rig object carries a transform: drawn bones and hit-testing must both
+## go through the skeleton's global transform. An origin-only fixture hides
+## this regression, so this test translates the rig.
+func _test_overlay_hit_transform() -> void:
+	print("RIG STEP: overlay hit transform")
+	var doc := _new_doc("Overlay Transform")
+	var rs = doc.rig_system
+	var rig_id: String = rs.create_rig("Offset Rig", Vector3(2.0, 1.0, 0.0))
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var skel := _skeleton(doc, rig_id)
+	var head: Vector3 = skel.to_global(skel.get_bone_global_rest(0).origin)
+	var screen: Vector2 = view.world_to_screen(head)
+	_check(overlay.bone_at(screen) == "Root", "a translated rig still hit-tests its bone head")
 	overlay.queue_free()
 	view.queue_free()
 	doc.queue_free()
