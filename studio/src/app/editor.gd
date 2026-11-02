@@ -891,6 +891,7 @@ func _sync_rig_overlay() -> void:
 	var enabled: bool = _rig_panel != null and _rig_panel.is_visible_in_tree()
 	enabled = enabled and bool(Prefs.get_value("rig.show_overlay", true))
 	enabled = enabled and not _render_mode
+	enabled = enabled and not _look_through
 	if doc == null:
 		enabled = false
 	_rig_overlay.set_enabled(enabled)
@@ -2604,6 +2605,13 @@ func _enter_look_through(camera_id: String) -> void:
 		_view_header.visible = false
 	if _perf_overlay != null:
 		_perf_overlay.visible = false
+	# The rotoscope and rig handles are workbench layers, not part of the
+	# document camera's view. The dock stays live, so the Rig tab can be opened
+	# after entry; _sync_rig_overlay() also gates on _look_through.
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(true)
+	if _rig_overlay != null:
+		_rig_overlay.set_enabled(false)
 	_sync_view_header_visibility()
 
 ## The view can leave look-through by itself (the Exit control lives inside
@@ -2617,6 +2625,9 @@ func _on_view_look_through_exited() -> void:
 		_perf_overlay.visible = _look_perf_was_visible
 	if _view_header != null:
 		_view_header.visible = _look_header_was_visible
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(false)
+	_sync_rig_overlay()
 	_sync_view_header_visibility()
 	_apply_shell()
 
