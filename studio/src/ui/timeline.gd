@@ -10,6 +10,12 @@ signal notice(text: String)
 signal close_requested
 ## Emitted when the sheet actually switches between dope and speed-graph mode.
 signal mode_changed(mode: String)
+## The duration chip asked for a row that can edit the active clip length.
+signal duration_row_changed(open: bool)
+## A shrink would delete keys; the editor owns the confirmation sheet.
+signal duration_confirmation_requested(value: float, message: String)
+## The compact More control asks the editor for the session-only full state.
+signal more_requested
 
 class DopeSheet:
 	extends Control
@@ -32,6 +38,7 @@ class DopeSheet:
 			timeline._sheet_input(event, self)
 
 const DocumentScript = preload("res://src/core/document.gd")
+const NumberFieldScript = preload("res://src/ui/num_field.gd")
 var doc: DocumentScript = null
 
 var _sheet: Control
@@ -59,6 +66,19 @@ var _compact_snap_button: Button
 var _compact_ease_button: Button
 var _compact_delete_button: Button
 var _compact_close_button: Button
+var _gesture_hint: Label
+var _duration_chip: Button
+var _duration_row: PanelContainer
+var _duration_field
+var _match_button: Button
+var _extend_button: Button
+var _duration_close_button: Button
+var _duration_open := false
+var _hint_seen := false
+var _more_button: Button
+var _more_state := false
+var _prev_button: Button
+var _next_button: Button
 
 var _selected_channel := "position"
 var _selected_index := -1
@@ -107,6 +127,13 @@ var _touches: Dictionary = {}
 var _panning_view := false
 var _pan_last_mid := Vector2.ZERO
 var _pinch_dist := -1.0
+## Snapshot taken on the first touch. A second touch cancels whatever the
+## single-finger press started and restores this exact state.
+var _gesture_time_snapshot := 0.0
+var _gesture_playing_snapshot := false
+var _gesture_edit_snapshot := false
+var _gesture_view_snapshot := Vector2.ZERO
+var _gesture_active := false
 
 const CHANNEL_EDGE := 1.0
 const GRAPH_TAB_HEIGHT := 44.0
@@ -133,6 +160,7 @@ func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_build_transport()
 	_build_compact_header()
+	_build_duration_row()
 	_build_sheet()
 	resized.connect(_refresh_compact)
 
@@ -181,6 +209,19 @@ func _build_transport() -> void:
 	_frame_label = Kit.mono_label("F 0 · 24fps", 8, Kit.TEXT_DIM)
 	time_box.add_child(_frame_label)
 
+	# The duration chip is the always-visible truth for the active clip. It
+	# sits in the transport because the compact overlay budget can fold the
+	# sheet header while the transport must stay reachable.
+	_duration_chip = Kit.text_button("", "", false, true)
+	_duration_chip.custom_minimum_size = Vector2(56, 44)
+	# The compact transport has no room for a long "Seq" label; the full text
+	# stays available through duration_chip_text() and the tooltip.
+	_duration_chip.clip_text = true
+	_duration_chip.tooltip_text = "Clip duration and sequence length"
+	_duration_chip.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
+	_duration_chip.pressed.connect(open_duration_row)
+	row.add_child(_duration_chip)
+
 	_mode_button = Kit.icon_button("speed-graph", "Speed graph editor", 28, 14)
 	_mode_button.toggle_mode = true
 	_mode_button.toggled.connect(_on_mode_toggled)
@@ -199,6 +240,7 @@ func _build_transport() -> void:
 	prev.pressed.connect(_on_prev_key)
 	row.add_child(prev)
 	_transport_buttons.append(prev)
+	_prev_button = prev
 
 	_play_button = Kit.icon_button("play", "Play / pause", 32, 15)
 	# Transport is a tool, not a call to action. A bright glyph on a dark
@@ -216,6 +258,7 @@ func _build_transport() -> void:
 	next.pressed.connect(_on_next_key)
 	row.add_child(next)
 	_transport_buttons.append(next)
+	_next_button = next
 	_end_button = Kit.icon_button("skip-forward", "Go to end", 28, 14)
 	_end_button.pressed.connect(_on_end)
 	row.add_child(_end_button)
@@ -265,6 +308,17 @@ func _build_transport() -> void:
 	_ease_button.visible = false
 	_ease_button.pressed.connect(_open_ease_menu)
 	row.add_child(_ease_button)
+
+	# Explicit More control: raises the session-only overlay budget so the
+	# folded clip and media lanes come back. It lives in the transport because
+	# the compact header folds away before the transport does.
+	_more_button = Kit.text_button("More", "", false, true)
+	_more_button.custom_minimum_size = Vector2(44, 44)
+	_more_button.add_theme_font_size_override("font_size", 10)
+	_more_button.tooltip_text = "Show the full timeline"
+	_more_button.pressed.connect(func() -> void: more_requested.emit())
+	row.add_child(_more_button)
+	_transport_buttons.append(_more_button)
 
 	# The sheet can fold without leaving the workbench: the transport stays,
 	# and this control flips between fold and open. Compact uses the bottom
@@ -330,6 +384,173 @@ func _build_compact_header() -> void:
 	row.add_child(_compact_close_button)
 
 
+## A 44 dp row that temporarily replaces the dope sheet when the duration chip
+## is tapped. It is built before the sheet so the VBox keeps a stable order;
+## only one of the two is ever visible.
+func _build_duration_row() -> void:
+	_duration_row = PanelContainer.new()
+	_duration_row.custom_minimum_size.y = 44
+	_duration_row.visible = false
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 6
+	style.content_margin_right = 6
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	_duration_row.add_theme_stylebox_override("panel", style)
+	add_child(_duration_row)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	_duration_row.add_child(row)
+
+	_duration_field = NumberFieldScript.new()
+	_duration_field.axis = "S"
+	_duration_field.suffix = " s"
+	_duration_field.min_value = 0.25
+	_duration_field.max_value = 3600.0
+	_duration_field.step = 1.0
+	_duration_field.tooltip_text = "Active clip length in seconds"
+	_duration_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_duration_field.text_committed.connect(func(value: float) -> void:
+		request_duration(value)
+	)
+	row.add_child(_duration_field)
+
+	_match_button = Kit.text_button("Match seq", "", false, true)
+	_match_button.tooltip_text = "Match the longer sequence length"
+	_match_button.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
+	_match_button.pressed.connect(func() -> void:
+		if doc != null:
+			request_duration(doc.sequence_duration())
+	)
+	row.add_child(_match_button)
+
+	_extend_button = Kit.text_button("+1 s", "", false, true)
+	_extend_button.tooltip_text = "Extend the clip by one second"
+	_extend_button.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
+	_extend_button.pressed.connect(func() -> void:
+		if doc != null:
+			request_duration(doc.duration + 1.0)
+	)
+	row.add_child(_extend_button)
+
+	_duration_close_button = Kit.icon_button("chevron-down", "Close the duration row", 44, 16)
+	_duration_close_button.pressed.connect(close_duration_row)
+	row.add_child(_duration_close_button)
+
+
+## The chip always names the active clip, and keeps a longer sequence clock
+## visibly distinct instead of pretending the dope sheet covers it.
+func duration_chip_text() -> String:
+	if doc == null:
+		return "0 s"
+	var text := _seconds_text(doc.duration)
+	var sequence := doc.sequence_duration()
+	if sequence > doc.duration + 0.05:
+		text += " · Seq " + _seconds_text(sequence)
+	return text
+
+
+func _seconds_text(value: float) -> String:
+	var text := "%.2f" % maxf(0.0, value)
+	text = text.rstrip("0").rstrip(".")
+	return text + " s"
+
+
+func duration_chip() -> Button:
+	return _duration_chip
+
+
+func duration_row_visible() -> bool:
+	return _duration_open
+
+
+func open_duration_row() -> void:
+	if doc == null:
+		return
+	if _duration_open:
+		close_duration_row()
+		return
+	_duration_open = true
+	_duration_row.visible = true
+	if _sheet_rule != null:
+		_sheet_rule.visible = false
+	if _sheet != null:
+		_sheet.visible = false
+	_sync_duration_row()
+	_apply_sheet_height()
+	_refresh_compact()
+	duration_row_changed.emit(true)
+
+
+func close_duration_row() -> void:
+	if not _duration_open:
+		return
+	_duration_open = false
+	_duration_row.visible = false
+	if _sheet_rule != null:
+		_sheet_rule.visible = _sheet_open
+	if _sheet != null:
+		_sheet.visible = _sheet_open
+	_apply_sheet_height()
+	_refresh_compact()
+	duration_row_changed.emit(false)
+
+
+func _sync_duration_row() -> void:
+	if doc == null:
+		return
+	if _duration_field != null:
+		_duration_field.set_value_silent(doc.duration)
+	if _match_button != null:
+		_match_button.visible = doc.sequence_duration() > doc.duration + 0.05
+	if _duration_chip != null:
+		_duration_chip.text = duration_chip_text()
+
+
+## Applies a duration request. A shrink that would delete keys asks the editor
+## for confirmation first and leaves the document untouched until it runs.
+func request_duration(value: float) -> bool:
+	if doc == null:
+		return false
+	var target := clampf(value, 0.25, 3600.0)
+	if _would_delete_keys(target):
+		duration_confirmation_requested.emit(target,
+			"Shortening the clip to %s deletes keys after that point." % _seconds_text(target))
+		return false
+	apply_duration(target)
+	return true
+
+
+func apply_duration(value: float) -> void:
+	if doc == null:
+		return
+	doc.set_duration(clampf(value, 0.25, 3600.0))
+	_sync_duration_row()
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func _would_delete_keys(value: float) -> bool:
+	if doc == null or doc.animation == null:
+		return false
+	for track in range(doc.animation.get_track_count()):
+		for index in range(doc.animation.track_get_key_count(track)):
+			if doc.animation.track_get_key_time(track, index) > value + 0.0001:
+				return true
+	return false
+
+
+## The session-only More state is owned by the editor; this only mirrors it in
+## the transport so the control reads "More" or "Less".
+func set_more_state(value: bool) -> void:
+	_more_state = value
+	if _more_button == null:
+		return
+	_more_button.text = "Less" if _more_state else "More"
+	_more_button.tooltip_text = "Return to the compact timeline" if _more_state else "Show the full timeline"
+
+
 func _sync_compact_header() -> void:
 	if _compact_mode_button == null:
 		return
@@ -384,13 +605,29 @@ func _build_sheet() -> void:
 ## keeps its height until the user asks for the dope sheet.
 func set_sheet_visible(open: bool) -> void:
 	_sheet_open = open
-	_sheet_rule.visible = open
+	if not open and _duration_open:
+		_duration_open = false
+		if _duration_row != null:
+			_duration_row.visible = false
+	_sheet_rule.visible = open and not _duration_open
 	if _sheet != null:
-		_sheet.visible = open
+		_sheet.visible = open and not _duration_open
 	if _fold_button != null:
 		Kit.set_icon(_fold_button, "chevron-down" if open else "chevron-up")
 		_fold_button.tooltip_text = "Fold the timeline" if open else "Open the timeline"
+	if open:
+		_maybe_show_gesture_hint()
 	_refresh_compact()
+
+
+## One session-only hint names both time-view gestures the first time the
+## sheet opens. The permanent captions then carry the affordance without
+## stealing a transport slot.
+func _maybe_show_gesture_hint() -> void:
+	if _hint_seen:
+		return
+	_hint_seen = true
+	notice.emit("Pinch to zoom · drag to pan the timeline")
 
 
 func sheet_visible() -> bool:
@@ -441,13 +678,19 @@ func _refresh_compact() -> void:
 		measured = minf(measured, _available_width)
 	var narrow := measured < 640.0
 	var narrow_chrome := touch or narrow
-	var show_header := _sheet_open and narrow_chrome and not _header_folded
+	var show_header := _sheet_open and narrow_chrome and not _header_folded and not _duration_open
 	# A narrow canvas cannot hold every transport control at 44 dp, so the
 	# folded and open states trade AUTO and the fold control rather than
 	# pushing the center column past the canvas edge.
 	var narrow_sheet_folded := narrow and not touch and not _sheet_open
 	_start_button.visible = not narrow_chrome
 	_end_button.visible = not narrow_chrome
+	# Key-step navigation yields to the always-visible duration chip and More
+	# control on a narrow canvas; wide workbenches keep it in the transport.
+	if _prev_button != null:
+		_prev_button.visible = not narrow_chrome
+	if _next_button != null:
+		_next_button.visible = not narrow_chrome
 	_snap_button.visible = not narrow_chrome
 	_mode_button.visible = not narrow_chrome
 	_loop_button.visible = not narrow_chrome
@@ -517,11 +760,11 @@ func fit_sheet_height(available: float) -> void:
 	var rule_h := 0.0
 	if _sheet_open and _sheet_rule != null and _sheet_rule.visible:
 		rule_h = maxf(1.0, _sheet_rule.custom_minimum_size.y)
-	var room := maxf(72.0, available - header_h - rule_h)
+	var room := maxf(48.0, available - header_h - rule_h)
 	var preferred := 96.0
 	if _mode == "graph":
 		preferred = 112.0 if _short_layout else 160.0
-	_sheet.custom_minimum_size.y = maxf(72.0, minf(preferred, room))
+	_sheet.custom_minimum_size.y = maxf(48.0, minf(preferred, room))
 
 
 ## The transport belongs to the sheet's model but is mounted outside it by the
@@ -658,6 +901,7 @@ func _refresh_transport(time: float, playing: bool) -> void:
 	_delete_button.disabled = not has_key
 	if _compact_delete_button != null:
 		_compact_delete_button.disabled = not has_key
+	_sync_duration_row()
 
 func _on_playback_changed(time: float, playing: bool) -> void:
 	_follow_playhead()
@@ -873,9 +1117,11 @@ func _follow_playhead() -> void:
 		_sheet.queue_redraw()
 
 
-## The track the thumb slides on, in sheet-canvas coordinates.
+## The track is painted even when the whole duration fits (the permanent
+## affordance), so this only answers whether the sheet can show a scrollbar at
+## all, not whether there is anything to pan.
 func scrollbar_track_rect() -> Rect2:
-	if doc == null or _scrollbar_hidden():
+	if _scrollbar_hidden():
 		return Rect2()
 	_normalize_view()
 	var h := _sheet.size.y if _sheet != null else 0.0
@@ -886,8 +1132,17 @@ func scrollbar_track_rect() -> Rect2:
 func _scrollbar_hidden() -> bool:
 	if doc == null or _sheet == null or not _sheet.is_visible_in_tree():
 		return true
-	_normalize_view()
-	return _view_span <= 0.0
+	return false
+
+
+## True while the visible window is narrower than the clip, i.e. there is
+## something to pan. The thumb and its drag band only own input then.
+func _view_pannable() -> bool:
+	return not _normalize_or_full()
+
+
+func scrollbar_caption() -> String:
+	return "Drag to pan" if _view_pannable() else "Fit · pinch to zoom"
 
 
 func scrollbar_thumb_rect() -> Rect2:
@@ -911,9 +1166,10 @@ func scrollbar_hit_rect() -> Rect2:
 	return Rect2(0.0, h - SCROLLBAR_HIT, _sheet.size.x, SCROLLBAR_HIT)
 
 
-# Debug/testing hook: map a press to whether the scrollbar owns it.
+# Debug/testing hook: map a press to whether the scrollbar owns it. In fit
+# mode the track is visible but there is nothing to pan, so it owns nothing.
 func scrollbar_owns_press(pos: Vector2) -> bool:
-	if _scrollbar_hidden():
+	if _scrollbar_hidden() or not _view_pannable():
 		return false
 	var hit := scrollbar_hit_rect()
 	if not hit.has_point(pos):
@@ -1041,16 +1297,27 @@ func _draw_sheet(canvas: Control) -> void:
 
 
 ## The sheet draws its own slim horizontal scrollbar: a thin thumb over a
-## faint track, with a full 44 dp hit band so fingers can grab either.
+## faint track, with a full 44 dp hit band so fingers can grab either. Fit mode
+## keeps the track and a 40% thumb as a permanent affordance and captions the
+## pinch gesture; a zoomed window gets the normal thumb and drag caption.
 func _draw_scrollbar(canvas: Control, w: float, h: float) -> void:
-	if _scrollbar_hidden():
-		return
 	var track := scrollbar_track_rect()
+	if track.size.x <= 0.0:
+		return
 	canvas.draw_rect(Rect2(track.position.x, track.position.y - 2.0, track.size.x, track.size.y + 4.0),
 		Kit.SURFACE * Color(1.0, 1.0, 1.0, 0.55))
+	var pannable := _view_pannable()
 	var thumb := scrollbar_thumb_rect()
 	var thumb_color := Kit.ACCENT if _scroll_dragging else Kit.TEXT_DIM
+	if not pannable:
+		thumb_color = Kit.TEXT_DIM * Color(1.0, 1.0, 1.0, 0.4)
 	canvas.draw_rect(thumb, thumb_color)
+	var caption := scrollbar_caption()
+	var caption_size := Kit.font_for(400).get_string_size(
+		caption, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	var caption_x := maxf(track.position.x, track.end.x - caption_size)
+	canvas.draw_string(Kit.font_for(400), Vector2(caption_x, track.position.y - 4.0),
+		caption, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Kit.TEXT_DIM)
 
 # -------------------------------------------------------------------------
 # Speed graph
@@ -1502,14 +1769,14 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 		return
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
-		if button.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+		if button.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN,
+			MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT]:
 			if button.pressed:
 				_wheel_time_view(button)
 				canvas.accept_event()
 			return
-		if button.button_index not in [MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT]:
-			if button.button_index != MOUSE_BUTTON_LEFT:
-				return
+		if button.button_index != MOUSE_BUTTON_LEFT:
+			return
 		if button.pressed:
 			_press_sheet(button.position, canvas)
 		else:
@@ -1521,8 +1788,10 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 	elif event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
+			if _touches.is_empty():
+				_snapshot_gesture_state()
 			_touches[int(touch.index)] = touch.position
-			if _touches.size() >= 2 and not _dragging_key and not _dragging_ease:
+			if _touches.size() >= 2:
 				_start_view_gesture()
 			else:
 				_press_sheet(touch.position, canvas)
@@ -1533,6 +1802,7 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 					_panning_view = false
 				_pinch_dist = -1.0
 			if _touches.is_empty():
+				_gesture_active = false
 				_release_sheet(touch.position)
 		canvas.accept_event()
 	elif event is InputEventScreenDrag:
@@ -1564,17 +1834,46 @@ func _wheel_time_view(button: InputEventMouseButton) -> void:
 		zoom_time_view(factor, _x_to_time(button.position.x, _sheet))
 
 
+func _snapshot_gesture_state() -> void:
+	if doc == null:
+		return
+	_gesture_active = true
+	_gesture_time_snapshot = doc.current_time
+	_gesture_playing_snapshot = doc.is_playing
+	_gesture_edit_snapshot = doc.has_open_edit()
+	_gesture_view_snapshot = time_view()
+
+
+## A second finger always starts the view gesture. Anything the first touch
+## began (scrub, key retime, ease drag) is rolled back to the snapshot taken
+## before that touch, including an edit transaction the press opened. A
+## pre-existing edit is never ended or cancelled here.
 func _start_view_gesture() -> void:
-	# A second finger cancels the pending single-finger gesture without
-	# ending an edit: the press never started one in the two-finger case.
-	if _scrubbing:
-		_scrubbing = false
+	_scroll_dragging = false
+	_scrubbing = false
+	_dragging_key = false
+	_dragging_ease = false
+	if doc != null:
+		if not _gesture_edit_snapshot and doc.has_open_edit():
+			doc.cancel_edit()
+		if _gesture_active:
+			doc.seek(_gesture_time_snapshot)
+			if _gesture_playing_snapshot:
+				doc.play()
+			# Restoring the playhead must not move the window the user is about
+			# to pan: put the exact snapshot window back after the seek.
+			set_time_view(_gesture_view_snapshot.x, _gesture_view_snapshot.y)
+	_gesture_active = false
 	var indexes := _touches.keys()
+	if indexes.size() < 2:
+		return
 	var p0: Vector2 = _touches[indexes[0]]
 	var p1: Vector2 = _touches[indexes[1]]
 	_panning_view = true
 	_pinch_dist = p0.distance_to(p1)
 	_pan_last_mid = (p0 + p1) * 0.5
+	if _sheet != null:
+		_sheet.queue_redraw()
 
 
 func _update_view_gesture() -> void:
@@ -1599,9 +1898,10 @@ func button_mask_down() -> bool:
 
 func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_geometry(canvas)
-	# The scrollbar band owns its thumb drag and its track tap. Keys keep a
-	# chance to win first so a diamond at the bottom row stays grabbable.
-	if not _scrollbar_hidden() and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
+	# The scrollbar band owns its thumb drag and its track tap while there is
+	# something to pan. Keys keep a chance to win first so a diamond at the
+	# bottom row stays grabbable.
+	if _view_pannable() and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
 		var thumb: Rect2 = scrollbar_thumb_rect()
 		if pos.x >= thumb.position.x - 8.0 and pos.x <= thumb.end.x + 8.0:
 			_scroll_dragging = true
