@@ -1,7 +1,9 @@
 extends Control
-## Viewport overlay for rig mode: bone sticks, joints, the active bone and IK
-## targets. Hit-testing is done in screen space with a 22 dp radius so a finger
-## can grab a bone without pixel precision.
+## Viewport overlay for rig mode: octahedral bones, joints, the active bone and
+## IK targets. Hit-testing is done in screen space with a 22 dp radius so a
+## finger can grab a bone without pixel precision. Edit mode adds 22 dp rest
+## head/tail handles; both rest drags commit once through set_bone_rest, so one
+## gesture is one undo entry.
 ##
 ## The overlay never owns state. It reads the rig record and the Skeleton3D pose,
 ## and writes back through the rig system (active bone) or the skeleton (drag
@@ -9,12 +11,22 @@ extends Control
 ## pivot the viewport gizmo would use.
 
 signal bone_selected(bone: String)
+signal mode_changed(mode: String)
 
 const HIT_RADIUS := 22.0
-const JOINT_RADIUS := 3.0
-const ACTIVE_JOINT_RADIUS := 5.0
+const JOINT_RADIUS := 4.0
+const ACTIVE_JOINT_RADIUS := 6.0
 const TARGET_HANDLE_RADIUS := 22.0
 const DRAG_SENSITIVITY := 0.012
+const BONE_WIDTH_RATIO := 0.22
+const MIN_BONE_WIDTH := 12.0
+const MAX_BONE_WIDTH := 44.0
+const SHOULDER_RATIO := 0.2
+const EDIT_HANDLE_RADIUS := 22.0
+const EDIT_HANDLE_DRAW_RADIUS := 10.0
+const MIN_BONE_LENGTH := 0.01
+const MAX_BONE_LENGTH := 100.0
+const REST_LIMIT := 100.0
 
 var doc = null
 var view = null
@@ -22,11 +34,17 @@ var rig_system = null
 
 var _rig_id := ""
 var _enabled := false
+var _mode := "pose"
 var _dragging := false
 var _drag_bone := ""
 var _drag_origin := Vector2.ZERO
 var _drag_start_rotation := Quaternion.IDENTITY
 var _drag_target := ""
+var _drag_kind := ""
+var _drag_rest_start: Dictionary = {}
+var _drag_rest_current: Dictionary = {}
+var _drag_head_world := Vector3.ZERO
+var _drag_plane := Plane()
 
 
 func _ready() -> void:
@@ -46,17 +64,23 @@ func setup(document, view_ref, rig_system_ref) -> void:
 
 
 func set_rig(rig_id: String) -> void:
+	if _rig_id != rig_id:
+		_cancel_drag()
 	_rig_id = rig_id
 	queue_redraw()
 
 
 func set_enabled(value: bool) -> void:
+	if not value and _drag_kind != "":
+		_end_drag()
 	_enabled = value
 	mouse_filter = Control.MOUSE_FILTER_STOP if _enabled else Control.MOUSE_FILTER_PASS
 	if not _enabled:
 		_dragging = false
 		_drag_bone = ""
 		_drag_target = ""
+		_drag_kind = ""
+		_drag_rest_current = {}
 	queue_redraw()
 
 
@@ -66,6 +90,72 @@ func is_enabled() -> bool:
 
 func hit_radius() -> float:
 	return HIT_RADIUS
+
+
+func mode() -> String:
+	return _mode
+
+
+func is_edit_mode() -> bool:
+	return _mode == "edit"
+
+
+## Pose is the default workbench mode. Edit is refused on an imported
+## skeleton because its rest transforms belong to the imported asset.
+func set_mode(mode: String) -> void:
+	var clean := mode if mode in ["pose", "edit"] else "pose"
+	if clean == "edit" and _imported():
+		clean = "pose"
+	if _mode == clean:
+		return
+	_cancel_drag()
+	_mode = clean
+	queue_redraw()
+	mode_changed.emit(_mode)
+
+
+func bone_color(active: bool) -> Color:
+	return Kit.FOCUS_BRIGHT if active else Kit.TEXT_MUTED
+
+
+## Octahedral bone silhouette in screen space: head, one shoulder, tail, the
+## other shoulder. The shoulders sit 20% of the bone width off the axis and
+## 20% of the way along the bone, so the quad stays a convex diamond.
+func bone_polygon(head_screen: Vector2, tail_screen: Vector2, width: float) -> PackedVector2Array:
+	var axis := tail_screen - head_screen
+	var length := axis.length()
+	if length <= 0.000001:
+		axis = Vector2.DOWN
+	else:
+		axis /= length
+	var perpendicular := Vector2(-axis.y, axis.x)
+	var shoulder_center := head_screen + axis * (length * SHOULDER_RATIO)
+	var offset := perpendicular * (maxf(0.0, width) * SHOULDER_RATIO)
+	return PackedVector2Array([head_screen, shoulder_center + offset, tail_screen, shoulder_center - offset])
+
+
+func edit_handle_radius() -> float:
+	return EDIT_HANDLE_RADIUS
+
+
+## Bone width follows the projected length, like a Blender octahedral bone, so
+## a long bone reads as a shape instead of a hairline at any zoom.
+func bone_width(screen_length: float) -> float:
+	return clampf(screen_length * BONE_WIDTH_RATIO, MIN_BONE_WIDTH, MAX_BONE_WIDTH)
+
+
+func head_handle_at(screen: Vector2) -> bool:
+	if not _enabled or not is_edit_mode() or _imported():
+		return false
+	var segment := _active_rest_segment()
+	return not segment.is_empty() and screen.distance_to(segment["head"]) <= EDIT_HANDLE_RADIUS
+
+
+func tail_handle_at(screen: Vector2) -> bool:
+	if not _enabled or not is_edit_mode() or _imported():
+		return false
+	var segment := _active_rest_segment()
+	return not segment.is_empty() and screen.distance_to(segment["tail"]) <= EDIT_HANDLE_RADIUS
 
 
 func bone_at(screen: Vector2) -> String:
@@ -78,22 +168,93 @@ func bone_at(screen: Vector2) -> String:
 	var bones: Array = rig.get("bones", [])
 	var best := ""
 	var best_distance := HIT_RADIUS
+	var use_rest := is_edit_mode()
 	for i in range(bones.size()):
 		var name := str(bones[i].get("name", ""))
 		var index := skeleton.find_bone(name)
 		if index < 0:
 			continue
-		var pose := skeleton.get_bone_global_pose(index)
-		var head := skeleton.to_global(pose.origin)
-		var length := float(bones[i].get("length", 0.4))
-		var tail := skeleton.to_global(pose.origin + pose.basis.y.normalized() * length)
-		var head_screen: Vector2 = view.world_to_screen(head)
-		var tail_screen: Vector2 = view.world_to_screen(tail)
+		var segment := _bone_world_segment(bones, index, skeleton, use_rest, {})
+		if segment.is_empty():
+			continue
+		var head_screen: Vector2 = view.world_to_screen(skeleton.to_global(segment["head"]))
+		var tail_screen: Vector2 = view.world_to_screen(skeleton.to_global(segment["tail"]))
 		var distance := _distance_to_segment_2d(screen, head_screen, tail_screen)
 		if distance < best_distance:
 			best_distance = distance
 			best = name
 	return best
+
+
+func _imported() -> bool:
+	if rig_system == null or _rig_id == "":
+		return false
+	return bool(rig_system.get_rig(_rig_id).get("imported", false))
+
+
+func _active_bone_name() -> String:
+	if rig_system == null or _rig_id == "":
+		return ""
+	return str(rig_system.get_rig(_rig_id).get("active_bone", ""))
+
+
+func _bone_rest_transform(skeleton: Skeleton3D, bones: Array, index: int, override: Dictionary) -> Transform3D:
+	if not override.is_empty() and index >= 0:
+		var parent := skeleton.get_bone_parent(index)
+		var parent_global := Transform3D.IDENTITY
+		if parent >= 0:
+			parent_global = skeleton.get_bone_global_rest(parent)
+		var local := Transform3D(
+			Basis(override.get("r", Quaternion.IDENTITY)).scaled(override.get("s", Vector3.ONE)),
+			override.get("p", Vector3.ZERO))
+		return parent_global * local
+	return skeleton.get_bone_global_rest(index)
+
+
+## Skeleton-space head/tail for one bone, in pose or rest space. An override
+## makes the active rest bone follow the drag preview before the single
+## set_bone_rest write at release.
+func _bone_world_segment(bones: Array, index: int, skeleton: Skeleton3D, use_rest: bool, override: Dictionary) -> Dictionary:
+	if index < 0 or index >= bones.size():
+		return {}
+	var bone: Dictionary = bones[index]
+	var length := float(bone.get("length", 0.4))
+	var head := Vector3.ZERO
+	var tail := Vector3.ZERO
+	if use_rest:
+		var rest := _bone_rest_transform(skeleton, bones, index, override)
+		if not override.is_empty():
+			length = float(override.get("length", length))
+		head = rest.origin
+		tail = head + rest.basis.y.normalized() * length
+	else:
+		var pose := skeleton.get_bone_global_pose(index)
+		head = pose.origin
+		tail = head + pose.basis.y.normalized() * length
+	return {"head": head, "tail": tail, "length": length}
+
+
+func _active_rest_segment() -> Dictionary:
+	if rig_system == null or _rig_id == "" or view == null:
+		return {}
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return {}
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	var bones: Array = rig.get("bones", [])
+	var name := _active_bone_name()
+	for i in range(bones.size()):
+		if str(bones[i].get("name", "")) != name:
+			continue
+		var override := _drag_rest_current if name == _drag_bone else {}
+		var segment := _bone_world_segment(bones, i, skeleton, true, override)
+		if segment.is_empty():
+			return {}
+		return {
+			"head": view.world_to_screen(skeleton.to_global(segment["head"])),
+			"tail": view.world_to_screen(skeleton.to_global(segment["tail"])),
+		}
+	return {}
 
 
 func _distance_to_segment_2d(point: Vector2, head: Vector2, tail: Vector2) -> float:
@@ -130,20 +291,34 @@ func _draw() -> void:
 		return
 	var bones: Array = rig.get("bones", [])
 	var active := str(rig.get("active_bone", ""))
+	var use_rest := is_edit_mode()
 	for i in range(bones.size()):
 		var bone: Dictionary = bones[i]
 		var name := str(bone.get("name", ""))
 		var index := skeleton.find_bone(name)
 		if index < 0:
 			continue
-		var pose := skeleton.get_bone_global_pose(index)
-		var length := float(bone.get("length", 0.4))
-		var head: Vector2 = view.world_to_screen(skeleton.to_global(pose.origin))
-		var tail: Vector2 = view.world_to_screen(skeleton.to_global(pose.origin + pose.basis.y.normalized() * length))
-		var color := Kit.FOCUS_BRIGHT if name == active else Kit.TEXT_MUTED
-		draw_line(head, tail, color, 2.0)
+		var override := _drag_rest_current if name == _drag_bone else {}
+		var segment := _bone_world_segment(bones, index, skeleton, use_rest, override)
+		if segment.is_empty():
+			continue
+		var head: Vector2 = view.world_to_screen(skeleton.to_global(segment["head"]))
+		var tail: Vector2 = view.world_to_screen(skeleton.to_global(segment["tail"]))
+		var color := bone_color(name == active)
+		var polygon := bone_polygon(head, tail, bone_width(head.distance_to(tail)))
+		draw_colored_polygon(polygon, color)
+		var outline := polygon.duplicate()
+		outline.append(polygon[0])
+		draw_polyline(outline, Kit.BORDER_SOFT, 1.0, true)
 		draw_circle(head, ACTIVE_JOINT_RADIUS if name == active else JOINT_RADIUS, color)
 		draw_circle(tail, JOINT_RADIUS, Kit.TEXT_DIM)
+	if use_rest and active != "":
+		var segment := _active_rest_segment()
+		if not segment.is_empty():
+			draw_arc(segment["head"], EDIT_HANDLE_DRAW_RADIUS, 0.0, TAU, 24, Kit.FOCUS_BRIGHT, 2.0)
+			draw_circle(segment["head"], 3.0, Kit.FOCUS_BRIGHT)
+			draw_arc(segment["tail"], EDIT_HANDLE_DRAW_RADIUS, 0.0, TAU, 24, Kit.FOCUS_BRIGHT, 2.0)
+			draw_circle(segment["tail"], 3.0, Kit.FOCUS_BRIGHT)
 	for chain in rig.get("ik", []):
 		if not bool(chain.get("enabled", true)):
 			continue
@@ -174,28 +349,44 @@ func _gui_input(event: InputEvent) -> void:
 		if button.button_index != MOUSE_BUTTON_LEFT:
 			return
 		if button.pressed:
-			_press_at(button.position)
+			press_at(button.position)
 			accept_event()
-		elif _dragging or _drag_target != "":
-			_end_drag()
+		elif _dragging or _drag_target != "" or _drag_kind != "":
+			release_drag()
 			accept_event()
 	elif event is InputEventMouseMotion:
 		if Kit.is_emulated_mouse(event):
 			return
-		_drag_at((event as InputEventMouseMotion).position)
+		drag_at((event as InputEventMouseMotion).position)
 	elif event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
-			_press_at(touch.position)
+			press_at(touch.position)
 			accept_event()
-		elif _dragging or _drag_target != "":
-			_end_drag()
+		elif _dragging or _drag_target != "" or _drag_kind != "":
+			release_drag()
 			accept_event()
 	elif event is InputEventScreenDrag:
-		_drag_at((event as InputEventScreenDrag).position)
+		drag_at((event as InputEventScreenDrag).position)
 
 
-func _press_at(screen: Vector2) -> void:
+func press_at(screen: Vector2) -> void:
+	if is_edit_mode():
+		if _imported():
+			return
+		if head_handle_at(screen):
+			_begin_rest_drag("head", screen)
+			return
+		if tail_handle_at(screen):
+			_begin_rest_drag("tail", screen)
+			return
+		# Edit mode still lets a tap select another bone to edit; it never
+		# rotates a pose.
+		var selected := bone_at(screen)
+		if selected != "":
+			rig_system.set_active_bone(_rig_id, selected)
+			bone_selected.emit(selected)
+		return
 	var chain_id := _chain_at(screen)
 	if chain_id != "":
 		_drag_target = chain_id
@@ -205,11 +396,17 @@ func _press_at(screen: Vector2) -> void:
 		_begin_drag(bone, screen)
 
 
-func _drag_at(screen: Vector2) -> void:
-	if _drag_target != "":
+func drag_at(screen: Vector2) -> void:
+	if _drag_kind != "":
+		_drag_rest(screen)
+	elif _drag_target != "":
 		_move_target(screen)
 	elif _dragging:
 		_rotate_drag(screen)
+
+
+func release_drag() -> void:
+	_end_drag()
 
 
 func _begin_drag(bone: String, screen: Vector2) -> void:
@@ -226,9 +423,120 @@ func _begin_drag(bone: String, screen: Vector2) -> void:
 
 
 func _end_drag() -> void:
+	if _drag_kind != "" and _drag_bone != "" and not _drag_rest_current.is_empty():
+		if _rest_changed(_drag_rest_start, _drag_rest_current):
+			# One gesture, one undo entry: the preview only becomes a rest
+			# edit when the finger lifts.
+			rig_system.set_bone_rest(_rig_id, _drag_bone, _drag_rest_current)
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
+	_drag_kind = ""
+	_drag_rest_start = {}
+	_drag_rest_current = {}
+	queue_redraw()
+
+
+func _cancel_drag() -> void:
+	_dragging = false
+	_drag_bone = ""
+	_drag_target = ""
+	_drag_kind = ""
+	_drag_rest_start = {}
+	_drag_rest_current = {}
+	queue_redraw()
+
+
+func _rest_changed(before: Dictionary, after: Dictionary) -> bool:
+	if before.is_empty() or after.is_empty():
+		return false
+	if (before.get("p", Vector3.ZERO) as Vector3).distance_to(after.get("p", Vector3.ZERO)) > 0.000001:
+		return true
+	if absf(float(before.get("length", 0.0)) - float(after.get("length", 0.0))) > 0.000001:
+		return true
+	return (before.get("r", Quaternion.IDENTITY) as Quaternion).angle_to(
+		after.get("r", Quaternion.IDENTITY)) > 0.000001
+
+
+func _begin_rest_drag(kind: String, screen: Vector2) -> void:
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	if rig.is_empty() or bool(rig.get("imported", false)):
+		return
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return
+	var name := str(rig.get("active_bone", ""))
+	var bones: Array = rig.get("bones", [])
+	var index := skeleton.find_bone(name)
+	if index < 0 or index >= bones.size():
+		return
+	var bone: Dictionary = bones[index]
+	var segment := _bone_world_segment(bones, index, skeleton, true, {})
+	if segment.is_empty():
+		return
+	_drag_kind = kind
+	_drag_bone = name
+	_drag_rest_start = {
+		"p": bone.get("p", Vector3.ZERO),
+		"r": bone.get("r", Quaternion.IDENTITY),
+		"s": bone.get("s", Vector3.ONE),
+		"length": float(bone.get("length", 0.4)),
+	}
+	_drag_rest_current = _drag_rest_start.duplicate(true)
+	_drag_head_world = skeleton.to_global(segment["head"])
+	var ray: Dictionary = view.screen_ray(screen) if view != null else {}
+	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
+	var normal := -direction
+	if normal.length_squared() <= 0.000001:
+		normal = Vector3.BACK
+	normal = normal.normalized()
+	_drag_plane = Plane(normal, normal.dot(_drag_head_world))
+
+
+func _plane_hit(screen: Vector2):
+	if view == null:
+		return null
+	var ray: Dictionary = view.screen_ray(screen)
+	var origin: Vector3 = ray.get("origin", Vector3.ZERO)
+	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
+	if direction.length_squared() <= 0.000001:
+		return null
+	return _drag_plane.intersects_ray(origin, direction)
+
+
+func _drag_rest(screen: Vector2) -> void:
+	var hit = _plane_hit(screen)
+	if hit == null:
+		return
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return
+	var bones: Array = rig_system.get_rig(_rig_id).get("bones", [])
+	var index := skeleton.find_bone(_drag_bone)
+	if index < 0 or index >= bones.size():
+		return
+	var parent := skeleton.get_bone_parent(index)
+	var parent_global := Transform3D.IDENTITY
+	if parent >= 0:
+		parent_global = skeleton.get_bone_global_rest(parent)
+	var local_hit := skeleton.to_local(hit)
+	var local_start := skeleton.to_local(_drag_head_world)
+	var local_delta := parent_global.basis.inverse() * (local_hit - local_start)
+	if _drag_kind == "head":
+		var start := _drag_rest_start.get("p", Vector3.ZERO) as Vector3
+		var moved := start + local_delta
+		_drag_rest_current["p"] = Vector3(
+			clampf(moved.x, -REST_LIMIT, REST_LIMIT),
+			clampf(moved.y, -REST_LIMIT, REST_LIMIT),
+			clampf(moved.z, -REST_LIMIT, REST_LIMIT))
+	else:
+		if local_delta.length_squared() <= 0.000001:
+			return
+		# The rest bone points along its local +Y, exactly like the skeleton
+		# pose. Aim that axis at the pointer and take the new length.
+		_drag_rest_current["r"] = Quaternion(Vector3.UP, local_delta.normalized())
+		_drag_rest_current["length"] = clampf(
+			local_delta.length(), MIN_BONE_LENGTH, MAX_BONE_LENGTH)
 	queue_redraw()
 
 

@@ -1518,7 +1518,13 @@ func _ready() -> void:
 	_check(rig_panel != null, "a rig panel is docked next to scene and properties")
 	_check(editor.get("_drawer_rig_tab") != null, "the drawer exposes a rig tab")
 	var rig_overlay = editor.get("_rig_overlay")
+	var rig_toolbar = editor.get("_rig_toolbar")
 	_check(rig_overlay != null, "a rig overlay floats over the viewport")
+	_check(rig_toolbar != null, "a floating rig toolbar sits above the viewport overlay")
+	if rig_toolbar != null:
+		_check(rig_toolbar.get_parent() == editor._viewport_host, "the rig toolbar mounts in the stage")
+		var stage_kids: Array = editor._viewport_host.get_children()
+		_check(stage_kids.find(rig_toolbar) > stage_kids.find(rig_overlay), "the rig toolbar draws above the rig overlay")
 	if rig_panel == null or editor.get("_drawer_rig_tab") == null:
 		_check(false, "the rig tab shows an honest empty state")
 		_check(false, "the rig overlay follows the active rig tab")
@@ -1533,33 +1539,81 @@ func _ready() -> void:
 			_check(editor._top_bar._panels_button.visible, "the panel toggle exposes the rig page on a sub-minimum shell")
 		_check(editor.get("_rig_panel") != null and editor.get("_rig_panel").visible, "the rig tab keeps the panel reachable")
 		if rig_overlay != null:
-			# Rig mode follows the active dock page: on the Rig tab the overlay
-			# engages; hiding that page or switching tabs disengages it.
+			# Rig mode is an explicit workbench state now: the Rig page engages
+			# it, it survives closing the dock or showing another page, and
+			# Done exits it. An empty rig page keeps the stage quiet.
 			editor._set_compact_tab("rig")
 			if editor._dock_overlay_mode():
 				editor._open_drawer()
 			await get_tree().process_frame
-			_check(rig_overlay.is_enabled(), "the rig overlay follows the active rig tab")
-			if editor._dock_overlay_mode():
-				editor._close_drawer()
-				await get_tree().process_frame
-				_check(not rig_overlay.is_enabled(), "the rig overlay yields when its page is dismissed")
-			editor._set_compact_tab("scene")
-			await get_tree().process_frame
-			_check(not rig_overlay.is_enabled(), "the rig overlay yields when another tab is active")
+			_check(not rig_overlay.is_enabled(), "an empty rig page keeps the overlay quiet")
+			if rig_toolbar != null:
+				_check(not rig_toolbar.visible, "the floating toolbar hides until a rig is selected")
 		_check(rig_panel.empty_state_visible(), "the rig tab shows an honest empty state")
 		var rig_id := ""
 		rig_id = doc.rig_system.create_rig("Smoke Rig", Vector3.ZERO)
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check(rig_id != "" and not rig_panel.empty_state_visible(), "creating a rig clears the empty state")
+		var active_bone_before := ""
 		if rig_overlay != null and rig_id != "":
 			_check(str(rig_overlay._rig_id) == doc.rig_system.active_rig_id(), "the rig overlay tracks the active rig")
+			_check(rig_overlay.is_enabled(), "selecting a rig engages the overlay")
+			active_bone_before = str(doc.rig_system.get_rig(rig_id).get("active_bone", ""))
+			if rig_toolbar != null:
+				_check(rig_toolbar.visible, "the floating toolbar shows while a rig is selected")
+				_check(rig_toolbar.current_mode() == rig_overlay.mode(), "the toolbar mirrors the overlay mode")
+				var add_bone_button: Button = rig_toolbar.find_child("ToolbarAddBoneButton", true, false)
+				var bones_before := (doc.rig_system.get_rig(rig_id).get("bones", []) as Array).size()
+				if add_bone_button != null:
+					add_bone_button.pressed.emit()
+					await get_tree().process_frame
+					_check((doc.rig_system.get_rig(rig_id).get("bones", []) as Array).size() == bones_before + 1,
+						"the floating Add bone extrudes a child bone")
+					active_bone_before = str(doc.rig_system.get_rig(rig_id).get("active_bone", ""))
+					_check(active_bone_before.begins_with("Bone "), "the extruded bone becomes the active bone")
+					var tree = rig_panel.find_child("BoneTree", true, false)
+					var active_row := ""
+					if tree != null:
+						for row in tree.get_bone_rows():
+							if row.has_theme_color_override("font_color") \
+									and (row as Button).get_theme_color("font_color") == Kit.FOCUS_BRIGHT:
+								active_row = str(row.get_meta("bone_name", ""))
+					_check(active_row == active_bone_before, "the extruded bone is selected in the bone tree")
+				rig_overlay.set_mode("edit")
+				await get_tree().process_frame
+				_check(rig_toolbar.current_mode() == "edit", "the toolbar follows the overlay mode")
+			if editor._dock_overlay_mode():
+				editor._close_drawer()
+				await get_tree().process_frame
+				_check(rig_overlay.is_enabled(), "closing the Rig dock keeps rig mode alive")
+				if rig_toolbar != null:
+					_check(rig_toolbar.visible, "the toolbar survives closing the Rig dock")
+				_check(rig_overlay.mode() == "edit", "closing the Rig dock does not reset the mode")
+				_check(str(doc.rig_system.get_rig(rig_id).get("active_bone", "")) == active_bone_before, "closing the Rig dock keeps the active bone")
+			editor._set_compact_tab("scene")
+			await get_tree().process_frame
+			_check(rig_overlay.is_enabled(), "another dock page does not exit rig mode")
+			if rig_toolbar != null:
+				_check(rig_toolbar.visible, "the toolbar stays visible on another dock page")
+				rig_toolbar.done_requested.emit()
+				await get_tree().process_frame
+				_check(not rig_toolbar.visible, "Done hides the toolbar")
+				_check(not rig_overlay.is_enabled(), "Done hides the overlay")
+				_check(str(rig_overlay._rig_id) == "", "Done clears the rig selection state")
+				editor._set_compact_tab("rig")
+				await get_tree().process_frame
+				_check(rig_overlay.is_enabled(), "reopening the Rig page re-engages the rig")
+				_check(rig_overlay.mode() == "edit", "reopening the Rig page does not reset the mode")
+				_check(rig_toolbar.visible and rig_toolbar.current_mode() == "edit", "the toolbar returns with the preserved mode")
 		doc.rig_system.delete_rig(rig_id)
 		await get_tree().process_frame
 		_check(rig_panel.empty_state_visible(), "deleting the rig restores the empty state")
 		if rig_overlay != null:
 			_check(str(rig_overlay._rig_id) == "", "the rig overlay clears with the last rig")
+			_check(not rig_overlay.is_enabled(), "deleting the last rig disables the overlay")
+			if rig_toolbar != null:
+				_check(not rig_toolbar.visible, "deleting the last rig hides the toolbar")
 		editor._set_compact_tab("scene")
 		await get_tree().process_frame
 
@@ -1626,6 +1680,8 @@ func _ready() -> void:
 		_check(not video_overlay.visible, "render mode hides the video overlay")
 	if rig_overlay != null:
 		_check(not rig_overlay.is_enabled(), "render mode disables the rig overlay")
+	if rig_toolbar != null:
+		_check(not rig_toolbar.visible, "render mode hides the rig toolbar")
 	editor._exit_render_mode()
 	if video_overlay != null:
 		_check(editor._render_mode == false, "render mode exits cleanly")

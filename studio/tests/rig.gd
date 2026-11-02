@@ -15,6 +15,8 @@ const PosePanelScript = preload("res://src/ui/pose_panel.gd")
 const IkPanelScript = preload("res://src/ui/ik_panel.gd")
 const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
 
+const CAPTURE_DIR := "/tmp/opencode/wave2-rig-captures"
+
 var _failures: Array[String] = []
 var _tmp_dir := ""
 var _checks := 0
@@ -28,8 +30,14 @@ class FakeView:
 	func world_to_screen(world: Vector3) -> Vector2:
 		return origin + Vector2(world.x * scale_px, -world.y * scale_px)
 
-	func screen_ray(_screen: Vector2) -> Dictionary:
-		return {"origin": Vector3.ZERO, "direction": Vector3.FORWARD}
+	func screen_ray(screen: Vector2) -> Dictionary:
+		# A ray perpendicular to the z=0 editing plane. World x/y follow the
+		# orthographic projection above, so a screen drag maps to the same
+		# world delta the real camera would produce on that plane.
+		return {
+			"origin": Vector3((screen.x - origin.x) / scale_px, -(screen.y - origin.y) / scale_px, 0.0),
+			"direction": Vector3.FORWARD,
+		}
 
 
 func _check(condition: bool, message: String) -> void:
@@ -49,6 +57,8 @@ func _ready() -> void:
 	_tmp_dir = ProjectSettings.globalize_path("user://rig_tests")
 	_rmrf(_tmp_dir)
 	DirAccess.make_dir_recursive_absolute(_tmp_dir)
+	if _capture_requested():
+		get_window().size = Vector2i(915, 412)
 	await get_tree().process_frame
 	await _test_model()
 	await _test_skinning()
@@ -58,6 +68,13 @@ func _ready() -> void:
 	await _test_imported_adoption()
 	await _test_ui()
 	await _test_overlay()
+	await _test_overlay_hit_transform()
+	await _test_octahedral_bones()
+	await _test_rig_toolbar()
+	await _test_viewport_modes()
+	await _test_extrude()
+	if _capture_requested():
+		await _capture_visuals()
 	_finish()
 
 
@@ -970,4 +987,325 @@ func _test_overlay() -> void:
 	_check(overlay.hit_radius() == 22.0, "the overlay hit radius is 22 dp")
 	overlay.queue_free()
 	view.queue_free()
+	doc.queue_free()
+
+
+## The rig object carries a transform: drawn bones and hit-testing must both
+## go through the skeleton's global transform. An origin-only fixture hides
+## this regression, so this test translates the rig.
+func _test_overlay_hit_transform() -> void:
+	print("RIG STEP: overlay hit transform")
+	var doc := _new_doc("Overlay Transform")
+	var rs = doc.rig_system
+	var rig_id: String = rs.create_rig("Offset Rig", Vector3(2.0, 1.0, 0.0))
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var skel := _skeleton(doc, rig_id)
+	var head: Vector3 = skel.to_global(skel.get_bone_global_rest(0).origin)
+	var screen: Vector2 = view.world_to_screen(head)
+	_check(overlay.bone_at(screen) == "Root", "a translated rig still hit-tests its bone head")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C6 — octahedral bones and the touch toolbar
+# -------------------------------------------------------------------------
+
+func _test_octahedral_bones() -> void:
+	print("RIG STEP: octahedral bones")
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	await get_tree().process_frame
+	var head := Vector2(100, 200)
+	var tail := Vector2(200, 200)
+	var width := 10.0
+	var poly: PackedVector2Array = overlay.bone_polygon(head, tail, width)
+	_check(poly.size() == 4, "bone_polygon returns exactly four points")
+	if poly.size() == 4:
+		_check(poly[0].distance_to(head) < 0.001, "the polygon starts at the bone head")
+		_check(poly[2].distance_to(tail) < 0.001, "the polygon ends at the bone tail")
+		_check(absf(absf(poly[1].y - head.y) - width * 0.2) < 0.001, "the first shoulder is 20% of the bone width off the axis")
+		_check(absf(absf(poly[3].y - head.y) - width * 0.2) < 0.001, "the second shoulder is 20% of the bone width off the axis")
+		_check((poly[1].y - head.y) * (poly[3].y - head.y) < 0.0, "the shoulders sit on opposite sides of the bone axis")
+	_check(overlay.bone_color(true) == Kit.FOCUS_BRIGHT, "the active bone uses the focus color")
+	_check(overlay.bone_color(false) == Kit.TEXT_MUTED, "inactive bones use the muted color")
+	_check(overlay.edit_handle_radius() == 22.0, "the rest head and tail handles use a 22 dp touch radius")
+	overlay.queue_free()
+
+
+func _test_rig_toolbar() -> void:
+	print("RIG STEP: floating toolbar")
+	var script = load("res://src/ui/rig_toolbar.gd")
+	_check(script != null, "the floating rig toolbar script exists")
+	if script == null:
+		return
+	var toolbar = script.new()
+	toolbar.name = "RigToolbar"
+	add_child(toolbar)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var pose_button: Button = toolbar.find_child("PoseModeButton", true, false)
+	var edit_button: Button = toolbar.find_child("EditModeButton", true, false)
+	var add_button: Button = toolbar.find_child("ToolbarAddBoneButton", true, false)
+	var done_button: Button = toolbar.find_child("RigDoneButton", true, false)
+	_check(pose_button != null and edit_button != null, "the toolbar has Pose and Edit segments")
+	_check(add_button != null and done_button != null, "the toolbar has Add bone and Done")
+	if pose_button != null and edit_button != null:
+		_check(pose_button.custom_minimum_size == Vector2(44, 44), "the Pose segment is a 44x44 target")
+		_check(edit_button.custom_minimum_size == Vector2(44, 44), "the Edit segment is a 44x44 target")
+		_check(pose_button.size.y >= 43.5 and edit_button.size.y >= 43.5, "the laid-out segments are 44 dp tall")
+	if add_button != null:
+		_check(add_button.custom_minimum_size == Vector2(96, 44), "Add bone is a 96x44 target")
+	if done_button != null:
+		_check(done_button.custom_minimum_size == Vector2(96, 44), "Done is a 96x44 target")
+	_check(toolbar.current_mode() == "pose", "the toolbar defaults to Pose")
+	if pose_button != null and edit_button != null:
+		var modes: Array[String] = []
+		toolbar.mode_changed.connect(func(mode: String) -> void: modes.append(mode))
+		edit_button.pressed.emit()
+		_check(toolbar.current_mode() == "edit" and modes == ["edit"], "Edit emits one mode change")
+		pose_button.pressed.emit()
+		_check(toolbar.current_mode() == "pose" and modes == ["edit", "pose"], "Pose emits one mode change")
+	var added: Array[String] = []
+	var finished: Array[String] = []
+	toolbar.add_bone_requested.connect(func() -> void: added.append("add"))
+	toolbar.done_requested.connect(func() -> void: finished.append("done"))
+	if add_button != null:
+		add_button.pressed.emit()
+		_check(added.size() == 1, "Add bone emits its request")
+	if done_button != null:
+		done_button.pressed.emit()
+		_check(finished.size() == 1, "Done emits its request")
+	if edit_button != null and add_button != null and pose_button != null:
+		toolbar.set_imported(true)
+		_check(edit_button.disabled, "an imported rig disables the Edit segment")
+		_check(add_button.disabled, "an imported rig disables Add bone")
+		_check(not pose_button.disabled, "Pose stays usable on an imported rig")
+		_check(edit_button.tooltip_text.contains("Imported"), "the disabled Edit segment states the imported reason")
+		_check(add_button.tooltip_text.contains("Imported"), "the disabled Add bone states the imported reason")
+		toolbar.set_imported(false)
+		_check(not edit_button.disabled and not add_button.disabled, "leaving an imported rig re-enables Edit and Add bone")
+	toolbar.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C7 — Pose/Edit modes and rest editing
+# -------------------------------------------------------------------------
+
+func _test_viewport_modes() -> void:
+	print("RIG STEP: viewport modes")
+	var doc := _new_doc("Viewport Modes")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Root")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	_check(overlay.mode() == "pose", "rig mode defaults to Pose")
+	_check(not overlay.is_edit_mode(), "the overlay starts in pose mode")
+	overlay.set_mode("edit")
+	_check(overlay.is_edit_mode(), "Edit switches the overlay to edit mode")
+	overlay.set_mode("pose")
+	_check(not overlay.is_edit_mode(), "Pose switches the overlay back")
+
+	# Drag the rest head: one undo entry for the whole gesture.
+	overlay.set_mode("edit")
+	var skel := _skeleton(doc, rig_id)
+	var root_index := skel.find_bone("Root")
+	var head_world: Vector3 = skel.to_global(skel.get_bone_global_rest(root_index).origin)
+	var head_screen: Vector2 = view.world_to_screen(head_world)
+	var spine_before: Vector3 = rs.get_rig(rig_id)["bones"][1].get("p", Vector3.ZERO)
+	overlay.press_at(head_screen)
+	for i in range(5):
+		overlay.drag_at(head_screen + Vector2(float(i + 1) * 6.0, 0.0))
+	overlay.release_drag()
+	var rig: Dictionary = rs.get_rig(rig_id)
+	var root_rest: Vector3 = rig["bones"][0].get("p", Vector3.ZERO)
+	_check(root_rest.x > 0.05, "dragging the head moves the rest bone")
+	_check(absf(root_rest.y) < 0.0001 and absf(root_rest.z) < 0.0001, "the head drag follows the pointer plane")
+	_check((rig["bones"][1].get("p", Vector3.ZERO) as Vector3).distance_to(spine_before) < 0.0001, "dragging the head leaves the other bones untouched")
+	_check(doc.undo_label() == "Edit bone rest", "a rest drag is one undoable edit")
+	doc.undo()
+	_check((rs.get_rig(rig_id)["bones"][0].get("p", Vector3.ZERO) as Vector3).length() < 0.0001, "one undo restores the head after a multi-motion drag")
+
+	# Drag the rest tail: aim the bone at the pointer and set its length.
+	rs.set_bone_rest(rig_id, "Root", _rest(Vector3.ZERO, 1.0))
+	skel = _skeleton(doc, rig_id)
+	root_index = skel.find_bone("Root")
+	var root_rest_xform: Transform3D = skel.get_bone_global_rest(root_index)
+	var tail_world: Vector3 = skel.to_global(root_rest_xform.origin + root_rest_xform.basis.y.normalized() * 1.0)
+	var tail_screen: Vector2 = view.world_to_screen(tail_world)
+	var aim_screen: Vector2 = view.world_to_screen(Vector3(0.5, 1.0, 0.0))
+	overlay.press_at(tail_screen)
+	overlay.drag_at(aim_screen)
+	overlay.release_drag()
+	rig = rs.get_rig(rig_id)
+	var tail_bone: Dictionary = rig["bones"][0]
+	_check(absf(float(tail_bone.get("length", 0.0)) - Vector2(0.5, 1.0).length()) < 0.01, "dragging the tail sets the bone length from the head")
+	var headless_aim: Vector3 = Basis(tail_bone.get("r", Quaternion.IDENTITY) as Quaternion) * Vector3.UP
+	_check(headless_aim.dot(Vector3(0.5, 1.0, 0.0).normalized()) > 0.999, "dragging the tail aims the rest bone at the pointer")
+	_check(doc.undo_label() == "Edit bone rest", "a tail drag is one undoable edit")
+	doc.undo()
+	var undone_tail: Dictionary = rs.get_rig(rig_id)["bones"][0]
+	_check(_close(float(undone_tail.get("length", 0.0)), 1.0), "one undo restores the tail length")
+	_check((undone_tail.get("r", Quaternion.IDENTITY) as Quaternion).angle_to(Quaternion.IDENTITY) < 0.001, "one undo restores the tail rotation")
+
+	# Imported skeletons stay in Pose; rest editing is locked.
+	var imported_doc := _new_doc("Viewport Imported")
+	var object_id: String = imported_doc.add_empty(Vector3.ZERO)
+	var node: Node3D = imported_doc.nodes[object_id]
+	var imported_skel := Skeleton3D.new()
+	imported_skel.name = "Skeleton3D"
+	node.add_child(imported_skel)
+	imported_skel.add_bone("Hip")
+	imported_skel.set_bone_rest(0, Transform3D(Basis.IDENTITY, Vector3.ZERO))
+	imported_skel.reset_bone_poses()
+	_check(imported_doc.rig_system.adopt_imported_skeleton(object_id, node), "the imported rig is adopted for the lock test")
+	var imported_overlay = RigOverlayScript.new()
+	add_child(imported_overlay)
+	imported_overlay.setup(imported_doc, view, imported_doc.rig_system)
+	imported_overlay.set_rig(object_id)
+	imported_overlay.set_enabled(true)
+	await get_tree().process_frame
+	imported_overlay.set_mode("edit")
+	_check(not imported_overlay.is_edit_mode(), "an imported skeleton refuses Edit mode")
+
+	overlay.queue_free()
+	imported_overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+	imported_doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C8 — Add bone / extrude
+# -------------------------------------------------------------------------
+
+func _test_extrude() -> void:
+	print("RIG STEP: extrude")
+	var doc := _new_doc("Extrude Test")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var mesh_id: String = doc.add_primitive("box", Vector3(0, 0.5, 0))
+	var job: String = rs.start_bind(rig_id, mesh_id, {})
+	var state := {"state": "running", "progress": 0.0}
+	var polls := 0
+	while polls < 120 and str(state.get("state", "")) == "running":
+		state = rs.poll_bind(job)
+		polls += 1
+	_check(str(state.get("state", "")) == "done", "the extrude bind completes")
+	var skin_before: Dictionary = (rs.get_rig(rig_id).get("skins", []) as Array)[0]
+	var pose_id: String = rs.save_pose(rig_id, "Extrude pose")
+	var target_id: String = doc.add_empty(Vector3(1.2, 0.8, 0))
+	var chain: String = rs.add_ik_chain(rig_id, "Root", "Spine", target_id)
+	_check(pose_id != "" and chain != "", "the extrude test seeds a pose and an IK chain")
+	rs.set_active_bone(rig_id, "Root")
+
+	var created: String = rs.extrude_bone(rig_id, "Root")
+	_check(created == "Bone 1", "extrude names the first added bone Bone 1")
+	var rig: Dictionary = rs.get_rig(rig_id)
+	var created_index := _bone_index(rig, created)
+	_check(created_index >= 0, "extrude appends the bone to the rig")
+	_check(created_index >= 0 and int(rig["bones"][created_index].get("parent", -1)) == _bone_index(rig, "Root"), "an extruded bone parents to the active bone")
+	var root_index := _bone_index(rig, "Root")
+	var root_global := _bone_global_rest(rig, root_index)
+	var root_tail := root_global.origin + root_global.basis.y.normalized() * float(rig["bones"][root_index].get("length", 0.4))
+	var created_global := _bone_global_rest(rig, created_index)
+	_check(created_global.origin.distance_to(root_tail) < 0.001, "an extruded bone starts at the active tail")
+	_check(str(rig.get("active_bone", "")) == created, "the new bone becomes active")
+	_check(doc.undo_label() == "Add bone", "extrude is one undo entry")
+	_check((rig.get("skins", []) as Array).size() == 1, "extrude keeps the existing skin")
+	var skin_after: Dictionary = (rs.get_rig(rig_id).get("skins", []) as Array)[0]
+	_check(str(skin_after.get("file", "")) == str(skin_before.get("file", "")), "extrude keeps the skin sidecar")
+	var mesh_node: Node3D = doc.nodes.get(mesh_id)
+	var mesh_instance := mesh_node.get_node_or_null("Mesh") as MeshInstance3D if mesh_node != null else null
+	_check(mesh_instance != null and mesh_instance.skin != null, "extrude keeps the bound mesh skinned")
+	_check((rs.get_rig(rig_id).get("poses", []) as Array).size() == 1, "extrude keeps the pose library")
+	_check((rs.get_rig(rig_id).get("ik", []) as Array).size() == 1, "extrude keeps the IK chains")
+
+	rs.set_active_bone(rig_id, created)
+	var second: String = rs.extrude_bone(rig_id, created)
+	_check(second == "Bone 2", "a second extrude increments the unique Bone N name")
+	var second_rig: Dictionary = rs.get_rig(rig_id)
+	var second_index := _bone_index(second_rig, second)
+	_check(second_index >= 0 and int(second_rig["bones"][second_index].get("parent", -1)) == created_index, "a chained extrude parents to the new bone")
+
+	var root_created: String = rs.extrude_bone(rig_id, "")
+	_check(root_created == "Bone 3", "adding with no parent continues the unique name sequence")
+	var root_index_added := _bone_index(rs.get_rig(rig_id), root_created)
+	_check(root_index_added >= 0 and int(rs.get_rig(rig_id)["bones"][root_index_added].get("parent", 0)) == -1, "adding with no active bone creates a root bone")
+	_check(str(rs.get_rig(rig_id).get("active_bone", "")) == root_created, "the root bone becomes active")
+	var bones_before_undo: int = (rs.get_rig(rig_id).get("bones", []) as Array).size()
+	doc.undo()
+	_check((rs.get_rig(rig_id).get("bones", []) as Array).size() == bones_before_undo - 1, "one undo removes the extruded root bone")
+	doc.queue_free()
+
+
+func _capture_requested() -> bool:
+	return OS.get_cmdline_user_args().has("--capture")
+
+
+func _capture_visuals() -> void:
+	DirAccess.make_dir_recursive_absolute(CAPTURE_DIR)
+	var doc := _new_doc("Rig Capture")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_bone_rest(rig_id, "Root", _rest(Vector3(-0.6, -0.2, 0), 1.0))
+	rs.add_bone(rig_id, "Arm", "Spine", _rest(Vector3(0.7, 0.6, 0), 0.8))
+	rs.set_active_bone(rig_id, "Spine")
+	var stage := Control.new()
+	stage.name = "CaptureStage"
+	stage.size = Vector2(get_window().size)
+	add_child(stage)
+	var bg := ColorRect.new()
+	bg.color = Kit.SURFACE
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stage.add_child(bg)
+	var view := FakeView.new()
+	view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stage.add_child(view)
+	var overlay = RigOverlayScript.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stage.add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_mode("pose")
+	overlay.set_enabled(true)
+	var script = load("res://src/ui/rig_toolbar.gd")
+	if script != null:
+		var toolbar = script.new()
+		toolbar.name = "RigToolbar"
+		stage.add_child(toolbar)
+		toolbar.position = Vector2(12, 12)
+		toolbar.reset_size()
+		toolbar.set_mode("pose")
+	for _i in 4:
+		await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var image: Image = get_viewport().get_texture().get_image()
+	if image != null:
+		image.save_png(CAPTURE_DIR.path_join("rig-toolbar-bones-915x412.png"))
+	overlay.set_mode("edit")
+	for _i in 3:
+		await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var edit_image: Image = get_viewport().get_texture().get_image()
+	if edit_image != null:
+		edit_image.save_png(CAPTURE_DIR.path_join("rig-edit-handles-915x412.png"))
+	stage.queue_free()
 	doc.queue_free()
