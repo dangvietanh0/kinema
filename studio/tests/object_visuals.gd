@@ -7,6 +7,7 @@ extends Node
 
 const DocumentScript = preload("res://src/core/document.gd")
 const EditorAppScript = preload("res://src/app/editor.gd")
+const EditorViewScript = preload("res://src/viewport/editor_view.gd")
 
 const STAGE_SIZE := Vector2i(915, 412)
 const CAPTURE_DIR := "/tmp/opencode/wave2-object-visuals-captures"
@@ -151,6 +152,22 @@ func _test_editing_markers() -> void:
 	print("OBJECT VISUALS STEP: editing markers")
 	_doc.markers_hidden = false
 	_view.set_document(_doc)
+	await get_tree().process_frame
+	# The plan contract is about set_document(), not the document already in
+	# use: a fresh view adopting a document that arrives with markers hidden
+	# must flip them back to visible.
+	var second_doc = DocumentScript.new()
+	second_doc.new_project("Marker Contract", "blank")
+	second_doc.markers_hidden = true
+	var probe_view = EditorViewScript.new()
+	probe_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_root.add_child(probe_view)
+	await get_tree().process_frame
+	probe_view.set_document(second_doc)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(second_doc.markers_hidden == false, "set_document shows a freshly adopted document's 3D markers")
+	probe_view.queue_free()
 	await get_tree().process_frame
 	_check(_doc.markers_hidden == false, "the editing view keeps the document's 3D markers visible")
 	for id in [_cam_id, _light_id, _omni_id, _empty_id]:
@@ -522,6 +539,29 @@ func _test_look_through() -> void:
 	var saved_markers: bool = _doc.markers_hidden
 	var saved_hud: bool = _view._hud_root.visible
 	var saved_nav: bool = _view._nav_gizmo.visible
+
+	# Seed the two workbench overlays that must not leak into the clean
+	# document-camera view. The dock is open on the Rig tab, so the rig overlay
+	# is genuinely enabled before entry.
+	_doc.media_system.load_data({"media": {"audio": [], "video_refs": [{
+		"id": "look_ref",
+		"name": "Look reference",
+		"dir": "video_refs/look_ref",
+		"fps": 2,
+		"duration": 8.0,
+		"width": 16,
+		"height": 16,
+	}]}}, "")
+	_editor._set_compact_tab("rig")
+	if _editor._dock_overlay_mode():
+		_editor._open_drawer()
+	for _i in 3:
+		await get_tree().process_frame
+	var video_overlay = _editor._video_overlay
+	var rig_overlay = _editor._rig_overlay
+	_check(video_overlay != null and video_overlay.visible, "the rotoscope is visible before look-through")
+	_check(rig_overlay != null and rig_overlay.is_enabled(), "the rig overlay is enabled on the Rig tab before look-through")
+
 	var timeline_visible: bool = _editor._timeline_panel.visible
 	var dock_visible: bool = _editor._dock.visible
 	var scene_visible: bool = _editor._scene_column.visible
@@ -548,6 +588,17 @@ func _test_look_through() -> void:
 	_check(_editor._dock.visible == dock_visible, "the dock keeps its state in look-through")
 	_check(_editor._scene_column.visible == scene_visible, "the scene tree keeps its state in look-through")
 	_check(_editor._bottom_bar.visible == bottom_visible, "the transport keeps its state in look-through")
+	_check(video_overlay != null and not video_overlay.visible, "the rotoscope hides in look-through")
+	_check(rig_overlay != null and not rig_overlay.is_enabled(), "the rig overlay disables in look-through")
+	# The dock stays live, so the Rig tab is reachable after entry. Opening it
+	# must not re-enable the rig overlay or bring the rotoscope back.
+	_editor._set_compact_tab("rig")
+	if not _editor._drawer_open:
+		_editor._open_drawer()
+	for _i in 2:
+		await get_tree().process_frame
+	_check(rig_overlay != null and not rig_overlay.is_enabled(), "opening the Rig tab during look-through keeps the rig overlay off")
+	_check(video_overlay != null and not video_overlay.visible, "the rotoscope stays hidden while the dock changes in look-through")
 
 	# Orbit and pan gestures are ignored, and _process must not overwrite the
 	# copied camera with the orbit target.
@@ -587,6 +638,14 @@ func _test_look_through() -> void:
 	_check(_doc.markers_hidden == saved_markers, "exiting restores the marker state")
 	_check(_view._hud_root.visible == saved_hud, "exiting restores the editor HUD")
 	_check(_view._nav_gizmo.visible == saved_nav, "exiting restores the navigation gizmo")
+	_check(video_overlay != null and video_overlay.visible, "exiting restores the rotoscope")
+	_check(rig_overlay != null and rig_overlay.is_enabled(), "exiting restores the rig overlay for the active Rig tab")
+	# The drawer is an editing layer in its own right; dismiss it before
+	# judging the header, which the drawer also covers while open.
+	if _editor._drawer_open:
+		_editor._close_drawer()
+		for _i in 2:
+			await get_tree().process_frame
 	_check(_editor._view_header.visible, "exiting restores the viewport header")
 	if exit_button != null:
 		_check(not exit_button.visible, "the Exit camera control hides when look-through ends")
@@ -604,6 +663,14 @@ func _test_look_through() -> void:
 	_check(not _view.is_look_through(), "Android back exits look-through")
 	_check(not _editor._closing, "Android back does not close the editor while look-through is active")
 	_check(_editor.doc != null and is_instance_valid(_editor) and _editor.is_inside_tree(), "the editor and project stay open after back")
+
+	# Leave the shared editor in its editing arrangement for the capture step.
+	if _editor._drawer_open:
+		_editor._close_drawer()
+	_editor._set_compact_tab("scene")
+	_doc.media_system.load_data({"media": {"audio": [], "video_refs": []}}, "")
+	for _i in 2:
+		await get_tree().process_frame
 
 
 # -------------------------------------------------------------------------
