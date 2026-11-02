@@ -1044,6 +1044,9 @@ func _ready() -> void:
 	var long_strip: String = doc.animation_system.add_strip(layer_id, long_clip, 0.0)
 	doc.animation_system.set_active_clip(clip_id)
 	await get_tree().process_frame
+	# The probe mutates the animation system directly rather than through the
+	# transport, so force the refresh a real clip-length edit would send.
+	time_tl._sync_duration_row()
 	_check(doc.sequence_duration() > doc.duration + 0.05,
 		"the duration probe makes the sequence longer than the clip")
 	_check(time_tl.has_method("duration_chip_text"),
@@ -1052,6 +1055,17 @@ func _ready() -> void:
 		var chip_text: String = time_tl.duration_chip_text()
 		_check(chip_text.contains("Seq"), "the chip names the longer sequence clock")
 		_check(chip_text.contains("s"), "the chip names the clip length in seconds")
+		var chip: Button = time_tl.duration_chip()
+		var chip_font: Font = chip.get_theme_font("font")
+		var chip_size: int = chip.get_theme_font_size("font_size")
+		var full_width: float = chip_font.get_string_size(
+			chip_text, HORIZONTAL_ALIGNMENT_LEFT, -1, chip_size).x
+		_check(chip.text == chip_text,
+			"the chip renders its full clip and sequence string")
+		_check(not chip.clip_text,
+			"the duration chip is not clipped")
+		_check(chip.get_combined_minimum_size().x >= full_width,
+			"the chip lays out the full sequence half (needs %.1f dp)" % full_width)
 	_check(time_tl.has_method("duration_chip") and time_tl.has_method("open_duration_row"),
 		"the chip is a tappable control")
 	if time_tl.has_method("duration_chip") and time_tl.has_method("open_duration_row"):
@@ -1065,6 +1079,10 @@ func _ready() -> void:
 			"the duration field spans 0.25 to 3600 seconds")
 		_check(time_tl._match_button.visible,
 			"Match sequence appears while the sequence is longer")
+		_check(time_tl._match_button.text == "Match sequence",
+			"the match action uses the specified visible copy")
+		_check(time_tl._extend_button.text == "Extend +1 s",
+			"the extend action uses the specified visible copy")
 		var keys_before_extend: int = doc.get_channel_keys(key_id, "position").size()
 		var before_extend: float = doc.duration
 		time_tl._extend_button.pressed.emit()
@@ -1097,7 +1115,16 @@ func _ready() -> void:
 		await get_tree().process_frame
 		# Match sequence applies the longer sequence clock, and the clip can
 		# then return to its original length without touching in-range keys.
+		# Close and reopen first so this exercises the real reopen path instead
+		# of toggling the still-open row closed.
+		time_tl.close_duration_row()
+		await get_tree().process_frame
+		_check(not time_tl.duration_row_visible(),
+			"the duration row closes before the reopen path")
 		time_tl.open_duration_row()
+		await get_tree().process_frame
+		_check(time_tl.duration_row_visible(),
+			"the duration row reopens for the match action")
 		time_tl._match_button.pressed.emit()
 		await get_tree().process_frame
 		_check(absf(doc.duration - doc.sequence_duration()) < 0.01,
@@ -1105,6 +1132,8 @@ func _ready() -> void:
 		time_tl.request_duration(duration)
 		_check(absf(doc.duration - duration) < 0.01,
 			"the clip duration returns to its original value")
+		time_tl.close_duration_row()
+		await get_tree().process_frame
 	if long_strip != "":
 		doc.animation_system.delete_strip(long_strip)
 	if long_clip != "":
@@ -2729,6 +2758,7 @@ func _ready() -> void:
 		DirAccess.remove_absolute(fixture.path_join("sample.obj"))
 		DirAccess.remove_absolute(fixture.path_join("sample.mtl"))
 		DirAccess.remove_absolute(fixture.path_join("tex.png"))
+		DirAccess.remove_absolute(fixture.path_join("toast_fixture.glb"))
 		DirAccess.remove_absolute(fixture)
 
 	print("SMOKE STEP: sequence clock snapshots")

@@ -390,7 +390,7 @@ func _ready() -> void:
 	var short_budget := minf(208.0, maxf(FOLDED_TIMELINE + 48.0, short_host.size.y * 0.34))
 	_check(editor._timeline_panel.size.y <= short_budget + 0.5,
 		"915x412 dope stays inside the compact 34 percent budget")
-	_check(editor._timeline_panel.size.y <= 112.5,
+	_check(editor._timeline_panel.size.y <= 112.0,
 		"915x412 compact open height stays at or below 112 dp")
 	_check(editor._timeline_panel.size.y >= FOLDED_TIMELINE + 48.0 - 0.5,
 		"915x412 dope keeps transport plus a 48 dp sheet")
@@ -419,8 +419,45 @@ func _ready() -> void:
 			"915x412 More stays inside the 46 percent cap")
 		_check(editor._media_lanes.visible,
 			"915x412 More reveals the folded media header")
+		# Key-step navigation must stay reachable at 915x412. The transport
+		# keeps the pair because this surface is wide enough for it, with the
+		# normal 44 dp touch target.
+		_check(editor._timeline._prev_button.is_visible_in_tree(),
+			"915x412 keeps Previous key reachable")
+		_check(editor._timeline._next_button.is_visible_in_tree(),
+			"915x412 keeps Next key reachable")
+		_check(editor._timeline._prev_button.custom_minimum_size.x >= 44.0
+			and editor._timeline._next_button.custom_minimum_size.x >= 44.0,
+			"915x412 key-step controls keep the 44 dp target")
+		_check(editor._timeline.transport_panel().get_combined_minimum_size().x <=
+			editor._timeline.size.x + 0.5,
+			"915x412 keeps key-step inside the transport width")
 		editor._on_timeline_more_requested()
 		await get_tree().process_frame
+	# The gesture hint lives on the sheet surface, survives the folded compact
+	# header, and only appears on the user's open path. Reopening does not
+	# repeat it.
+	editor._timeline_visible = false
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._timeline.has_method("gesture_hint_visible"),
+		"the sheet exposes its one-time gesture hint")
+	if editor._timeline.has_method("gesture_hint_visible"):
+		_check(editor._timeline.gesture_hint_visible(),
+			"opening the sheet shows the gesture hint once")
+		_check(editor._timeline._gesture_hint.text == "Pinch to zoom · drag to pan",
+			"the hint names both time-view gestures")
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if editor._timeline.has_method("gesture_hint_visible"):
+		_check(not editor._timeline.gesture_hint_visible(),
+			"the gesture hint is one-time and does not repeat on reopen")
 	editor._timeline_visible = false
 	editor._sync_timeline_visibility()
 	await get_tree().process_frame
