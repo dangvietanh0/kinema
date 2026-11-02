@@ -65,6 +65,10 @@ func setup(document: Node3D) -> void:
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
 	doc.part_selection_changed.connect(_on_part_selection_changed)
+	# New imports reveal one level of their hierarchy. Unlike a project load
+	# (which uses object_spawned), this signal fires exactly once per import and
+	# carries the id before the rest of the import transaction settles.
+	doc.imported_scene_ready.connect(_on_imported_scene_ready)
 	# Transform edits change values, not rows: the outliner ignores them.
 	doc.keyframes_changed.connect(_on_keyframes_changed)
 	_rebuild()
@@ -209,6 +213,18 @@ func _on_search_changed(text_value: String) -> void:
 func _on_scene_changed() -> void:
 	_rebuild()
 
+## Auto-expand one level for a fresh glTF/GLB import, but only when it really
+## has listed parts. Deferred: the import's generated model may still be
+## finishing its own setup, and the scene_changed rebuild that follows runs
+## synchronously. Project load never emits this signal, so it stays collapsed.
+func _on_imported_scene_ready(id: String, _node: Node) -> void:
+	if doc == null or id == "":
+		return
+	if doc.import_parts(id).is_empty():
+		return
+	_expanded[id] = true
+	_rebuild.call_deferred()
+
 func _on_selection_changed(_id: String) -> void:
 	_refresh_selection()
 
@@ -281,7 +297,7 @@ func _rebuild() -> void:
 		var forced := not matched.is_empty()
 		var root_expanded := _is_root_expanded(id) or forced
 		var has_parts := not parts.is_empty()
-		var root := _make_root_row(obj, has_parts, root_expanded, not forced)
+		var root := _make_root_row(obj, has_parts, root_expanded, not forced, parts.size())
 		_list.add_child(root)
 		_rows[id] = root
 		if not root_expanded:
@@ -385,14 +401,14 @@ func _matched_parts(parts: Array, matched: Array) -> Array:
 	return result
 
 
-func _make_root_row(obj: Dictionary, has_parts: bool, expanded: bool, disclosure_enabled: bool = true) -> Control:
+func _make_root_row(obj: Dictionary, has_parts: bool, expanded: bool, disclosure_enabled: bool = true, part_count: int = 0) -> Control:
 	var id := str(obj.get("id", ""))
 	var selected := id == doc.selected_id and not _root_has_selected_part(id)
 	var panel := _make_panel(selected, _root_has_selected_part(id))
 	panel.set_meta("object_id", id)
 	var row := panel.get_child(0) as HBoxContainer
 	if has_parts and disclosure_enabled:
-		var disclosure := _disclosure_button(expanded, _toggle_root.bind(id))
+		var disclosure := _hierarchy_disclosure(expanded, part_count, _toggle_root.bind(id))
 		row.add_child(disclosure)
 	elif has_parts:
 		# A forced part-name filter ignores expansion, so the chevron there
@@ -402,13 +418,28 @@ func _make_root_row(obj: Dictionary, has_parts: bool, expanded: bool, disclosure
 	icon.set_meta("role", "icon")
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(icon)
-	var name := Kit.label(str(obj.get("name", "Object")), 12, Kit.TEXT_MUTED, 400)
+	var full_name := str(obj.get("name", "Object"))
+	var name := Kit.label(full_name, 12, Kit.TEXT_MUTED, 400)
 	name.set_meta("role", "name")
 	name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# clip_text is what lets the label shrink below its natural text width;
+	# overrun alone still reserves the full string and pushes the eye off the
+	# row at the 196 dp landscape panel.
+	name.clip_text = true
 	name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	name.tooltip_text = full_name
 	row.add_child(name)
+	if has_parts and part_count > 0:
+		var badge := Kit.label(str(part_count), 10, Kit.TEXT_DIM, 500)
+		# Kit.label floors product text at 11; the count is a meta glyph and
+		# explicitly keeps the 10 px size.
+		badge.add_theme_font_size_override("font_size", 10)
+		badge.set_meta("role", "part-count")
+		badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(badge)
 	var key_marker := Kit.icon("diamond", Kit.ACCENT, 8)
 	key_marker.set_meta("role", "key")
 	key_marker.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -452,12 +483,15 @@ func _make_part_row(root_id: String, part: Dictionary, children_shown: bool, dis
 	icon.set_meta("role", "icon")
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(icon)
-	var name := Kit.label(str(part.get("name", "Part")), 12, Kit.TEXT_MUTED, 400)
+	var full_name := str(part.get("name", "Part"))
+	var name := Kit.label(full_name, 12, Kit.TEXT_MUTED, 400)
 	name.set_meta("role", "name")
 	name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name.clip_text = true
 	name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	name.tooltip_text = full_name
 	row.add_child(name)
 	# A root key does not key its parts: the marker keeps its slot but never
 	# lights up in this wave.
@@ -514,6 +548,19 @@ func _disclosure_spacer() -> Control:
 func _disclosure_button(expanded: bool, on_toggle: Callable) -> Button:
 	var button := Kit.icon_button("chevron-down" if expanded else "chevron-right",
 		"Collapse parts" if expanded else "Expand parts", int(ROW_HEIGHT), 16)
+	button.set_meta("disclosure", true)
+	button.set_meta("role", "disclosure")
+	button.pressed.connect(on_toggle)
+	return button
+
+
+## The import root's disclosure is the discoverability affordance: a list glyph
+## while collapsed, an explicit "Expand hierarchy · N nodes" tooltip, and the
+## same 44 dp target as every other row control.
+func _hierarchy_disclosure(expanded: bool, part_count: int, on_toggle: Callable) -> Button:
+	var button := Kit.icon_button("chevron-down" if expanded else "list",
+		("Collapse hierarchy · %d nodes" if expanded else "Expand hierarchy · %d nodes") % part_count,
+		int(ROW_HEIGHT), 16)
 	button.set_meta("disclosure", true)
 	button.set_meta("role", "disclosure")
 	button.pressed.connect(on_toggle)
