@@ -832,6 +832,14 @@ func _test_mp4_quality() -> void:
 	_check(int(standard_options.get("width", 0)) == 1920 and int(standard_options.get("height", 0)) == 1080, "Standard options are 1920 × 1080")
 	_check(int(standard_options.get("fps", 0)) == 30, "Standard options are 30 fps")
 	_check(int(standard_options.get("bitrate", 0)) == 16000000, "Standard options are 16 Mbps")
+	# The visible Bitrate control must agree with the preset it just wrote and
+	# with the estimate; 16 is not in the manual list, so it needs a preset item.
+	if sheet.has_method("bitrate_option"):
+		var bitrate_control: OptionButton = sheet.bitrate_option()
+		_check(bitrate_control.selected >= 0 and bitrate_control.get_item_text(bitrate_control.selected) == "16 Mbps", "Standard shows its 16 Mbps preset bitrate in the Bitrate control")
+		_check(sheet.bitrate_options() == [4, 8, 12, 20, 30, 40, 60, 80], "the manual bitrate list stays unchanged by the preset readout")
+	else:
+		_check(false, "the export sheet exposes its Bitrate control")
 
 	sheet.set_quality("high")
 	var high_options: Dictionary = sheet.build_options()
@@ -860,6 +868,11 @@ func _test_mp4_quality() -> void:
 	sheet.set_resolution(Vector2i(1280, 720))
 	_check(sheet.quality() == "custom", "changing resolution switches the preset to Custom")
 	_check(int(sheet.build_options().get("width", 0)) == 1280, "the Custom options keep the chosen resolution")
+	if sheet.has_method("bitrate_option"):
+		var custom_bitrate: OptionButton = sheet.bitrate_option()
+		_check(custom_bitrate.selected >= 0 and custom_bitrate.get_item_text(custom_bitrate.selected) == "16 Mbps", "Custom derived from Standard still shows 16 Mbps in the Bitrate control")
+	else:
+		_check(false, "the export sheet exposes its Bitrate control for Custom")
 
 	# 3. Quality controls are MP4-only.
 	sheet.set_quality("standard")

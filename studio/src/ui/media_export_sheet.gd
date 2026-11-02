@@ -465,7 +465,7 @@ func _rebuild() -> void:
 	_gif_reason_label = Kit.label(GIF_60_REASON, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	_gif_reason_label.visible = _format == "gif"
 	add_child(_gif_reason_label)
-	add_child(_labeled_option("Bitrate", _bitrate_option()))
+	add_child(_labeled_option("Bitrate", bitrate_option()))
 	if _format == "mp4":
 		_estimate_label = Kit.label(estimate_text(), Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
 		add_child(_estimate_label)
@@ -590,16 +590,27 @@ func _fps_option() -> OptionButton:
 	return option
 
 
-func _bitrate_option() -> OptionButton:
+func bitrate_option() -> OptionButton:
 	var option := OptionButton.new()
 	option.custom_minimum_size.y = 44
 	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var selected := 0
 	for mbps in BITRATE_MBPS:
 		option.add_item("%d Mbps" % mbps)
 		if mbps == _bitrate:
-			option.selected = option.item_count - 1
+			selected = option.item_count - 1
+	# Presets can write a bitrate the manual list does not carry (Standard's
+	# 16 Mbps). Show that value as a temporary item instead of silently
+	# displaying 4 Mbps and contradicting the estimate and the export.
+	if not _bitrate in BITRATE_MBPS:
+		option.add_item("%d Mbps" % _bitrate)
+		selected = option.item_count - 1
+	option.selected = selected
 	option.item_selected.connect(func(index: int) -> void:
-		set_bitrate(int(BITRATE_MBPS[index]))
+		# The temporary preset item is a readout, not a manual choice; choosing
+		# it must not switch the preset to Custom.
+		if index >= 0 and index < BITRATE_MBPS.size():
+			set_bitrate(int(BITRATE_MBPS[index]))
 	)
 	return option
 
