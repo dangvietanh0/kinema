@@ -1658,6 +1658,12 @@ func cancel_edit() -> void:
 	_edit_label = ""
 	_apply_snapshot(snapshot)
 
+
+## True while a begin_edit()/end_edit() transaction is open. The timeline uses
+## this to decide whether a two-finger gesture must cancel an edit it started.
+func has_open_edit() -> bool:
+	return not _edit_snapshot.is_empty()
+
 func can_undo() -> bool:
 	return not _undo_stack.is_empty()
 
