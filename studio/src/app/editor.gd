@@ -926,7 +926,7 @@ func _update_history_buttons() -> void:
 ## and the actual value below is always read back from RenderingServer.
 func _open_renderer_sheet() -> void:
 	var current := Gfx.renderer_name()
-	var requested := str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "forward_plus"))
+	var requested := Gfx.project_renderer_request()
 	_renderer_pending = current
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 10)
@@ -937,11 +937,15 @@ func _open_renderer_sheet() -> void:
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
 	var blocked_reasons: Array[String] = []
+	var entry_notes: Array[String] = []
 	for entry in Gfx.renderer_entries(OS.get_name()):
 		var data: Dictionary = entry
 		if not bool(data["supported"]):
 			blocked_reasons.append(str(data["reason"]))
 			continue
+		var note := str(data.get("note", ""))
+		if note != "":
+			entry_notes.append(note)
 		var value := str(data["value"])
 		var button := Kit.text_toggle(str(data["label"]), "", true)
 		_style_segment(button)
@@ -971,6 +975,15 @@ func _open_renderer_sheet() -> void:
 		value_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		line.add_child(value_label)
 		body.add_child(line)
+
+	for note in entry_notes:
+		var note_label := Kit.label(note, 11, Kit.TEXT_MUTED)
+		note_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(note_label)
+	if Gfx.last_renderer_error != "":
+		var error_label := Kit.label(Gfx.last_renderer_error, 11, Kit.WARNING)
+		error_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(error_label)
 
 	var note := Kit.label(
 		"Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag and never launches a backend this platform cannot use; the row above keeps reporting the renderer that is actually in use.",

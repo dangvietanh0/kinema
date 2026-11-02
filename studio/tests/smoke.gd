@@ -1970,23 +1970,75 @@ func _ready() -> void:
 	_check(fallback_state["preference"] == "forward_plus", "renderer fallback uses platform default")
 	_check(str(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile")) == "mobile", "project.godot defaults Android to Mobile")
 
-	# Renderer capability gate (ws/renderer-safety): Forward+ is desktop-only.
-	_check(Gfx.supported_renderers("Android").size() == 2, "Android supports exactly Mobile and Compatibility")
-	_check(Gfx.supported_renderers("Android").has("mobile"), "Android capability list includes Mobile")
-	_check(Gfx.supported_renderers("Android").has("gl_compatibility"), "Android capability list includes Compatibility")
-	_check(not Gfx.supported_renderers("Android").has("forward_plus"), "Android capability list omits Forward+")
+	# Wave-2 renderer contract: Forward+ is selectable on Android/iOS as an
+	# experimental backend with a mobile-safe profile and a one-failed-boot
+	# fallback. The old "Forward+ is desktop-only" gate is obsolete.
+	var android_renderers := Gfx.supported_renderers("Android")
+	_check(android_renderers.size() == 3, "Android supports exactly three renderers")
+	_check(android_renderers.has("forward_plus"), "Android capability list includes Forward+")
+	_check(android_renderers.has("mobile"), "Android capability list includes Mobile")
+	_check(android_renderers.has("gl_compatibility"), "Android capability list includes Compatibility")
+	_check(Gfx.is_renderer_supported("forward_plus", "Android"), "Forward+ is supported on Android")
+	_check(Gfx.renderer_unavailable_reason("forward_plus", "Android") == "", "Forward+ has no unavailable reason on Android")
+	_check(Gfx.renderer_unavailable_reason("forward_plus", "iOS") == "", "Forward+ has no unavailable reason on iOS")
 	_check(Gfx.supported_renderers("Linux").size() == 3, "desktop capability list includes every renderer")
-	_check(Gfx.supported_renderers("Linux").has("forward_plus"), "desktop capability list includes Forward+")
-	_check(Gfx.is_renderer_supported("forward_plus", "Android") == false, "Forward+ is not supported on Android")
-	_check(Gfx.renderer_unavailable_reason("forward_plus", "Android") != "", "Android names the missing Vulkan feature set for Forward+")
-	_check(Gfx.is_renderer_supported("forward_plus", "Linux") == true, "Forward+ is supported on desktop")
+	_check(Gfx.is_renderer_supported("forward_plus", "Linux"), "Forward+ is supported on desktop")
 
+	var android_entries: Array = Gfx.renderer_entries("Android")
+	_check(android_entries.size() == 3, "Android renderer entries list every renderer")
+	var android_forward: Dictionary = {}
+	var android_all_supported := true
+	for entry in android_entries:
+		var data: Dictionary = entry
+		if str(data.get("value", "")) == "forward_plus":
+			android_forward = data
+		if not bool(data.get("supported", false)):
+			android_all_supported = false
+	_check(android_all_supported, "every Android renderer entry is supported")
+	_check(str(android_forward.get("label", "")) == "Forward+ (Experimental)", "Android Forward+ is labelled Experimental")
+	_check(bool(android_forward.get("experimental", false)), "Android Forward+ entry is marked experimental")
+	_check(str(android_forward.get("note", "")) == "Experimental on Android: high-end Forward+ effects are clamped for stability.", "Android Forward+ note is exact")
+	var ios_forward_note := ""
+	for entry in Gfx.renderer_entries("iOS"):
+		var data: Dictionary = entry
+		if str(data.get("value", "")) == "forward_plus":
+			ios_forward_note = str(data.get("note", ""))
+	_check(ios_forward_note == "Experimental on iOS: high-end Forward+ effects are clamped for stability.", "iOS Forward+ note names the platform")
+	var linux_forward: Dictionary = {}
+	var linux_mobile: Dictionary = {}
+	var linux_all_supported := true
+	for entry in Gfx.renderer_entries("Linux"):
+		var data: Dictionary = entry
+		if str(data.get("value", "")) == "forward_plus":
+			linux_forward = data
+		if str(data.get("value", "")) == "mobile":
+			linux_mobile = data
+		if not bool(data.get("supported", false)):
+			linux_all_supported = false
+	_check(linux_all_supported, "desktop renderer entries are all supported")
+	_check(not bool(linux_forward.get("experimental", true)) and str(linux_forward.get("note", "missing")) == "", "desktop Forward+ is not experimental and has no note")
+	_check(not bool(linux_mobile.get("experimental", true)) and str(linux_mobile.get("note", "missing")) == "", "desktop Mobile is not experimental and has no note")
+
+	# Exact restart arguments: Forward+ on Android is a real Vulkan launch.
+	var forward_android_args := Gfx.build_restart_args("forward_plus", "Android")
+	_check(forward_android_args == PackedStringArray(["--rendering-method", "forward_plus", "--rendering-driver", "vulkan"]), "Forward+ restart args are exact on Android")
+	var mobile_android_args := Gfx.build_restart_args("mobile", "Android")
+	_check(mobile_android_args == PackedStringArray(["--rendering-method", "mobile", "--rendering-driver", "vulkan"]), "Mobile restart args are exact on Android")
+	_check(Gfx.build_restart_args("vulkan", "Android").is_empty(), "an unknown renderer has no restart args")
+
+	# Sanitising: a Forward+ preference is legal on Android, an empty preference
+	# is unset (not an error), and a stale unsupported method still repairs.
 	var sanitized_state: Dictionary = Gfx.sanitize_renderer_state("forward_plus", "forward_plus", "Android")
-	_check(str(sanitized_state["preference"]) == "mobile", "stale Forward+ preference repairs to the platform default")
-	_check(str(sanitized_state["pending"]) == "", "stale Forward+ pending clears on Android")
-	_check(bool(sanitized_state["changed"]), "stale Forward+ state is repaired")
-	var sanitized_again: Dictionary = Gfx.sanitize_renderer_state(str(sanitized_state["preference"]), str(sanitized_state["pending"]), "Android")
-	_check(not bool(sanitized_again["changed"]), "renderer sanitising is idempotent")
+	_check(str(sanitized_state["preference"]) == "forward_plus", "Forward+ preference survives on Android")
+	_check(str(sanitized_state["pending"]) == "forward_plus", "Forward+ pending survives on Android")
+	_check(not bool(sanitized_state["changed"]), "Forward+ state is not repaired on Android")
+	_check(str(sanitized_state["reason"]) == "", "Forward+ state has no error on Android")
+	var empty_state: Dictionary = Gfx.sanitize_renderer_state("", "", "Android")
+	_check(str(empty_state["preference"]) == "mobile", "an empty preference maps to the platform default")
+	_check(not bool(empty_state["changed"]), "an empty preference is unset, not an error")
+	_check(str(empty_state["reason"]) == "", "an empty preference writes no error")
+	var stale_state: Dictionary = Gfx.sanitize_renderer_state("vulkan", "vulkan", "Android")
+	_check(str(stale_state["preference"]) == "mobile" and bool(stale_state["changed"]) and str(stale_state["reason"]) != "", "a stale unsupported renderer still repairs")
 
 	# prepare_renderer_switch mutates the autoload state; restore it afterwards
 	# so the live settings/renderer paths later in the suite see real state.
@@ -1994,49 +2046,145 @@ func _ready() -> void:
 	var saved_pending: String = Gfx.renderer_pending
 	var saved_attempts: int = Gfx.renderer_attempts
 	var saved_attempt_at: float = Gfx.renderer_attempt_at
+	var saved_ready: bool = Gfx.renderer_ready
+	var saved_error: String = Gfx.last_renderer_error
 	var saved_choice: String = Gfx.renderer_choice
-	var blocked_result: Dictionary = Gfx.prepare_renderer_switch("forward_plus", "Android")
-	_check(not bool(blocked_result["restart_required"]), "Forward+ restart is not required on Android")
-	_check(bool(blocked_result["blocked"]), "Forward+ switch on Android is blocked")
-	_check(Gfx.build_restart_args("forward_plus", "Android").is_empty(), "Forward+ restart args are empty on Android")
-	_check(Gfx.renderer_preference != "forward_plus", "blocked Forward+ never leaves the preference stored")
+	var prepared: Dictionary = Gfx.prepare_renderer_switch("forward_plus", "Android")
+	_check(bool(prepared["restart_required"]), "Forward+ requests a restart on Android")
+	_check(not bool(prepared["blocked"]), "Forward+ is not blocked on Android")
+	_check(Gfx.renderer_pending == "forward_plus", "Forward+ is stored as the pending renderer")
+	_check(prepared["args"] == PackedStringArray(["--rendering-method", "forward_plus", "--rendering-driver", "vulkan"]), "the prepared Forward+ restart carries the exact args")
+	_check(not Gfx.renderer_ready, "a renderer switch clears renderer_ready before the restart")
+
+	# One-failed-boot fallback and the normal retry path.
+	var booted: Dictionary = Gfx.resolve_startup_renderer("forward_plus", "forward_plus", "forward_plus", 0, "Android", false)
+	_check(str(booted["action"]) == "none", "a Forward+ boot that reached the editor is accepted")
+	var failed_boot: Dictionary = Gfx.resolve_startup_renderer("forward_plus", "forward_plus", "mobile", 0, "Android", false)
+	_check(str(failed_boot["action"]) == "fallback", "one failed Android Forward+ boot falls back")
+	_check(str(failed_boot["preference"]) == "mobile", "the failed boot falls back to the platform default")
+	_check(str(failed_boot["pending"]) == "", "the failed boot clears the pending request")
+	_check(failed_boot["args"].size() == 0, "the failed boot needs no restart args")
+	_check(str(failed_boot.get("reason", "")) != "", "the failed boot has a readable reason")
+	var normal_retry: Dictionary = Gfx.resolve_startup_renderer("forward_plus", "forward_plus", "mobile", 0, "Android", true)
+	_check(str(normal_retry["action"]) == "restart", "a supported backend keeps the two-attempt retry path")
+	var stale_pending_state: Dictionary = Gfx.resolve_startup_renderer("mobile", "vulkan", "mobile", 0, "Android")
+	_check(str(stale_pending_state["action"]) == "fallback", "an unsupported pending renderer falls back")
+	_check(str(stale_pending_state["pending"]) == "", "an unsupported pending renderer is cleared")
+	_check(stale_pending_state["args"].size() == 0, "an unsupported pending renderer has no restart args")
+	_check(str(stale_pending_state.get("reason", "")) != "", "an unsupported pending renderer explains the fallback")
+
+	# mark_renderer_ready persists readiness without erasing the last reason.
+	Gfx.renderer_ready = false
+	Gfx.last_renderer_error = "keep the fallback explanation"
+	Gfx.mark_renderer_ready()
+	_check(Gfx.renderer_ready, "mark_renderer_ready writes renderer_ready")
+	_check(Gfx.last_renderer_error == "keep the fallback explanation", "mark_renderer_ready keeps the fallback explanation readable")
+	_check(bool(Gfx.to_dict().get("renderer_ready", false)), "renderer_ready survives to_dict")
+
+	# Mobile-safe profile: clamps a stored quality preset on Android Forward+,
+	# leaves the same values untouched on a desktop backend.
+	var saved_msaa: int = Gfx.msaa
+	var saved_taa: bool = Gfx.taa
+	var saved_ssil: bool = Gfx.ssil
+	var saved_ssr: bool = Gfx.ssr
+	var saved_fog: bool = Gfx.volumetric_fog
+	var saved_shadow_quality: int = Gfx.shadow_quality
+	var saved_shadow_distance: float = Gfx.shadow_distance
+	var saved_shadow_splits: int = Gfx.shadow_splits
+	var saved_scale: float = Gfx.scale_3d
+	var saved_max_fps: int = Gfx.max_fps
+	Gfx.msaa = 2
+	Gfx.taa = true
+	Gfx.ssil = true
+	Gfx.ssr = true
+	Gfx.volumetric_fog = true
+	Gfx.shadow_quality = 3
+	Gfx.shadow_distance = 60.0
+	Gfx.shadow_splits = 4
+	Gfx.scale_3d = 1.0
+	Gfx.max_fps = 120
+	var android_profile: Dictionary = Gfx.safe_forward_plus_profile("Android", "forward_plus")
+	_check(int(android_profile["msaa"]) <= 1, "the Android Forward+ profile caps MSAA at 2x")
+	_check(not bool(android_profile["taa"]) and not bool(android_profile["ssil"]) and not bool(android_profile["ssr"]) and not bool(android_profile["volumetric_fog"]), "the Android Forward+ profile clamps high-end effects")
+	_check(float(android_profile["scale_3d"]) <= 0.85, "the Android Forward+ profile caps 3D scale")
+	_check(int(android_profile["shadow_quality"]) <= 2, "the Android Forward+ profile caps shadow quality")
+	_check(float(android_profile["shadow_distance"]) <= 40.0, "the Android Forward+ profile caps shadow distance")
+	_check(int(android_profile["shadow_splits"]) <= 2, "the Android Forward+ profile caps shadow splits")
+	_check(int(android_profile["max_fps"]) <= 60 and int(android_profile["max_fps"]) >= 1, "the Android Forward+ profile caps the frame rate")
+	var desktop_profile: Dictionary = Gfx.safe_forward_plus_profile("Linux", "forward_plus")
+	_check(int(desktop_profile["msaa"]) == 2 and bool(desktop_profile["taa"]) and bool(desktop_profile["ssil"]) and bool(desktop_profile["ssr"]) and bool(desktop_profile["volumetric_fog"]), "the desktop profile keeps stored quality values")
+	_check(float(desktop_profile["scale_3d"]) == 1.0 and int(desktop_profile["shadow_quality"]) == 3 and int(desktop_profile["max_fps"]) == 120, "the desktop profile keeps every cap open")
+
+	# Capability matrix.
+	var android_caps: Dictionary = Gfx.capabilities_for("forward_plus", "Android")
+	_check(bool(android_caps["mobile_safe"]), "Android Forward+ reports a mobile-safe profile")
+	_check(not bool(android_caps["ssil"]) and not bool(android_caps["ssr"]) and not bool(android_caps["taa"]) and not bool(android_caps["volumetric_fog"]), "Android Forward+ clamps high-end feature flags")
+	_check(bool(android_caps["ssao"]) and bool(android_caps["glow"]), "Android Forward+ keeps SSAO and glow")
+	_check(int(android_caps["msaa_cap"]) == 1, "Android Forward+ caps MSAA at 2x")
+	_check(is_equal_approx(float(android_caps["scale_3d_cap"]), 0.85), "Android Forward+ caps 3D scale at 0.85")
+	_check(int(android_caps["shadow_quality_cap"]) == 2, "Android Forward+ caps shadow quality")
+	_check(int(android_caps["max_fps_cap"]) == 60, "Android Forward+ caps the frame rate")
+	var linux_caps: Dictionary = Gfx.capabilities_for("forward_plus", "Linux")
+	_check(not bool(linux_caps["mobile_safe"]), "desktop Forward+ is not mobile-safe")
+	_check(int(linux_caps["msaa_cap"]) == 3 and is_equal_approx(float(linux_caps["scale_3d_cap"]), 1.0) and int(linux_caps["shadow_quality_cap"]) == 3 and int(linux_caps["max_fps_cap"]) == 0, "desktop Forward+ keeps every cap open")
+	_check(bool(linux_caps["taa"]) and not bool(Gfx.capabilities_for("mobile", "Linux")["taa"]), "TAA stays Forward+-only")
+
+	# I2: both renderer surfaces resolve the project request with the mobile
+	# feature override instead of the base project setting.
+	_check(Gfx.project_renderer_request(PackedStringArray(["mobile"])) == "mobile", "the mobile feature override resolves the project request")
+	_check(Gfx.project_renderer_request() == "forward_plus", "the empty feature set resolves the desktop project request")
+
+	# M1: a blocked switch leaves every stored field untouched.
+	Gfx.renderer_preference = "mobile"
+	Gfx.renderer_choice = "mobile"
+	Gfx.renderer_pending = ""
+	Gfx.renderer_attempts = 0
+	Gfx.renderer_attempt_at = 0.0
+	var blocked_result: Dictionary = Gfx.prepare_renderer_switch("vulkan", "Android")
+	_check(bool(blocked_result["blocked"]), "an unsupported renderer is blocked")
+	_check(Gfx.renderer_preference == "mobile", "a blocked switch preserves the stored preference")
+	_check(Gfx.renderer_pending == "", "a blocked switch preserves the stored pending state")
+	_check(Gfx.renderer_attempts == 0 and is_zero_approx(Gfx.renderer_attempt_at), "a blocked switch preserves the attempt bookkeeping")
+
 	Gfx.renderer_preference = saved_preference
 	Gfx.renderer_pending = saved_pending
 	Gfx.renderer_attempts = saved_attempts
 	Gfx.renderer_attempt_at = saved_attempt_at
+	Gfx.renderer_ready = saved_ready
+	Gfx.last_renderer_error = saved_error
 	Gfx.renderer_choice = saved_choice
+	Gfx.msaa = saved_msaa
+	Gfx.taa = saved_taa
+	Gfx.ssil = saved_ssil
+	Gfx.ssr = saved_ssr
+	Gfx.volumetric_fog = saved_fog
+	Gfx.shadow_quality = saved_shadow_quality
+	Gfx.shadow_distance = saved_shadow_distance
+	Gfx.shadow_splits = saved_shadow_splits
+	Gfx.scale_3d = saved_scale
+	Gfx.max_fps = saved_max_fps
 
-	var mobile_restart_args := Gfx.build_restart_args("mobile", "Android")
-	_check(mobile_restart_args.size() == 4, "Mobile restart args are real on Android")
-	_check(mobile_restart_args.has("mobile"), "Mobile restart args carry the mobile method")
+	# M2/11: a stored renderer error is shown readably in the sheet, and the
+	# sheet still offers exactly the live supported set on Linux.
+	Gfx.last_renderer_error = "Forward+ did not reach the editor on the previous launch."
+	editor._open_renderer_sheet()
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "renderer sheet opens with a stored error")
+	var sheet_error_shown := false
+	for label in _labels_under(editor._overlay._body_host):
+		if label.text.contains("did not reach the editor"):
+			sheet_error_shown = true
+	_check(sheet_error_shown, "the renderer sheet shows the stored renderer error")
+	var error_sheet_buttons: Array = []
+	_collect_group_buttons(editor._overlay._body_host, error_sheet_buttons)
+	_check(error_sheet_buttons.size() == Gfx.supported_renderers(OS.get_name()).size(), "the renderer sheet offers the live supported set")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+	Gfx.last_renderer_error = saved_error
 
-	var stale_pending_state: Dictionary = Gfx.resolve_startup_renderer("mobile", "forward_plus", "mobile", 0, "Android")
-	_check(stale_pending_state["action"] == "fallback", "stale pending Forward+ falls back instead of restarting")
-	_check(str(stale_pending_state["pending"]) == "", "stale pending Forward+ clears on fallback")
-	_check(stale_pending_state["args"].size() == 0, "stale pending Forward+ fallback has no restart args")
-
-	var android_entries: Array = Gfx.renderer_entries("Android")
-	var android_entry_count := 0
-	var android_forward_supported := true
-	var android_mobile_supported := true
-	for entry in android_entries:
-		var data: Dictionary = entry
-		android_entry_count += 1
-		var entry_value: String = str(data.get("value", ""))
-		if entry_value == "forward_plus":
-			android_forward_supported = bool(data.get("supported", true))
-		if entry_value == "mobile":
-			android_mobile_supported = bool(data.get("supported", true))
-	_check(android_entry_count == 3, "renderer entries list every renderer")
-	_check(not android_forward_supported, "Android renderer entries mark Forward+ unsupported")
-	_check(android_mobile_supported, "Android renderer entries mark Mobile supported")
-	var linux_entries: Array = Gfx.renderer_entries("Linux")
-	var linux_all_supported := true
-	for entry in linux_entries:
-		var data: Dictionary = entry
-		if not bool(data.get("supported", true)):
-			linux_all_supported = false
-	_check(linux_all_supported, "desktop renderer entries are all supported")
+	# 12: capability gating is reported without mutating the running platform.
+	_check(not bool(Gfx.capabilities_for("forward_plus", "Android")["taa"]), "simulated Android Forward+ reports TAA unavailable")
+	_check(int(Gfx.capabilities_for("forward_plus", "Android")["msaa_cap"]) < 2, "simulated Android Forward+ reports MSAA above 2x unavailable")
 
 	editor._open_settings("graphics")
 	await get_tree().process_frame

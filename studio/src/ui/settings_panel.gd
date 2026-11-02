@@ -446,7 +446,7 @@ func _resolved_mode() -> String:
 func _graphics(parent: Control) -> void:
 	parent.add_child(Kit.section_label("Renderer"))
 	_info_line(parent, "In use", Gfx.display_name())
-	_info_line(parent, "Project request", Gfx.renderer_label(str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "forward_plus"))))
+	_info_line(parent, "Project request", Gfx.renderer_label(Gfx.project_renderer_request()))
 	_renderer_choice = Gfx.renderer_preference
 	if _renderer_choice == "":
 		_renderer_choice = Gfx.actual_method()
@@ -454,11 +454,15 @@ func _graphics(parent: Control) -> void:
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
 	var blocked_reasons: Array[String] = []
+	var entry_notes: Array[String] = []
 	for entry in Gfx.renderer_entries(OS.get_name()):
 		var data: Dictionary = entry
 		if not bool(data["supported"]):
 			blocked_reasons.append(str(data["reason"]))
 			continue
+		var entry_note := str(data.get("note", ""))
+		if entry_note != "":
+			entry_notes.append(entry_note)
 		var value := str(data["value"])
 		var button := _segment_button(str(data["label"]))
 		button.button_group = group
@@ -476,6 +480,14 @@ func _graphics(parent: Control) -> void:
 	)
 	parent.add_child(_renderer_restart)
 	_update_renderer_restart()
+	for note in entry_notes:
+		var entry_note_label := Kit.label(note, Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+		entry_note_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(entry_note_label)
+	if Gfx.last_renderer_error != "":
+		var error_label := Kit.label(Gfx.last_renderer_error, Kit.TYPE_CAPTION, Kit.WARNING)
+		error_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(error_label)
 	var renderer_note := Kit.label("Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag and never launches a backend this platform cannot use; the row above keeps reporting the backend actually in use.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	renderer_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(renderer_note)
@@ -491,74 +503,91 @@ func _graphics(parent: Control) -> void:
 	else:
 		parent.add_child(Kit.label("Preset controls are unavailable in this host.", Kit.TYPE_CAPTION, Kit.TEXT_DIM))
 
+	# Capability gating uses the running platform. On Android/iOS Forward+ the
+	# stored preference may stay high, but the controls report what is actually
+	# applied: high-end effects are clamped for stability.
+	var running_caps := Gfx.capabilities_for(Gfx.actual_method(), OS.get_name())
+	var forward_clamped := Gfx.actual_method() == "forward_plus" and bool(running_caps.get("mobile_safe", false))
+	var clamp_reason := "Clamped on Android Forward+ for stability."
+	var msaa_cap := int(running_caps.get("msaa_cap", 3))
+	var scale_cap := float(running_caps.get("scale_3d_cap", 1.0))
+	var shadow_quality_cap := int(running_caps.get("shadow_quality_cap", 3))
+	var shadow_splits_cap := 2 if forward_clamped else 4
+	var shadow_distance_cap := 40.0 if forward_clamped else 100.0
+	var taa_available := bool(running_caps.get("taa", false))
+	var ssil_available := bool(running_caps.get("ssil", false))
+	var ssr_available := bool(running_caps.get("ssr", false))
+	var fog_available := bool(running_caps.get("volumetric_fog", false))
+	var effects_hint := clamp_reason if forward_clamped else "Requires Forward+"
+
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Anti-aliasing"))
-	_gfx_choice(parent, "Samples", "MSAA", [
+	_choice_row(parent, "Samples", clamp_reason if msaa_cap < 2 else "MSAA", [
 		{"label": "Off", "value": 0},
 		{"label": "2×", "value": 1},
-		{"label": "4×", "value": 2},
-		{"label": "8×", "value": 3},
+		{"label": "4×", "value": 2, "disabled": msaa_cap < 2},
+		{"label": "8×", "value": 3, "disabled": msaa_cap < 3},
 	], Gfx.msaa, func(value: Variant) -> void: Gfx.set_option("msaa", value))
-	_gfx_choice(parent, "Temporal", "Requires Forward+", [
+	_gfx_choice(parent, "Temporal", effects_hint if forward_clamped else "Requires Forward+", [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
-	], Gfx.taa, func(value: Variant) -> void: Gfx.set_option("taa", value), not bool(Gfx.capabilities_for(Gfx.actual_method()).get("taa", false)))
+	], Gfx.taa, func(value: Variant) -> void: Gfx.set_option("taa", value), not taa_available)
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Lighting and surfaces"))
 	_gfx_choice(parent, "Ambient occlusion", "Screen-space", [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
-	], Gfx.ssao, func(value: Variant) -> void: Gfx.set_option("ssao", value), not bool(Gfx.capabilities_for(Gfx.actual_method()).get("ssao", false)))
+	], Gfx.ssao, func(value: Variant) -> void: Gfx.set_option("ssao", value), not bool(running_caps.get("ssao", false)))
 	_gfx_choice(parent, "AO quality", "", [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
 		{"label": "Ultra", "value": 3},
 	], Gfx.ssao_quality, func(value: Variant) -> void: Gfx.set_option("ssao_quality", value))
-	_gfx_choice(parent, "Indirect lighting", "Requires Forward+", [
+	_gfx_choice(parent, "Indirect lighting", effects_hint, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
-	], Gfx.ssil, func(value: Variant) -> void: Gfx.set_option("ssil", value), not bool(Gfx.capabilities_for(Gfx.actual_method()).get("ssil", false)))
-	_gfx_choice(parent, "Screen-space reflections", "Requires Forward+", [
+	], Gfx.ssil, func(value: Variant) -> void: Gfx.set_option("ssil", value), not ssil_available)
+	_gfx_choice(parent, "Screen-space reflections", effects_hint, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
-	], Gfx.ssr, func(value: Variant) -> void: Gfx.set_option("ssr", value), not bool(Gfx.capabilities_for(Gfx.actual_method()).get("ssr", false)))
+	], Gfx.ssr, func(value: Variant) -> void: Gfx.set_option("ssr", value), not ssr_available)
 	_gfx_choice(parent, "Glow", "", [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.glow, func(value: Variant) -> void: Gfx.set_option("glow", value))
-	_gfx_choice(parent, "Volumetric fog", "Requires Forward+", [
+	_gfx_choice(parent, "Volumetric fog", effects_hint, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
-	], Gfx.volumetric_fog, func(value: Variant) -> void: Gfx.set_option("volumetric_fog", value), not bool(Gfx.capabilities_for(Gfx.actual_method()).get("volumetric_fog", false)))
+	], Gfx.volumetric_fog, func(value: Variant) -> void: Gfx.set_option("volumetric_fog", value), not fog_available)
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Shadows"))
-	_gfx_choice(parent, "Filter quality", "", [
+	_choice_row(parent, "Filter quality", clamp_reason if shadow_quality_cap < 3 else "", [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
-		{"label": "Ultra", "value": 3},
+		{"label": "Ultra", "value": 3, "disabled": shadow_quality_cap < 3},
 	], Gfx.shadow_quality, func(value: Variant) -> void: Gfx.set_option("shadow_quality", value))
-	_gfx_choice(parent, "Cascades", "sun", [
+	_choice_row(parent, "Cascades", "%s · max %d" % ["sun", shadow_splits_cap], [
 		{"label": "1", "value": 1},
 		{"label": "2", "value": 2},
-		{"label": "4", "value": 4},
+		{"label": "4", "value": 4, "disabled": shadow_splits_cap < 4},
 	], Gfx.shadow_splits, func(value: Variant) -> void: Gfx.set_option("shadow_splits", value))
-	_gfx_choice(parent, "Range", "meters", [
+	_choice_row(parent, "Range", "meters · max %d" % int(round(shadow_distance_cap)), [
 		{"label": "25", "value": 25.0},
 		{"label": "40", "value": 40.0},
-		{"label": "60", "value": 60.0},
-		{"label": "100", "value": 100.0},
+		{"label": "60", "value": 60.0, "disabled": forward_clamped},
+		{"label": "100", "value": 100.0, "disabled": forward_clamped},
 	], Gfx.shadow_distance, func(value: Variant) -> void: Gfx.set_option("shadow_distance", value))
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Performance"))
-	_gfx_choice(parent, "3D resolution", "%", [
+	_choice_row(parent, "3D resolution", "% · max %d%%" % int(round(scale_cap * 100.0)), [
 		{"label": "60", "value": 0.6},
 		{"label": "80", "value": 0.8},
-		{"label": "100", "value": 1.0},
+		{"label": "100", "value": 1.0, "disabled": scale_cap < 1.0},
 	], Gfx.scale_3d, func(value: Variant) -> void: Gfx.set_option("scale_3d", value))
 	_toggle_row(parent, "Draft while editing", "Lower quality during camera, gizmo, playback and inspector edits", Gfx.draft_editing, func(value: bool) -> void:
 		Gfx.set_draft_editing(value)
@@ -1014,7 +1043,9 @@ func _choice_row(parent: Control, title: String, hint: String, options: Array, c
 		var button := _segment_button(str(data.get("label", "")))
 		button.button_group = group
 		button.button_pressed = value == current
-		button.disabled = disabled
+		# A capability row can disable individual options (for example 4K shadows
+		# on a mobile-safe profile) without disabling the whole row.
+		button.disabled = disabled or bool(data.get("disabled", false))
 		button.toggled.connect(func(selected: bool) -> void:
 			if selected:
 				on_change.call(value)
@@ -1068,6 +1099,7 @@ func _option_control(options: Array, current: Variant, on_change: Callable) -> O
 		var data: Dictionary = options[i]
 		option.add_item(str(data.get("label", "")), i)
 		option.set_item_metadata(i, data.get("value"))
+		option.set_item_disabled(i, bool(data.get("disabled", false)))
 		if data.get("value") == current:
 			selected = i
 	option.selected = selected
