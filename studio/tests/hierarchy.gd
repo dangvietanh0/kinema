@@ -8,6 +8,7 @@ extends Node
 
 const DocumentScript = preload("res://src/core/document.gd")
 const OutlinerScript = preload("res://src/ui/outliner.gd")
+const EditorViewScript = preload("res://src/viewport/editor_view.gd")
 
 const EPS := 0.01
 const ROW_HEIGHT := 44.0
@@ -53,12 +54,14 @@ func _ready() -> void:
 	await _test_part_selection()
 	await _test_visibility()
 	await _test_selection_roundtrip()
+	await _test_obj_import_gate()
 	await _test_outliner_tree()
 	await _test_outliner_selection()
 	await _test_outliner_visibility()
 	await _test_outliner_search()
 	await _test_outliner_identity()
 	await _test_outliner_targets()
+	await _test_stage_feedback()
 	_finish()
 
 
@@ -273,6 +276,20 @@ func _test_lookup_and_bounds() -> void:
 	var measured: AABB = doc.get_import_part_aabb(id, HEAD)
 	var expected: AABB = head.global_transform * head.get_aabb()
 	_check(_aabb_close(measured, expected), "get_import_part_aabb matches the node's world AABB")
+	# Hidden suppression belongs to the selection query, not the explicit part
+	# bounds query: callers asking for a valid part always get its world AABB.
+	doc.set_selected_part(id, HEAD)
+	doc.set_import_part_visible(id, HEAD, false)
+	await get_tree().process_frame
+	var hidden_measured: AABB = doc.get_import_part_aabb(id, HEAD)
+	_check(_aabb_close(hidden_measured, expected),
+		"a hidden valid part still reports its world AABB")
+	_check(doc.get_selected_part_aabb() == AABB(),
+		"a hidden part selected via the root still has no stage highlight AABB")
+	doc.set_import_part_visible(id, HEAD, true)
+	await get_tree().process_frame
+	_check(_aabb_close(doc.get_import_part_aabb(id, HEAD), expected),
+		"the part bounds return to normal after unhiding")
 	_check(doc.get_import_part_aabb(id, "Model/Nope") == AABB(), "a bad path returns an empty AABB")
 	_check(doc.get_import_part_aabb("missing", HEAD) == AABB(), "a missing import returns an empty AABB")
 	await _free_doc(doc)
@@ -392,6 +409,59 @@ func _test_selection_roundtrip() -> void:
 
 
 # -------------------------------------------------------------------------
+# OBJ imports
+# -------------------------------------------------------------------------
+
+## Spec §8 keeps OBJ as a single mesh row. The runtime OBJ parser still builds
+## an internal wrapper, so an ungated part list would grow a disclosure and a
+## fake Model/Model child. Only glTF/GLB sources expose parts.
+func _test_obj_import_gate() -> void:
+	print("HIERARCHY STEP: OBJ imports stay a single mesh row")
+	var doc: Variant = await _new_doc("ObjGate")
+	var obj_path := _tmp_dir.path_join("obj_gate.obj")
+	var file := FileAccess.open(obj_path, FileAccess.WRITE)
+	var wrote := false
+	if file != null:
+		file.store_string("# flat triangle\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+		file.close()
+		wrote = true
+	_check(wrote, "the OBJ fixture is written")
+	var imported: Dictionary = Store.import_model(obj_path, str(doc.project_dir), "Flat")
+	_check(bool(imported.get("ok", false)),
+		"ProjectStore imports the OBJ fixture (%s)" % str(imported.get("error", "")))
+	if not bool(imported.get("ok", false)):
+		await _free_doc(doc)
+		return
+	var id: String = doc.add_imported(str(imported.get("rel_path", "")), "Flat")
+	await get_tree().process_frame
+	_check(id != "", "the OBJ import object spawns")
+	_check(doc.import_parts(id).is_empty(), "an OBJ import exposes no parts")
+	_check(doc.get_import_part_node(id, "Model/Model") == null,
+		"the OBJ wrapper never resolves as a listed part")
+	_check(doc.get_import_part_aabb(id, "Model/Model") == AABB(),
+		"the OBJ wrapper never reports part bounds")
+	if id == "":
+		await _free_doc(doc)
+		return
+	doc.set_selection(id)
+	var outliner: Variant = await _new_outliner(doc)
+	var root: Control = _root_row(outliner, id)
+	_check(root != null, "the OBJ import has a root row")
+	if root != null:
+		_check(_disclosure(root) == null, "the OBJ root has no disclosure chevron")
+	_check(_part_rows(outliner).is_empty(), "the OBJ import renders no part rows")
+	# Force the expansion state on: even an expanded OBJ root must stay flat.
+	outliner._expanded[id] = true
+	outliner._rebuild()
+	await get_tree().process_frame
+	_check(_root_row(outliner, id) != null, "the expanded OBJ import keeps its root row")
+	_check(_disclosure(_root_row(outliner, id)) == null,
+		"the expanded OBJ root still has no disclosure chevron")
+	_check(_part_rows(outliner).is_empty(), "the expanded OBJ import never grows part rows")
+	await _free_doc(doc)
+
+
+# -------------------------------------------------------------------------
 # Outliner
 # -------------------------------------------------------------------------
 
@@ -406,6 +476,23 @@ func _new_outliner(doc: Variant) -> Variant:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	return outliner
+
+
+## Builds the real stage view and hands it the document the same way the app
+## does, so the overlay feedback is tested at the control that draws it. The
+## view adopts (re-parents) the document into its SubViewport.
+func _new_view(doc: Variant) -> Variant:
+	var host := Control.new()
+	host.size = Vector2(800.0, 500.0)
+	add_child(host)
+	var view: Variant = EditorViewScript.new()
+	view.name = "HierarchyView"
+	host.add_child(view)
+	view.size = host.size
+	view.set_document(doc)
+	for _i in 3:
+		await get_tree().process_frame
+	return view
 
 
 func _root_row(outliner: Variant, id: String) -> Control:
@@ -669,10 +756,27 @@ func _test_outliner_search() -> void:
 	_check(not paths.has(EMPTY) and not paths.has(LIGHT) and not paths.has(CAMERA),
 		"a part match hides siblings")
 	_check(_part_rows(outliner).size() == 2, "a part match shows only the path rows (got %d)" % _part_rows(outliner).size())
+	# A forced part search ignores the stored expansion state, so an
+	# interactive chevron there would be a fake affordance. The rows keep the
+	# 44 dp slot for alignment, but no disclosure control.
+	_check(_disclosure(_root_row(outliner, id)) == null,
+		"a forced part search hides the fake root disclosure")
+	var forced_disclosures := 0
+	for row in _part_rows(outliner):
+		if _disclosure(row) != null:
+			forced_disclosures += 1
+	_check(forced_disclosures == 0,
+		"a forced part search draws no disclosure chevrons (found %d)" % forced_disclosures)
+	_check(_control_role(_root_row(outliner, id), "disclosure-slot") != null,
+		"the forced root keeps the 44 dp disclosure slot")
+	_check(_control_role(_part_row(outliner, id, BODY), "disclosure-slot") != null,
+		"a forced part with children keeps the 44 dp disclosure slot")
 	outliner._search.text = "rig"
 	outliner._on_search_changed("rig")
 	await get_tree().process_frame
 	_check(_root_row(outliner, id) != null, "a root name match keeps the root visible")
+	_check(_disclosure(_root_row(outliner, id)) != null,
+		"a root name match keeps the real disclosure control")
 	_check(_part_rows(outliner).size() == 5, "a root match honours the stored expansion state")
 	_check(_part_row(outliner, id, BODY) != null, "the root match shows its first-level parts")
 	outliner._search.text = ""
@@ -729,12 +833,105 @@ func _test_outliner_targets() -> void:
 	_disclosure(_root_row(outliner, id)).pressed.emit()
 	await get_tree().process_frame
 	var short := 0
-	for button in _row_buttons(outliner._list):
+	var buttons: Array = _row_buttons(outliner)
+	var saw_add := false
+	var saw_header_collapse := false
+	for button in buttons:
+		if button.tooltip_text == "Add object":
+			saw_add = true
+		if button == outliner._collapse_button:
+			saw_header_collapse = true
 		if not button.visible or button.has_meta("qa_hit_exempt"):
 			continue
 		if (button.get_combined_minimum_size().x < ROW_HEIGHT - 0.01
 			or button.get_combined_minimum_size().y < ROW_HEIGHT - 0.01):
 			short += 1
 			print("HIERARCHY SHORT: '", button.tooltip_text, "' min=", button.get_combined_minimum_size())
+	_check(saw_add and saw_header_collapse,
+		"the target walker covers the outliner header controls")
 	_check(short == 0, "every visible outliner button keeps a 44x44 target (short=%d)" % short)
 	await _free_doc(doc)
+
+
+## The stage has to point at the selected part even when that part draws no
+## geometry. Only an effectively hidden part may suppress the feedback.
+func _test_stage_feedback() -> void:
+	print("HIERARCHY STEP: stage selection feedback")
+	var doc: Variant = await _new_doc("Feedback")
+	var id: String = await _import(doc)
+	if id == "":
+		await _free_doc(doc)
+		return
+	var view: Variant = await _new_view(doc)
+	_check(view.has_method("selection_feedback"),
+		"the stage exposes its selection feedback")
+	if not view.has_method("selection_feedback"):
+		view.get_parent().queue_free()
+		await get_tree().process_frame
+		return
+	# A geometry part draws its AABB box.
+	doc.set_selected_part(id, HEAD)
+	var feedback: Dictionary = view.selection_feedback()
+	var head: Node3D = doc.get_import_part_node(id, HEAD)
+	var expected: AABB = head.global_transform * head.get_aabb()
+	_check(feedback.has("aabb") and not feedback.has("dot"),
+		"a selected mesh part reports its world AABB")
+	_check(_aabb_close(feedback.get("aabb", AABB()), expected),
+		"the mesh part feedback AABB matches the part")
+	# KeyLight, Cam and the skeleton all select but draw nothing; the 15 px
+	# dot must stay for each of them.
+	for pair in [[LIGHT, "light"], [CAMERA, "camera"], [SKELETON, "skeleton"]]:
+		doc.set_selected_part(id, str(pair[0]))
+		var part: Node3D = doc.get_import_part_node(id, str(pair[0]))
+		feedback = view.selection_feedback()
+		_check(feedback.has("dot") and not feedback.has("aabb"),
+			"a visible %s part falls back to the 15 px dot" % str(pair[1]))
+		var dot: Vector3 = feedback.get("dot", Vector3.ZERO)
+		_check(dot.distance_to(part.global_position) < EPS,
+			"the %s dot sits on the part's world position" % str(pair[1]))
+	# The fixture's Empty owns ChildMesh, so its subtree has geometry and draws
+	# a box. Hide that only mesh: the still-visible Empty is now geometry-less
+	# and must fall back to the dot rather than look unselected.
+	doc.set_selected_part(id, EMPTY)
+	_check(view.selection_feedback().has("aabb"),
+		"an empty part with visible child geometry reports the subtree AABB")
+	doc.set_import_part_visible(id, CHILD_MESH, false)
+	doc.set_selected_part(id, EMPTY)
+	feedback = view.selection_feedback()
+	var empty_part: Node3D = doc.get_import_part_node(id, EMPTY)
+	_check(feedback.has("dot") and not feedback.has("aabb"),
+		"a visible geometry-less empty part falls back to the 15 px dot")
+	var empty_dot: Vector3 = feedback.get("dot", Vector3.ZERO)
+	_check(empty_dot.distance_to(empty_part.global_position) < EPS,
+		"the empty part dot sits on its world position")
+	doc.set_import_part_visible(id, CHILD_MESH, true)
+	# A hidden part draws nothing.
+	doc.set_import_part_visible(id, LIGHT, false)
+	doc.set_selected_part(id, LIGHT)
+	_check(view.selection_feedback().is_empty(),
+		"a hidden selected part reports no stage feedback")
+	# An ancestor hiding the part is the same as hiding the part itself.
+	doc.set_import_part_visible(id, LIGHT, true)
+	doc.set_import_part_visible(id, BODY, false)
+	doc.set_selected_part(id, HEAD)
+	_check(view.selection_feedback().is_empty(),
+		"a part hidden by an ancestor draws nothing")
+	doc.set_import_part_visible(id, BODY, true)
+	# Root objects keep the existing zero-size fallback.
+	var empty_id: String = doc.add_empty(Vector3(0.0, 0.4, 0.0))
+	var empty_node: Node3D = doc.nodes.get(empty_id)
+	var root_feedback: Dictionary = view.selection_feedback()
+	_check(root_feedback.has("dot") and not root_feedback.has("aabb"),
+		"a selected zero-size root keeps the dot fallback")
+	var root_dot: Vector3 = root_feedback.get("dot", Vector3.ZERO)
+	_check(root_dot.distance_to(empty_node.global_position) < EPS,
+		"the root dot sits on the object's world position")
+	doc.set_object_visible(empty_id, false)
+	_check(view.selection_feedback().is_empty(),
+		"a hidden root draws nothing")
+	var cube_id: String = doc.add_primitive("cube")
+	_check(cube_id != "", "the mesh root spawns")
+	_check(view.selection_feedback().has("aabb"),
+		"a selected mesh root keeps its AABB box")
+	view.get_parent().queue_free()
+	await get_tree().process_frame
