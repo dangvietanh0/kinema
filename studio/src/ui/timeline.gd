@@ -214,9 +214,9 @@ func _build_transport() -> void:
 	# sheet header while the transport must stay reachable.
 	_duration_chip = Kit.text_button("", "", false, true)
 	_duration_chip.custom_minimum_size = Vector2(56, 44)
-	# The compact transport has no room for a long "Seq" label; the full text
-	# stays available through duration_chip_text() and the tooltip.
-	_duration_chip.clip_text = true
+	# The chip is sized from its rendered text in _sync_duration_row(); clipping
+	# it here would hide the required "· Seq <n> s" half on every narrow surface.
+	_duration_chip.clip_text = false
 	_duration_chip.tooltip_text = "Clip duration and sequence length"
 	_duration_chip.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
 	_duration_chip.pressed.connect(open_duration_row)
@@ -416,7 +416,7 @@ func _build_duration_row() -> void:
 	)
 	row.add_child(_duration_field)
 
-	_match_button = Kit.text_button("Match seq", "", false, true)
+	_match_button = Kit.text_button("Match sequence", "", false, true)
 	_match_button.tooltip_text = "Match the longer sequence length"
 	_match_button.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
 	_match_button.pressed.connect(func() -> void:
@@ -425,7 +425,7 @@ func _build_duration_row() -> void:
 	)
 	row.add_child(_match_button)
 
-	_extend_button = Kit.text_button("+1 s", "", false, true)
+	_extend_button = Kit.text_button("Extend +1 s", "", false, true)
 	_extend_button.tooltip_text = "Extend the clip by one second"
 	_extend_button.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
 	_extend_button.pressed.connect(func() -> void:
@@ -473,6 +473,7 @@ func open_duration_row() -> void:
 		return
 	_duration_open = true
 	_duration_row.visible = true
+	_dismiss_gesture_hint()
 	if _sheet_rule != null:
 		_sheet_rule.visible = false
 	if _sheet != null:
@@ -506,6 +507,12 @@ func _sync_duration_row() -> void:
 		_match_button.visible = doc.sequence_duration() > doc.duration + 0.05
 	if _duration_chip != null:
 		_duration_chip.text = duration_chip_text()
+		_duration_chip.tooltip_text = _duration_chip.text
+		var chip_font := _duration_chip.get_theme_font("font")
+		var chip_size := _duration_chip.get_theme_font_size("font_size")
+		var text_width := chip_font.get_string_size(
+			_duration_chip.text, HORIZONTAL_ALIGNMENT_LEFT, -1, chip_size).x
+		_duration_chip.custom_minimum_size.x = maxf(56.0, ceilf(text_width) + 8.0)
 
 
 ## Applies a duration request. A shrink that would delete keys asks the editor
@@ -600,6 +607,23 @@ func _build_sheet() -> void:
 	_sheet.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(_sheet)
 
+	# One-time hint at the top of the sheet itself, so it survives the compact
+	# header folding away at 915x412. The outline keeps it legible over the
+	# ruler without adding another permanent row to the 48 dp sheet floor.
+	_gesture_hint = Kit.label("Pinch to zoom · drag to pan", Kit.TYPE_CAPTION, Kit.TEXT, 500)
+	_gesture_hint.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_gesture_hint.offset_left = 8
+	_gesture_hint.offset_right = -8
+	_gesture_hint.offset_top = 2
+	_gesture_hint.offset_bottom = 20
+	_gesture_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_gesture_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_gesture_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_gesture_hint.add_theme_color_override("font_outline_color", Kit.SURFACE)
+	_gesture_hint.add_theme_constant_override("outline_size", 4)
+	_gesture_hint.visible = false
+	_sheet.add_child(_gesture_hint)
+
 
 ## Compact screens keep the transport and fold the sheet away, so the 3D view
 ## keeps its height until the user asks for the dope sheet.
@@ -615,19 +639,28 @@ func set_sheet_visible(open: bool) -> void:
 	if _fold_button != null:
 		Kit.set_icon(_fold_button, "chevron-down" if open else "chevron-up")
 		_fold_button.tooltip_text = "Fold the timeline" if open else "Open the timeline"
-	if open:
-		_maybe_show_gesture_hint()
+	if not open:
+		_dismiss_gesture_hint()
 	_refresh_compact()
 
 
-## One session-only hint names both time-view gestures the first time the
-## sheet opens. The permanent captions then carry the affordance without
-## stealing a transport slot.
-func _maybe_show_gesture_hint() -> void:
-	if _hint_seen:
+## Called by the editor's user-open path, never from a layout sync. The hint
+## lives on the sheet surface so it remains visible even when the compact
+## header is folded, and only survives the first session open.
+func show_gesture_hint_once() -> void:
+	if _hint_seen or _gesture_hint == null or not _sheet_open:
 		return
 	_hint_seen = true
-	notice.emit("Pinch to zoom · drag to pan the timeline")
+	_gesture_hint.visible = true
+
+
+func gesture_hint_visible() -> bool:
+	return _gesture_hint != null and _gesture_hint.visible
+
+
+func _dismiss_gesture_hint() -> void:
+	if _gesture_hint != null:
+		_gesture_hint.visible = false
 
 
 func sheet_visible() -> bool:
@@ -685,12 +718,15 @@ func _refresh_compact() -> void:
 	var narrow_sheet_folded := narrow and not touch and not _sheet_open
 	_start_button.visible = not narrow_chrome
 	_end_button.visible = not narrow_chrome
-	# Key-step navigation yields to the always-visible duration chip and More
-	# control on a narrow canvas; wide workbenches keep it in the transport.
+	# Key-step navigation stays in the transport on any surface wide enough for
+	# it, including a 915x412 landscape whose stage column is 624 dp after the
+	# rail and scene panel. Only a phone-width canvas drops the pair, where the
+	# ruler remains the path.
+	var key_step_room := measured >= 600.0
 	if _prev_button != null:
-		_prev_button.visible = not narrow_chrome
+		_prev_button.visible = key_step_room
 	if _next_button != null:
-		_next_button.visible = not narrow_chrome
+		_next_button.visible = key_step_room
 	_snap_button.visible = not narrow_chrome
 	_mode_button.visible = not narrow_chrome
 	_loop_button.visible = not narrow_chrome
@@ -1767,6 +1803,9 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 		return
 	if Kit.is_emulated_mouse(event):
 		return
+	if (event is InputEventMouseButton and (event as InputEventMouseButton).pressed) or \
+		(event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed):
+		_dismiss_gesture_hint()
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
 		if button.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN,

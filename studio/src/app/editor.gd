@@ -1872,6 +1872,10 @@ func _toggle_timeline() -> void:
 	if _timeline != null:
 		_timeline.set_more_state(false)
 	_sync_timeline_visibility()
+	# The gesture hint belongs to the user's open action, not to boot/resize
+	# syncs. The timeline itself guarantees it only appears once.
+	if _timeline_visible and _timeline != null:
+		_timeline.show_gesture_hint_once()
 	_update_bottom_bar()
 
 
