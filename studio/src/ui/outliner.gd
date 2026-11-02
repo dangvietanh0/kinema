@@ -37,6 +37,9 @@ var _empty: VBoxContainer
 ## on two imports cannot collide.
 var _rows: Dictionary = {}
 var _part_rows: Dictionary = {}
+## One derived part list per import root for the current rebuild. Part rows and
+## row refreshes read this instead of re-walking the live model per row.
+var _parts_by_root: Dictionary = {}
 ## UI-only expansion state: object ids for roots, root id + path for parts.
 var _expanded: Dictionary = {}
 var _identity := ""
@@ -210,7 +213,10 @@ func _on_selection_changed(_id: String) -> void:
 	_refresh_selection()
 
 func _on_object_changed(id: String) -> void:
-	# Material, visibility and camera edits only change a row's badges.
+	# Material, visibility and camera edits only change a row's badges, but the
+	# derived list also carries visibility, so refresh that root's snapshot.
+	if _parts_by_root.has(id):
+		_parts_by_root[id] = doc.import_parts(id)
 	_update_row(id)
 	for panel in _part_rows.values():
 		if is_instance_valid(panel) and str(panel.get_meta("object_id", "")) == id:
@@ -257,11 +263,12 @@ func _rebuild() -> void:
 		child.queue_free()
 	_rows.clear()
 	_part_rows.clear()
+	_parts_by_root.clear()
 	var visible_count := 0
 	for obj in doc.objects:
 		var id := str(obj.get("id", ""))
 		var name := str(obj.get("name", "Object"))
-		var parts: Array = doc.import_parts(id)
+		var parts: Array = _parts_for(id)
 		var root_match := _filter == "" or name.to_lower().contains(_filter)
 		var matched: Array = []
 		if _filter != "":
@@ -273,7 +280,8 @@ func _rebuild() -> void:
 		visible_count += 1
 		var forced := not matched.is_empty()
 		var root_expanded := _is_root_expanded(id) or forced
-		var root := _make_root_row(obj, not parts.is_empty(), root_expanded)
+		var has_parts := not parts.is_empty()
+		var root := _make_root_row(obj, has_parts, root_expanded, not forced)
 		_list.add_child(root)
 		_rows[id] = root
 		if not root_expanded:
@@ -285,7 +293,7 @@ func _rebuild() -> void:
 			if parent != "":
 				child_parents[parent] = true
 		for part in display_parts:
-			var row := _make_part_row(id, part, child_parents.has(str(part.get("path", ""))))
+			var row := _make_part_row(id, part, child_parents.has(str(part.get("path", ""))), not forced)
 			_list.add_child(row)
 			_part_rows[_part_key(id, str(part.get("path", "")))] = row
 	_count.text = str(doc.objects.size())
@@ -377,15 +385,19 @@ func _matched_parts(parts: Array, matched: Array) -> Array:
 	return result
 
 
-func _make_root_row(obj: Dictionary, has_parts: bool, expanded: bool) -> Control:
+func _make_root_row(obj: Dictionary, has_parts: bool, expanded: bool, disclosure_enabled: bool = true) -> Control:
 	var id := str(obj.get("id", ""))
 	var selected := id == doc.selected_id and not _root_has_selected_part(id)
 	var panel := _make_panel(selected, _root_has_selected_part(id))
 	panel.set_meta("object_id", id)
 	var row := panel.get_child(0) as HBoxContainer
-	if has_parts:
+	if has_parts and disclosure_enabled:
 		var disclosure := _disclosure_button(expanded, _toggle_root.bind(id))
 		row.add_child(disclosure)
+	elif has_parts:
+		# A forced part-name filter ignores expansion, so the chevron there
+		# would be a fake affordance. Keep the slot for alignment only.
+		row.add_child(_disclosure_spacer())
 	var icon := Kit.icon(_icon_for(obj), Kit.TEXT_DIM, 14)
 	icon.set_meta("role", "icon")
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -419,7 +431,7 @@ func _make_root_row(obj: Dictionary, has_parts: bool, expanded: bool) -> Control
 	return panel
 
 
-func _make_part_row(root_id: String, part: Dictionary, children_shown: bool) -> Control:
+func _make_part_row(root_id: String, part: Dictionary, children_shown: bool, disclosure_enabled: bool = true) -> Control:
 	var path := str(part.get("path", ""))
 	var panel := _make_panel(_is_part_selected(root_id, path), false)
 	panel.set_meta("object_id", root_id)
@@ -431,15 +443,11 @@ func _make_part_row(root_id: String, part: Dictionary, children_shown: bool) -> 
 	indent.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(indent)
 	var has_children := bool(part.get("has_children", false))
-	if has_children:
+	if has_children and disclosure_enabled:
 		var disclosure := _disclosure_button(children_shown, _toggle_part.bind(root_id, path))
 		row.add_child(disclosure)
 	else:
-		var slot := Control.new()
-		slot.set_meta("role", "disclosure-slot")
-		slot.custom_minimum_size = Vector2(ROW_HEIGHT, ROW_HEIGHT)
-		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(slot)
+		row.add_child(_disclosure_spacer())
 	var icon := Kit.icon(_icon_for_part(part), Kit.TEXT_DIM, 14)
 	icon.set_meta("role", "icon")
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -493,6 +501,14 @@ func _make_panel(selected: bool, context: bool) -> Control:
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(row)
 	return panel
+
+
+func _disclosure_spacer() -> Control:
+	var slot := Control.new()
+	slot.set_meta("role", "disclosure-slot")
+	slot.custom_minimum_size = Vector2(ROW_HEIGHT, ROW_HEIGHT)
+	slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return slot
 
 
 func _disclosure_button(expanded: bool, on_toggle: Callable) -> Button:
@@ -651,10 +667,20 @@ func _update_row(id: String) -> void:
 func _find_part(root_id: String, path: String) -> Dictionary:
 	if doc == null:
 		return {}
-	for part in doc.import_parts(root_id):
+	for part in _parts_for(root_id):
 		if str(part.get("path", "")) == path:
 			return part
 	return {}
+
+
+## Derived parts for one import root. The rebuild fills this once per root and
+## every row refresh reads the same snapshot instead of re-walking the model.
+func _parts_for(root_id: String) -> Array:
+	if _parts_by_root.has(root_id):
+		return _parts_by_root[root_id]
+	var parts: Array = doc.import_parts(root_id) if doc != null else []
+	_parts_by_root[root_id] = parts
+	return parts
 
 
 func _update_part_row(panel: Control) -> void:
