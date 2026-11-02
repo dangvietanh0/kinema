@@ -2504,23 +2504,42 @@ func _export_gif(options: Dictionary) -> void:
 		_media_export.set_result(output, _file_size(output), duration, "%d GIF frames" % frames.size())
 	_overlay.toast("GIF exported", "check", Kit.SUCCESS)
 
+## Pure builders for the MP4 path, so the options the renderer and the Java
+## manifest receive can be inspected without running the Android encoder.
+## `msaa` uses the Godot viewport index: 2× = 1, 4× = 2. The sheet always
+## sends it; the default keeps older callers on the previous 4× behaviour.
+static func mp4_frame_options(options: Dictionary, fallback_end: float) -> Dictionary:
+	return {
+		"width": int(options.get("width", 1280)),
+		"height": int(options.get("height", 720)),
+		"fps": int(options.get("fps", 24)),
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", fallback_end)),
+		"msaa": int(options.get("msaa", 2)),
+	}
+
+
+static func mp4_manifest_options(options: Dictionary) -> Dictionary:
+	return {
+		"width": int(options.get("width", 1920)),
+		"height": int(options.get("height", 1080)),
+		"fps": int(options.get("fps", 24)),
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", 0.0)),
+		"bitrate": int(options.get("bitrate", 12000000)),
+		"audio_bitrate": int(options.get("audio_bitrate", 192000)),
+	}
+
+
 func _export_mp4(options: Dictionary) -> void:
 	var backend = AndroidVideo.new()
 	if not bool(backend.available()):
 		# Never fake MP4: report the exact backend reason on this platform.
 		_export_failed(AndroidVideo.REASON)
 		return
-	var width := int(options.get("width", 1280))
-	var height := int(options.get("height", 720))
 	var renderer := SequenceRendererScript.new()
 	renderer.setup(doc, _view)
-	var frame_options: Dictionary = {
-		"width": width,
-		"height": height,
-		"fps": int(options.get("fps", 24)),
-		"start": float(options.get("start", 0.0)),
-		"end": float(options.get("end", doc.sequence_duration())),
-	}
+	var frame_options: Dictionary = mp4_frame_options(options, doc.sequence_duration())
 	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
 	var frames_dir := str(result.get("frames_dir", ""))
 	if not bool(result.get("ok", false)):
@@ -2533,18 +2552,12 @@ func _export_mp4(options: Dictionary) -> void:
 		for track in doc.media_system.audio_tracks():
 			if not bool(track.get("muted", false)):
 				audio.append(track)
-	var manifest: Dictionary = backend.build_manifest({
-		"project_dir": doc.project_dir,
-		"width": width,
-		"height": height,
-		"fps": int(options.get("fps", 24)),
-		"start": float(frame_options["start"]),
-		"end": float(frame_options["end"]),
-		"frame_count": int(result.get("frame_count", 0)),
-		"bitrate": int(options.get("bitrate", 12000000)),
-		"frame_dir": frames_dir,
-		"audio": audio,
-	})
+	var manifest_input: Dictionary = mp4_manifest_options(options)
+	manifest_input["project_dir"] = doc.project_dir
+	manifest_input["frame_count"] = int(result.get("frame_count", 0))
+	manifest_input["frame_dir"] = frames_dir
+	manifest_input["audio"] = audio
+	var manifest: Dictionary = backend.build_manifest(manifest_input)
 	var output := str(options.get("output_path", ""))
 	if output == "":
 		output = "user://export.mp4"
@@ -2585,7 +2598,7 @@ func _export_mp4(options: Dictionary) -> void:
 			return
 		await get_tree().create_timer(0.05).timeout
 	_clean_dir(frames_dir)
-	var verified: Dictionary = backend.verify(output, not audio.is_empty(), int(options.get("fps", 24)), float(frame_options["end"]) - float(frame_options["start"]))
+	var verified: Dictionary = backend.verify(output, not audio.is_empty(), int(frame_options["fps"]), float(frame_options["end"]) - float(frame_options["start"]))
 	if not bool(verified.get("ok", false)):
 		_export_failed(str(verified.get("error", "The MP4 file could not be verified.")))
 		return
