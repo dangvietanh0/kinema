@@ -10,7 +10,8 @@ extends Control
 ##
 ## Actions: home, home-new, timeline, timeline-folded, drawer-scene,
 ## drawer-props, add-sheet, settings, performance, renderer, graphics, render,
-## quick-render, workspace, draft, graph, scene-rail, scene-expanded.
+## quick-render, workspace, draft, graph, scene-rail, scene-expanded,
+## hierarchy.
 ##
 ## Two additions in the U1 follow-up stay inside the scene-panel/timeline
 ## evidence this task owns:
@@ -87,6 +88,8 @@ func _ready() -> void:
 			main._editor._set_scene_expanded_from_ui(false)
 		"scene-expanded":
 			main._editor._set_scene_expanded_from_ui(true)
+		"hierarchy":
+			await _setup_hierarchy_capture(main)
 		"drawer-scene":
 			main._editor._toggle_drawer("scene")
 		"drawer-props":
@@ -162,6 +165,88 @@ func _ready() -> void:
 	if created_id != "":
 		Store.delete_project(created_id)
 	get_tree().quit()
+
+## Imports the U2 fixture into the open project, expands the root and its Body
+## part, and selects Head so the shot shows the runtime part tree, the bright
+## part row and the quiet import root.
+func _setup_hierarchy_capture(main: Control) -> void:
+	var fixture := "user://hierarchy_capture_%d.glb" % Time.get_ticks_msec()
+	var exported: bool = await _export_hierarchy_fixture(fixture)
+	if not exported:
+		push_warning("Kinema capture: the hierarchy fixture could not be written.")
+		return
+	var editor: Control = main._editor
+	var doc = editor.doc
+	var imported: Dictionary = Store.import_model(fixture, str(doc.project_dir), "Rig")
+	if not bool(imported.get("ok", false)):
+		push_warning("Kinema capture: the hierarchy fixture could not be imported.")
+		return
+	var id: String = doc.add_imported(str(imported.get("rel_path", "")), "Rig")
+	if id == "":
+		return
+	editor._set_scene_expanded_from_ui(true)
+	var outliner = editor._outliner
+	outliner._expanded[id] = true
+	outliner._expanded[outliner._part_key(id, "Model/Body")] = true
+	outliner._rebuild()
+	doc.set_selected_part(id, "Model/Body/Head")
+	await get_tree().process_frame
+	var head_row = outliner._part_rows.get(outliner._part_key(id, "Model/Body/Head"))
+	if head_row != null:
+		outliner._scroll.ensure_control_visible(head_row)
+	# Put the import root at the top of the list; Body and the selected Head
+	# then sit on whole rows instead of being clipped by the panel edge.
+	var root_row = outliner._rows.get(id)
+	if root_row != null:
+		outliner._scroll.scroll_vertical = maxi(0, int(root_row.position.y) - 6)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+
+func _export_hierarchy_fixture(path: String) -> bool:
+	var root := Node3D.new()
+	root.name = "StudioModel"
+	var body := MeshInstance3D.new()
+	body.name = "Body"
+	body.mesh = BoxMesh.new()
+	body.position = Vector3(0.5, 1.0, 0.0)
+	root.add_child(body)
+	var head := MeshInstance3D.new()
+	head.name = "Head"
+	var head_mesh := BoxMesh.new()
+	head_mesh.size = Vector3(0.4, 0.4, 0.4)
+	head.mesh = head_mesh
+	head.position = Vector3(0.0, 0.8, 0.0)
+	body.add_child(head)
+	var empty := Node3D.new()
+	empty.name = "Empty"
+	empty.position = Vector3(1.5, 0.0, 0.0)
+	root.add_child(empty)
+	var child_mesh := MeshInstance3D.new()
+	child_mesh.name = "ChildMesh"
+	var child_box := BoxMesh.new()
+	child_box.size = Vector3(0.3, 0.3, 0.3)
+	child_mesh.mesh = child_box
+	empty.add_child(child_mesh)
+	var light := OmniLight3D.new()
+	light.name = "KeyLight"
+	light.position = Vector3(0.0, 2.0, 0.5)
+	root.add_child(light)
+	var camera := Camera3D.new()
+	camera.name = "Cam"
+	camera.position = Vector3(2.0, 1.5, 3.0)
+	root.add_child(camera)
+	add_child(root)
+	await get_tree().process_frame
+	var gltf := GLTFDocument.new()
+	var state := GLTFState.new()
+	var err := gltf.append_from_scene(root, state)
+	if err == OK:
+		err = gltf.write_to_filesystem(state, path)
+	root.queue_free()
+	await get_tree().process_frame
+	return err == OK
+
 
 ## A realistic project browser. The names, object counts, durations and ages
 ## are deliberately varied so the list is exercised at its real density.
