@@ -597,14 +597,16 @@ func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	node.add_child(light)
 	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.46, 0.46, 0.46))
 
-func _configure_shadows(light: Light3D, obj: Dictionary = {}) -> void:
+func _configure_shadows(light: Light3D, obj: Dictionary = {}, profile: Dictionary = {}) -> void:
 	## Shadow quality is driven by the graphics preferences. Directional lights
 	## get cascaded splits, a filtered soft edge and a physical angular size so
 	## the PCSS path produces real penumbrae instead of a hard cutout. The
 	## document's `light_shadow` flag is honoured here so a fill light can stay
-	## honest about not casting.
+	## honest about not casting. `profile` is the effective, platform-clamped
+	## profile; when omitted it is resolved for the running backend.
 	if light == null:
 		return
+	var effective: Dictionary = profile if not profile.is_empty() else Gfx.safe_forward_plus_profile()
 	light.shadow_enabled = bool(obj.get("light_shadow", true))
 	light.shadow_opacity = 0.55
 	light.shadow_bias = 0.022
@@ -613,11 +615,11 @@ func _configure_shadows(light: Light3D, obj: Dictionary = {}) -> void:
 	if light is DirectionalLight3D:
 		var sun := light as DirectionalLight3D
 		sun.light_angular_distance = 0.55
-		sun.directional_shadow_max_distance = Gfx.shadow_distance
+		sun.directional_shadow_max_distance = float(effective.get("shadow_distance", Gfx.shadow_distance))
 		sun.directional_shadow_blend_splits = true
 		sun.directional_shadow_fade_start = 0.82
 		sun.directional_shadow_pancake_size = 18.0
-		match int(Gfx.shadow_splits):
+		match int(effective.get("shadow_splits", Gfx.shadow_splits)):
 			1:
 				sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 			3, 4:
@@ -627,14 +629,17 @@ func _configure_shadows(light: Light3D, obj: Dictionary = {}) -> void:
 	elif light is OmniLight3D:
 		pass
 
-func apply_graphics() -> void:
+func apply_graphics(platform: String = "", actual_method: String = "") -> void:
+	var profile: Dictionary = Gfx.safe_forward_plus_profile()
+	if platform != "":
+		profile = Gfx.safe_forward_plus_profile(platform, actual_method)
 	for id in nodes.keys():
 		var node: Node3D = nodes[id]
 		if node == null:
 			continue
 		var light := node.get_node_or_null("Light") as Light3D
 		if light != null:
-			_configure_shadows(light, get_object(str(id)))
+			_configure_shadows(light, get_object(str(id)), profile)
 	_sync_sun_sky_mode()
 
 ## Exactly one visible directional light feeds the procedural sky. The first

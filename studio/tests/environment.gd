@@ -35,6 +35,7 @@ func _ready() -> void:
 	await _test_blank_fill_light()
 	await _test_sky_sun_mode()
 	await _test_shadow_opacity()
+	await _test_mobile_shadow_caps()
 	await _test_visual_capture()
 	_finish()
 
@@ -263,6 +264,39 @@ func _test_shadow_opacity() -> void:
 				"study light '%s' casts readable shadows (%.2f)" % [str(obj.get("name", "")), light.shadow_opacity])
 	_check(study_casting >= 1, "the study template keeps a shadow-casting key light")
 	study.queue_free()
+	await get_tree().process_frame
+
+
+func _test_mobile_shadow_caps() -> void:
+	# The stored preference may stay high; the applied shadow values must be
+	# clamped on Android/iOS Forward+. Assert the real DirectionalLight3D state,
+	# not just the profile dictionary.
+	var saved_distance: float = Gfx.shadow_distance
+	var saved_splits: int = Gfx.shadow_splits
+	Gfx.shadow_distance = 60.0
+	Gfx.shadow_splits = 4
+	var doc := await _new_doc("Environment mobile shadows", "blank")
+	var key_light: DirectionalLight3D = null
+	for item in _directional_lights(doc):
+		if str(item["obj"].get("name", "")) == "Key Light":
+			key_light = item["light"]
+	_check(key_light != null, "the blank key light is a real DirectionalLight3D")
+	if key_light != null:
+		doc.apply_graphics("Android", "forward_plus")
+		await get_tree().process_frame
+		_check(is_equal_approx(key_light.directional_shadow_max_distance, 40.0),
+			"Android Forward+ applies the safe 40 m shadow range (%.1f)" % key_light.directional_shadow_max_distance)
+		_check(key_light.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS,
+			"Android Forward+ applies the safe two shadow splits")
+		doc.apply_graphics("Linux", "forward_plus")
+		await get_tree().process_frame
+		_check(is_equal_approx(key_light.directional_shadow_max_distance, 60.0),
+			"desktop Forward+ keeps the stored 60 m shadow range (%.1f)" % key_light.directional_shadow_max_distance)
+		_check(key_light.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS,
+			"desktop Forward+ keeps the stored four shadow splits")
+	Gfx.shadow_distance = saved_distance
+	Gfx.shadow_splits = saved_splits
+	doc.queue_free()
 	await get_tree().process_frame
 
 
