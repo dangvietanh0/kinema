@@ -336,6 +336,7 @@ func _normalize_object(raw: Dictionary) -> Dictionary:
 	obj["light_energy"] = float(raw.get("light_energy", 1.2))
 	obj["light_color"] = str(raw.get("light_color", "#F0F0F0"))
 	obj["light_range"] = float(raw.get("light_range", 8.0))
+	obj["light_shadow"] = bool(raw.get("light_shadow", true))
 	obj["camera_fov"] = float(raw.get("camera_fov", 45.0))
 	obj["model"] = str(raw.get("model", ""))
 	obj["part_visibility"] = _normalize_part_visibility(raw.get("part_visibility", {}))
@@ -373,6 +374,7 @@ func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 		"light_energy": 1.2,
 		"light_color": "#F0F0F0",
 		"light_range": 8.0,
+		"light_shadow": true,
 		"camera_fov": 45.0,
 		"model": "",
 		"part_visibility": {},
@@ -381,9 +383,18 @@ func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 func _build_blank() -> void:
 	_add_camera_data("Main Camera", Vector3(4.0, 3.15, 5.2), Vector3(0.0, 0.65, 0.0), false)
 	_add_light_data("Key Light", "directional", Vector3(0.0, 5.0, 0.0), Vector3(-38, -28, 0), false)
+	# A real selectable fill so the shadow side is readable out of the box.
+	# It is an honest document object, not an editor-only cheat: it appears in
+	# the outliner, the inspector and the render with shadows deliberately off.
+	var fill := _add_light_data("Fill Light", "omni", Vector3(2.6, 2.2, 3.0), Vector3.ZERO, false)
+	fill["light_energy"] = 0.35
+	fill["light_range"] = 7.0
+	fill["light_shadow"] = false
+	_spawn_refresh(str(fill["id"]))
 	var cube := _add_primitive_data("Cube", "box", Vector3(0.0, 0.5, 0.0), false)
 	selected_id = str(cube["id"])
 	_add_default_keys_for_cube(str(cube["id"]))
+	_sync_sun_sky_mode()
 
 func _build_study() -> void:
 	_add_camera_data("Main Camera", Vector3(5.2, 3.5, 6.4), Vector3(0.0, 0.8, 0.0), false)
@@ -398,10 +409,12 @@ func _build_study() -> void:
 	fill["light_energy"] = 0.5
 	fill["light_color"] = "#D0D0D0"
 	fill["light_range"] = 9.0
+	fill["light_shadow"] = false
 	_spawn_refresh(str(fill["id"]))
 	var rim := _add_light_data("Rim Light", "omni", Vector3(-2.4, 2.7, -2.2), Vector3.ZERO, false)
 	rim["light_energy"] = 1.2
 	rim["light_color"] = "#E6E6E6"
+	rim["light_shadow"] = false
 	_spawn_refresh(str(rim["id"]))
 	var sphere := _add_primitive_data("Form", "sphere", Vector3(0.0, 1.0, 0.0), false)
 	sphere["color"] = "#B8B8B8"
@@ -524,6 +537,8 @@ func _spawn_object(obj: Dictionary) -> void:
 		# Reapply the saved overrides after the model loads, on fresh imports and
 		# on project load / undo alike.
 		_apply_import_part_visibility(node, obj)
+	if kind == "light":
+		_sync_sun_sky_mode()
 	if rig_system != null:
 		rig_system.on_object_spawned(obj, node)
 	object_spawned.emit(id, node)
@@ -578,17 +593,20 @@ func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	light.light_energy = float(obj.get("light_energy", 1.2))
 	light.light_color = _hex_color(str(obj.get("light_color", "#F0F0F0")))
 	light.light_specular = 0.55
-	_configure_shadows(light)
+	_configure_shadows(light, obj)
 	node.add_child(light)
 	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.46, 0.46, 0.46))
 
-func _configure_shadows(light: Light3D) -> void:
+func _configure_shadows(light: Light3D, obj: Dictionary = {}) -> void:
 	## Shadow quality is driven by the graphics preferences. Directional lights
 	## get cascaded splits, a filtered soft edge and a physical angular size so
-	## the PCSS path produces real penumbrae instead of a hard cutout.
+	## the PCSS path produces real penumbrae instead of a hard cutout. The
+	## document's `light_shadow` flag is honoured here so a fill light can stay
+	## honest about not casting.
 	if light == null:
 		return
-	light.shadow_enabled = true
+	light.shadow_enabled = bool(obj.get("light_shadow", true))
+	light.shadow_opacity = 0.55
 	light.shadow_bias = 0.022
 	light.shadow_normal_bias = 0.9
 	light.shadow_blur = 1.05
@@ -616,7 +634,33 @@ func apply_graphics() -> void:
 			continue
 		var light := node.get_node_or_null("Light") as Light3D
 		if light != null:
-			_configure_shadows(light)
+			_configure_shadows(light, get_object(str(id)))
+	_sync_sun_sky_mode()
+
+## Exactly one visible directional light feeds the procedural sky. The first
+## in document order with positive energy owns SKY_MODE_LIGHT_AND_SKY; every
+## other directional light is scene-only, so no second disc can appear and the
+## disc disappears when no directional light contributes.
+func _sync_sun_sky_mode() -> void:
+	var assigned := false
+	for obj in objects:
+		if str(obj.get("kind", "")) != "light":
+			continue
+		if str(obj.get("light_type", "")) != "directional":
+			continue
+		var node: Node3D = nodes.get(str(obj.get("id", "")))
+		if node == null:
+			continue
+		var light := node.get_node_or_null("Light") as DirectionalLight3D
+		if light == null:
+			continue
+		var visible := bool(obj.get("visible", true))
+		var energy := float(obj.get("light_energy", 1.2))
+		if not assigned and visible and energy > 0.0:
+			light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_AND_SKY
+			assigned = true
+		else:
+			light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 
 func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 	var rel := str(obj.get("model", ""))
@@ -769,10 +813,13 @@ func _apply_visual_properties(node: Node3D, obj: Dictionary) -> void:
 			light.light_color = _hex_color(str(obj.get("light_color", "#F0F0F0")))
 			if light is OmniLight3D:
 				(light as OmniLight3D).omni_range = float(obj.get("light_range", 8.0))
+			_configure_shadows(light, obj)
 	elif kind == "camera":
 		var camera := node.get_node_or_null("Camera") as Camera3D
 		if camera != null:
 			camera.fov = clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
+	if kind == "light":
+		_sync_sun_sky_mode()
 	if rig_system != null:
 		rig_system.on_object_properties(obj, node)
 
@@ -1001,6 +1048,8 @@ func set_object_visible(id: String, visible: bool) -> void:
 	var node: Node3D = nodes.get(id)
 	if node != null:
 		node.visible = visible
+	if str(obj.get("kind", "")) == "light":
+		_sync_sun_sky_mode()
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
