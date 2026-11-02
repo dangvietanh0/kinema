@@ -200,3 +200,40 @@ sheet). Commit locally; no push; no subagents.
 Handoff must list: commits, suite counts, capture paths, residual risks, and
 the exact CI/device checks still needed (Forward+ boot/fallback, 4K encode,
 MP4 quality, hierarchy chevron on device, timeline pan).
+
+## 10. Final whole-branch review findings folded into this wave
+
+The whole-branch review of `bee2d48..fe9ad71` found no critical issues, two
+important defects and six minor findings. They are assigned to the workstream
+that already owns the code, so this wave does not need a separate fix round.
+
+- **I1 (timeline touch state)** → W2, mandatory. A two-finger pan/pinch that
+  starts with one finger on the ruler or a key must not seek, pause, retime a
+  key or leave an edit open. Snapshot time/playback/pending edit on touch
+  down; a second touch restores the time, resumes playback and cancels the
+  pending edit. Tests must assert time, playback and edit state, including a
+  gesture that starts on a key row.
+- **I2 (project renderer label)** → W1, mandatory. Both renderer surfaces must
+  use the mobile feature override, not the base project setting, and must show
+  the effective backend. Add a test that the `mobile` feature set resolves to
+  `mobile`.
+- **M1 (blocked switch clobbers preference)** → W1. A blocked switch leaves
+  the stored preference untouched; test the exact prior value.
+- **M2 (first-run sanitize reason, dead error)** → W1. An empty preference is
+  unset, not unsupported: map it to the platform default with no error. Show
+  `last_renderer_error` in the renderer sheet/settings after a fallback instead
+  of leaving it unread.
+- **M3 (horizontal wheel misroute)** → W2. Wheel-left/right pans the time
+  window instead of starting a scrub. Add a regression test.
+- **M4 (budget tests echo the formula)** → W2. Replace live recomputation
+  with literal breakpoint assertions at independent stage heights and document
+  floor precedence.
+- **M5 (196 dp part-name truncation)** → W4. Part names get a tooltip with the
+  full name and the 196 dp width is tested for no overflow.
+- **M6 (nav bottom tip occluded)** → W2. The nav gizmo sits above the 56 dp
+  folded transport strip so all three tips remain tappable; add a hit test.
+- U2-1, R1, R3, R4 and the older ledger minors stay deferred: none has a
+  production caller or blocks this wave.
+- Physical device checks remain unverified and must be listed in the handoff:
+  Forward+ boot/fallback, 4K profile/VBR encode, MP4 quality, hierarchy
+  chevron, timeline pan two-finger state, nav tips.
