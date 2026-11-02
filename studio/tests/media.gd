@@ -21,6 +21,9 @@ const MediaImportSheet = preload("res://src/ui/media_import_sheet.gd")
 
 const PROJECT_DIR := "user://media_ws_b_project"
 const FIXTURE_DIR := "user://media_ws_b_fixtures"
+const MP4_CAPTURE_DIR := "/tmp/opencode/wave2-mp4-captures"
+const REASON_4K := "This device's encoder does not advertise 4K H.264."
+const REASON_1440P := "This device's encoder does not advertise 1440p H.264."
 
 var _failures: Array[String] = []
 var _oks := 0
@@ -57,7 +60,10 @@ func _ready() -> void:
 	await _test_gif()
 	await _test_render_and_camera()
 	await _test_android_backend()
+	await _test_mp4_quality()
 	await _test_ui()
+	if _capture_requested():
+		await _capture_mp4_sheet()
 
 	var status := "PASS" if _failures.is_empty() else "FAIL"
 	print("MEDIA RESULT: %s (%d OK, %d FAIL)" % [status, _oks, _failures.size()])
@@ -743,6 +749,295 @@ func _test_android_backend() -> void:
 
 
 # -------------------------------------------------------------------------
+# MP4 quality presets, gating and manifest
+# -------------------------------------------------------------------------
+
+func _mp4_capabilities(four_k: bool, fourteen_forty: bool) -> Dictionary:
+	return {
+		"supported": true,
+		"reason": "",
+		"avc": "video/avc",
+		"aac": [44100, 48000],
+		"max_width": 3840 if four_k else (2560 if fourteen_forty else 1920),
+		"max_height": 2160 if four_k else (1440 if fourteen_forty else 1080),
+		"supports_4k": four_k,
+		"supports_1440p": fourteen_forty,
+		"supports_high_profile": true,
+		"supports_vbr": true,
+	}
+
+
+func _find_option_index(option: OptionButton, label: String) -> int:
+	for index in range(option.item_count):
+		if option.get_item_text(index) == label:
+			return index
+	return -1
+
+
+func _test_mp4_quality() -> void:
+	print("MEDIA STEP: MP4 quality presets and gating")
+	var sheet: Variant = MediaExportSheet.new()
+	sheet.setup(_doc, null)
+	add_child(sheet)
+	var required := [
+		"quality_presets", "quality", "set_quality", "quality_controls_visible",
+		"quality_button", "quality_reason_text", "set_capabilities", "set_resolution",
+		"set_fps", "set_bitrate", "estimate_text", "resolution_option",
+		"resolution_disabled_reason",
+	]
+	var missing: Array[String] = []
+	for method in required:
+		if not sheet.has_method(method):
+			missing.append(method)
+	if not missing.is_empty():
+		for method in missing:
+			_check(false, "media export sheet exposes %s()" % method)
+		_test_mp4_backend_contract()
+		return
+	sheet.set_capabilities(_mp4_capabilities(true, true))
+	sheet.set_format("mp4")
+	await get_tree().process_frame
+
+	# 1. Preset table exact values.
+	var presets: Dictionary = sheet.quality_presets()
+	_check(sheet.bitrate_options() == [4, 8, 12, 20, 30, 40, 60, 80], "the bitrate list adds 30/40/60/80 Mbps to the existing entries")
+	_check(sheet.resolution_sizes().has(Vector2i(3840, 2160)), "the resolution list adds 3840 × 2160")
+	_check(presets.keys().size() == 3 and presets.has("standard") and presets.has("high") and presets.has("master"), "quality presets are Standard, High and Master")
+	var standard: Dictionary = presets.get("standard", {})
+	_check(standard.get("label", "") == "Standard", "Standard preset is labelled Standard")
+	_check(standard.get("size", Vector2i.ZERO) == Vector2i(1920, 1080), "Standard is 1920 × 1080")
+	_check(int(standard.get("fps", 0)) == 30, "Standard is 30 fps")
+	_check(int(standard.get("bitrate", 0)) == 16000000, "Standard is 16 Mbps in bits per second")
+	_check(int(standard.get("msaa", -1)) == 1, "Standard uses the 2× MSAA viewport index")
+	_check(int(standard.get("audio_bitrate", 0)) == 192000, "Standard uses 192 kbps AAC")
+	var high: Dictionary = presets.get("high", {})
+	_check(high.get("size", Vector2i.ZERO) == Vector2i(2560, 1440), "High is 2560 × 1440")
+	_check(int(high.get("fps", 0)) == 60, "High is 60 fps")
+	_check(int(high.get("bitrate", 0)) == 40000000, "High is 40 Mbps in bits per second")
+	_check(int(high.get("msaa", -1)) == 2, "High uses the 4× MSAA viewport index")
+	_check(int(high.get("audio_bitrate", 0)) == 256000, "High uses 256 kbps AAC")
+	var master: Dictionary = presets.get("master", {})
+	_check(master.get("size", Vector2i.ZERO) == Vector2i(3840, 2160), "Master is 3840 × 2160")
+	_check(int(master.get("fps", 0)) == 60, "Master is 60 fps")
+	_check(int(master.get("bitrate", 0)) == 80000000, "Master is 80 Mbps in bits per second")
+	_check(int(master.get("msaa", -1)) == 2, "Master uses the 4× MSAA viewport index")
+	_check(int(master.get("audio_bitrate", 0)) == 256000, "Master uses 256 kbps AAC")
+
+	# 2. build_options carries quality, msaa and audio bitrate per preset.
+	_check(sheet.quality() == "standard", "choosing MP4 applies Standard when no preset was chosen")
+	var standard_options: Dictionary = sheet.build_options()
+	_check(str(standard_options.get("quality", "")) == "standard", "build_options carries the Standard quality id")
+	_check(int(standard_options.get("msaa", -1)) == 1, "build_options carries the Standard MSAA index")
+	_check(int(standard_options.get("audio_bitrate", 0)) == 192000, "build_options carries the Standard audio bitrate")
+	_check(int(standard_options.get("width", 0)) == 1920 and int(standard_options.get("height", 0)) == 1080, "Standard options are 1920 × 1080")
+	_check(int(standard_options.get("fps", 0)) == 30, "Standard options are 30 fps")
+	_check(int(standard_options.get("bitrate", 0)) == 16000000, "Standard options are 16 Mbps")
+
+	sheet.set_quality("high")
+	var high_options: Dictionary = sheet.build_options()
+	_check(str(high_options.get("quality", "")) == "high", "build_options carries the High quality id")
+	_check(int(high_options.get("msaa", -1)) == 2 and int(high_options.get("audio_bitrate", 0)) == 256000, "High options carry 4× MSAA and 256 kbps")
+	_check(int(high_options.get("width", 0)) == 2560 and int(high_options.get("height", 0)) == 1440, "High options are 2560 × 1440")
+	_check(int(high_options.get("fps", 0)) == 60 and int(high_options.get("bitrate", 0)) == 40000000, "High options are 60 fps at 40 Mbps")
+
+	sheet.set_quality("master")
+	var master_options: Dictionary = sheet.build_options()
+	_check(str(master_options.get("quality", "")) == "master", "build_options carries the Master quality id")
+	_check(int(master_options.get("msaa", -1)) == 2 and int(master_options.get("audio_bitrate", 0)) == 256000, "Master options carry 4× MSAA and 256 kbps")
+	_check(int(master_options.get("width", 0)) == 3840 and int(master_options.get("height", 0)) == 2160, "Master options are 3840 × 2160")
+	_check(int(master_options.get("fps", 0)) == 60 and int(master_options.get("bitrate", 0)) == 80000000, "Master options are 60 fps at 80 Mbps")
+
+	sheet.set_quality("high")
+	sheet.set_fps(24)
+	_check(sheet.quality() == "custom", "changing fps switches the preset to Custom")
+	_check(int(sheet.build_options().get("fps", 0)) == 24, "the Custom options keep the chosen fps")
+	_check(int(sheet.build_options().get("audio_bitrate", 0)) == 192000, "Custom falls back to the 192 kbps AAC bitrate")
+	sheet.set_quality("master")
+	sheet.set_bitrate(20)
+	_check(sheet.quality() == "custom", "changing bitrate switches the preset to Custom")
+	_check(int(sheet.build_options().get("bitrate", 0)) == 20000000, "the Custom options keep the chosen bitrate")
+	sheet.set_quality("standard")
+	sheet.set_resolution(Vector2i(1280, 720))
+	_check(sheet.quality() == "custom", "changing resolution switches the preset to Custom")
+	_check(int(sheet.build_options().get("width", 0)) == 1280, "the Custom options keep the chosen resolution")
+
+	# 3. Quality controls are MP4-only.
+	sheet.set_quality("standard")
+	_check(sheet.quality_controls_visible(), "the quality row is visible for MP4")
+	for quality_id in ["standard", "high", "master"]:
+		var button: Button = sheet.quality_button(quality_id)
+		_check(button != null and button.get_combined_minimum_size().y >= 43.5, "the %s quality target is at least 44 dp" % quality_id)
+	sheet.set_format("png")
+	await get_tree().process_frame
+	_check(not sheet.quality_controls_visible(), "the quality row is hidden for PNG")
+	var png_options: Dictionary = sheet.build_options()
+	_check(not png_options.has("quality") and not png_options.has("msaa") and not png_options.has("audio_bitrate"), "PNG options do not gain the MP4 quality keys")
+	sheet.set_format("gif")
+	await get_tree().process_frame
+	_check(not sheet.quality_controls_visible(), "the quality row is hidden for GIF")
+	var gif_options: Dictionary = sheet.build_options()
+	_check(not gif_options.has("quality") and not gif_options.has("msaa") and not gif_options.has("audio_bitrate"), "GIF options do not gain the MP4 quality keys")
+	sheet.set_format("camera")
+	await get_tree().process_frame
+	_check(not sheet.quality_controls_visible(), "the quality row is hidden for the camera track")
+	var camera_options: Dictionary = sheet.build_options()
+	_check(not camera_options.has("quality") and not camera_options.has("msaa") and not camera_options.has("audio_bitrate"), "camera options do not gain the MP4 quality keys")
+
+	# 5. 4K and 1440p gating with the exact reasons.
+	var gated: Variant = MediaExportSheet.new()
+	gated.setup(_doc, null)
+	add_child(gated)
+	gated.set_capabilities(_mp4_capabilities(false, true))
+	gated.set_format("mp4")
+	await get_tree().process_frame
+	gated.set_quality("master")
+	_check(gated.quality() == "high", "Master falls back to High when 4K is unavailable")
+	_check(gated.quality_reason_text().contains(REASON_4K), "the 4K refusal caption uses the exact reason")
+	_check(gated.quality_reason_text().contains("High"), "the 4K refusal caption says Master falls back to High")
+	var gated_option: OptionButton = gated.resolution_option()
+	var four_k_index := _find_option_index(gated_option, "3840 × 2160")
+	_check(four_k_index >= 0, "the resolution list includes 3840 × 2160")
+	_check(gated_option.is_item_disabled(four_k_index), "4K is disabled when the encoder does not advertise it")
+	_check(gated_option.get_popup().get_item_tooltip(four_k_index) == REASON_4K, "the disabled 4K option tooltip uses the exact reason")
+	_check(gated.resolution_disabled_reason(Vector2i(3840, 2160)) == REASON_4K, "the sheet exposes the exact 4K disabled reason")
+	_check(gated.quality_button("master").disabled, "the Master segment is disabled without 4K support")
+
+	var standard_only: Variant = MediaExportSheet.new()
+	standard_only.setup(_doc, null)
+	add_child(standard_only)
+	standard_only.set_capabilities(_mp4_capabilities(false, false))
+	standard_only.set_format("mp4")
+	await get_tree().process_frame
+	standard_only.set_quality("high")
+	_check(standard_only.quality() == "standard", "High falls back to Standard when 1440p is unavailable")
+	_check(standard_only.quality_reason_text().contains(REASON_1440P), "the 1440p refusal caption uses the exact reason")
+	_check(standard_only.quality_reason_text().contains("Standard"), "the 1440p refusal caption says High falls back to Standard")
+
+	standard_only.set_capabilities(_mp4_capabilities(true, true))
+	standard_only.set_quality("master")
+	_check(standard_only.quality() == "master", "Master is selectable when 4K is advertised")
+	var enabled_option: OptionButton = standard_only.resolution_option()
+	var enabled_index := _find_option_index(enabled_option, "3840 × 2160")
+	_check(enabled_index >= 0 and not enabled_option.is_item_disabled(enabled_index), "4K is selectable when the encoder advertises it")
+	_check(standard_only.quality_button("master").disabled == false, "the Master segment is enabled with 4K support")
+
+	# 6. Estimate from the video bitrate, labelled video-only.
+	standard_only.set_quality("standard")
+
+	standard_only.set_quality("master")
+	_check(standard_only.estimate_text() == "~600 MB/min video only", "the estimate is derived from 80 Mbps and labelled video-only")
+
+	_test_mp4_backend_contract()
+
+
+func _test_mp4_backend_contract() -> void:
+	# 4. Unavailable capability shape and manifest audio bitrate.
+	var backend := AndroidVideo.new()
+	var unavailable: Dictionary = backend.capabilities()
+	_check(not bool(unavailable.get("supported", true)), "capabilities stay unsupported on Linux")
+	_check(str(unavailable.get("reason", "")) == AndroidVideo.REASON, "unavailable capabilities keep the exact reason")
+	for key in ["supports_4k", "supports_1440p", "supports_high_profile", "supports_vbr"]:
+		_check(unavailable.has(key) and bool(unavailable.get(key)) == false, "unavailable capabilities include %s = false" % key)
+	var manifest_192: Dictionary = backend.build_manifest({
+		"width": 1920, "height": 1080, "fps": 30, "start": 0.0, "end": 2.0,
+		"bitrate": 16000000, "audio_bitrate": 192000, "frame_dir": "/tmp/frames", "audio": [],
+	})
+	_check(int(manifest_192.get("audioBitrate", 0)) == 192000, "manifest carries the 192 kbps audio bitrate")
+	_check(int(manifest_192.get("bitrate", 0)) == 16000000, "manifest keeps the video bitrate in bits per second")
+	var manifest_256: Dictionary = backend.build_manifest({
+		"width": 2560, "height": 1440, "fps": 60, "start": 0.0, "end": 2.0,
+		"bitrate": 40000000, "audio_bitrate": 256000, "frame_dir": "/tmp/frames", "audio": [],
+	})
+	_check(int(manifest_256.get("audioBitrate", 0)) == 256000, "manifest carries the 256 kbps audio bitrate")
+	var manifest_default: Dictionary = backend.build_manifest({
+		"width": 1920, "height": 1080, "fps": 30, "start": 0.0, "end": 2.0,
+		"frame_dir": "/tmp/frames", "audio": [],
+	})
+	_check(int(manifest_default.get("audioBitrate", 0)) == 192000, "manifest defaults the audio bitrate to 192 kbps")
+
+	# 7. The editor seam passes msaa and the audio bitrate without running the
+	# Android encoder on Linux.
+	var editor_script: Variant = load("res://src/app/editor.gd")
+	var has_seam := false
+	if editor_script != null:
+		for info in editor_script.get_script_method_list():
+			if str(info.get("name", "")) == "mp4_frame_options":
+				has_seam = true
+	_check(has_seam, "editor exposes the MP4 renderer-option seam")
+	if has_seam:
+		var frame_options: Dictionary = editor_script.mp4_frame_options({
+			"width": 2560, "height": 1440, "fps": 60, "start": 0.5, "end": 4.5, "msaa": 2,
+		}, 9.0)
+		_check(int(frame_options.get("msaa", -1)) == 2, "editor passes the 4× MSAA index into the renderer options")
+		_check(int(frame_options.get("width", 0)) == 2560 and int(frame_options.get("fps", 0)) == 60, "editor keeps the preset size and fps in the renderer options")
+		var manifest_options: Dictionary = editor_script.mp4_manifest_options({
+			"width": 3840, "height": 2160, "fps": 60, "bitrate": 80000000, "audio_bitrate": 256000,
+		})
+		_check(int(manifest_options.get("audio_bitrate", 0)) == 256000, "editor passes the selected audio bitrate through to the manifest")
+		_check(int(manifest_options.get("bitrate", 0)) == 80000000, "editor keeps the video bitrate in bits per second")
+
+	# 8. Static Java regression guards. The Java path is never compiled or run
+	# on Linux; these only catch accidental removal of the contract.
+	var root := ProjectSettings.globalize_path("res://").simplify_path().get_base_dir()
+	var java_source := FileAccess.get_file_as_string(root.path_join("studio/android/app/java/studio/kinema/media/KinemaVideoEncoder.java"))
+	for needle in ["MediaFormat.KEY_PROFILE", "MediaFormat.KEY_LEVEL", "MediaFormat.KEY_BITRATE_MODE",
+			"BITRATE_MODE_VBR", "AVCProfileHigh", "audioBitrate", "retry once"]:
+		_check(java_source.contains(needle), "KinemaVideoEncoder keeps " + needle)
+	_check(java_source.contains("supportsVbr("), "KinemaVideoEncoder gates VBR on the advertised bitrate modes")
+	_check(java_source.contains("MediaFormat.KEY_I_FRAME_INTERVAL, 1"), "KinemaVideoEncoder keeps a one second I-frame interval")
+
+
+# -------------------------------------------------------------------------
+# MP4 sheet capture (run with `-- --capture`; needs a real window)
+# -------------------------------------------------------------------------
+
+func _capture_requested() -> bool:
+	return OS.get_cmdline_user_args().has("--capture")
+
+
+func _capture_mp4_sheet() -> void:
+	if DisplayServer.get_name() == "headless":
+		print("MEDIA CAPTURE: skipped, headless cannot read the window texture")
+		return
+	DirAccess.make_dir_recursive_absolute(MP4_CAPTURE_DIR)
+	get_window().size = Vector2i(915, 412)
+	await get_tree().process_frame
+	# The suite leaves its other sheets mounted. Hide them so the capture shows
+	# the MP4 sheet and its quality row, not stacked test fixtures.
+	for child in get_children():
+		if child is CanvasItem:
+			child.visible = false
+	var stage := Control.new()
+	stage.name = "Mp4SheetStage"
+	stage.size = Vector2(get_window().size)
+	stage.position = Vector2.ZERO
+	add_child(stage)
+	var panel := PanelContainer.new()
+	panel.position = Vector2(12, 12)
+	panel.size = Vector2(stage.size) - Vector2(24, 24)
+	panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
+	stage.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.size = panel.size
+	panel.add_child(scroll)
+	var sheet: Variant = MediaExportSheet.new()
+	sheet.setup(_doc, null)
+	sheet.set_capabilities(_mp4_capabilities(true, true))
+	sheet.set_format("mp4")
+	sheet.set_quality("master")
+	sheet.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sheet.custom_minimum_size.x = 867
+	scroll.add_child(sheet)
+	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var image: Image = get_viewport().get_texture().get_image()
+	if image != null:
+		image.save_png(MP4_CAPTURE_DIR.path_join("mp4-sheet-915x412.png"))
+		print("MEDIA CAPTURE: %s" % MP4_CAPTURE_DIR.path_join("mp4-sheet-915x412.png"))
+
+
+# -------------------------------------------------------------------------
 # UI
 # -------------------------------------------------------------------------
 
@@ -815,7 +1110,7 @@ func _test_ui() -> void:
 	export_sheet.setup(_doc, null)
 	add_child(export_sheet)
 	await get_tree().process_frame
-	_check(export_sheet.resolution_sizes() == [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440)], "export sheet offers the three exact sizes")
+	_check(export_sheet.resolution_sizes() == [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160)], "export sheet offers the four exact sizes")
 	_check(export_sheet.gif_fps_options() == [12, 24, 30], "GIF fps options are 12/24/30")
 	_check(export_sheet.gif_disabled_reason(60) == "GIF timing is centisecond-based; 60 fps cannot be represented", "export sheet explains the disabled GIF 60 fps")
 	_check(export_sheet.mp4_reason() == AndroidVideo.REASON, "export sheet explains the unavailable MP4 backend")
