@@ -100,15 +100,33 @@ func _load_capabilities() -> void:
 	_capabilities = AndroidVideo.new().capabilities()
 
 
+## Resolve a requested preset through the whole ordered capability chain:
+## Master → 4K ? Master : 1440p ? High : Standard; High → 1440p ? High :
+## Standard. Both the capability-change path and a direct choice use this.
+func _resolved_quality(id: String) -> String:
+	if id == "master":
+		if supports_4k():
+			return "master"
+		return "high" if supports_1440p() else "standard"
+	if id == "high":
+		return "high" if supports_1440p() else "standard"
+	return id
+
+
+func _quality_label(id: String) -> String:
+	var preset: Dictionary = QUALITY_PRESETS.get(id, {})
+	return str(preset.get("label", ""))
+
+
 ## Inject the launcher's capability result. The editor probes the real
 ## backend; tests use this seam to prove gating without a MediaCodec device.
 func set_capabilities(caps: Dictionary) -> void:
 	_capabilities = caps.duplicate(true)
 	_capabilities_loaded = true
-	if _quality == "master" and not supports_4k():
-		_apply_preset("high")
-	elif _quality == "high" and not supports_1440p():
-		_apply_preset("standard")
+	if _quality in QUALITY_IDS:
+		var resolved := _resolved_quality(_quality)
+		if resolved != _quality:
+			_apply_preset(resolved)
 	_rebuild()
 
 
@@ -192,7 +210,7 @@ func quality_reason_text() -> String:
 		return ""
 	var parts: Array[String] = []
 	if not supports_4k():
-		parts.append(REASON_4K + " Master falls back to High.")
+		parts.append(REASON_4K + " Master falls back to %s." % _quality_label(_resolved_quality("master")))
 	if not supports_1440p():
 		parts.append(REASON_1440P + " High falls back to Standard.")
 	return " ".join(parts)
@@ -216,12 +234,7 @@ func set_quality(id: String) -> void:
 	if not id in QUALITY_IDS:
 		return
 	_quality_chosen = true
-	if id == "master" and not supports_4k():
-		_apply_preset("high")
-	elif id == "high" and not supports_1440p():
-		_apply_preset("standard")
-	else:
-		_apply_preset(id)
+	_apply_preset(_resolved_quality(id))
 	_rebuild()
 
 

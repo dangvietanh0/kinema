@@ -934,6 +934,31 @@ func _test_mp4_quality() -> void:
 	_check(enabled_index >= 0 and not enabled_option.is_item_disabled(enabled_index), "4K is selectable when the encoder advertises it")
 	_check(standard_only.quality_button("master").disabled == false, "the Master segment is enabled with 4K support")
 
+	# The capability-change path resolves the whole fallback chain, not one
+	# step: a device that loses 4K and 1440p cannot keep an unsupported 1440p
+	# preset. The applied preset, options, caption and buttons agree.
+	standard_only.set_capabilities(_mp4_capabilities(true, true))
+	standard_only.set_quality("master")
+	_check(standard_only.quality() == "master", "Master is the starting preset with full capabilities")
+	standard_only.set_capabilities(_mp4_capabilities(false, false))
+	_check(standard_only.quality() == "standard",
+		"a capability drop resolves Master through High to Standard")
+	var transitive_options: Dictionary = standard_only.build_options()
+	_check(int(transitive_options.get("width", 0)) == 1920 and int(transitive_options.get("height", 0)) == 1080,
+		"the transitive fallback writes 1920 × 1080 options")
+	_check(standard_only.quality_reason_text().contains("Master falls back to Standard"),
+		"the caption names the transitive Master fallback")
+	standard_only.set_capabilities(_mp4_capabilities(true, false))
+	standard_only.set_capabilities(_mp4_capabilities(true, true))
+	standard_only.set_quality("master")
+	standard_only.set_capabilities(_mp4_capabilities(true, false))
+	_check(standard_only.quality() == "master",
+		"Master stays selectable when 4K is advertised without 1440p")
+	standard_only.set_quality("high")
+	_check(standard_only.quality() == "standard",
+		"High still falls back to Standard when 1440p is unavailable")
+	standard_only.set_capabilities(_mp4_capabilities(true, true))
+
 	# 6. Estimate from the video bitrate, labelled video-only.
 	standard_only.set_quality("standard")
 
