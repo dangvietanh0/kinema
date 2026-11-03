@@ -419,6 +419,24 @@ func _ready() -> void:
 			"915x412 More stays inside the 46 percent cap")
 		_check(editor._media_lanes.visible,
 			"915x412 More reveals the folded media header")
+		_check(editor._clip_lane.visible,
+			"915x412 More reveals the folded clip lane")
+		var lane_scroll = editor.get("_lane_scroll")
+		_check(lane_scroll != null and lane_scroll.visible,
+			"915x412 More mounts the lanes inside a scroll viewport")
+		if lane_scroll != null:
+			var lane_bar: VScrollBar = lane_scroll.get_v_scroll_bar()
+			_check(lane_bar.max_value > lane_bar.page,
+				"915x412 More makes the lane stack scrollable")
+			lane_scroll.scroll_vertical = int(lane_bar.max_value)
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_check(editor._media_lanes.is_visible_in_tree() and
+				editor._media_lanes.get_global_rect().position.y < lane_scroll.get_global_rect().end.y and
+				editor._media_lanes.get_global_rect().end.y > lane_scroll.get_global_rect().position.y,
+				"915x412 scrolling the lane stack reaches the media header")
+			lane_scroll.scroll_vertical = 0
+			await get_tree().process_frame
 		# Key-step navigation must stay reachable at 915x412. The transport
 		# keeps the pair because this surface is wide enough for it, with the
 		# normal 44 dp touch target.

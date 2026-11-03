@@ -1632,19 +1632,26 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var lane = editor.get("_clip_lane")
-	_check(lane != null, "the clip lane mounts above the dope sheet")
+	_check(lane != null, "the clip lane mounts in the lane stack")
 	var media_lanes = editor.get("_media_lanes")
-	_check(media_lanes != null, "media lanes mount below the dope sheet")
+	_check(media_lanes != null, "media lanes mount in the lane stack")
 	var stack = editor.get("_timeline_stack")
-	_check(stack != null, "the timeline panel stacks clip lane, dope sheet and media lanes")
+	_check(stack != null, "the timeline panel stacks the dope sheet over the lane stack")
+	var lane_scroll = editor.get("_lane_scroll")
+	var lane_body = editor.get("_lane_body")
 	if lane != null and media_lanes != null and stack != null:
 		var stack_kids: Array = stack.get_children()
-		_check(stack_kids.has(lane) and stack_kids.has(editor._timeline) and stack_kids.has(media_lanes),
-			"clip lane, dope sheet and media lanes share one stack")
-		var lane_at: int = stack_kids.find(lane)
-		var sheet_at: int = stack_kids.find(editor._timeline)
-		var media_at: int = stack_kids.find(media_lanes)
-		_check(lane_at < sheet_at and sheet_at < media_at, "clip lane sits above the sheet and media lanes below it")
+		_check(stack_kids.has(editor._timeline) and stack_kids.has(lane_scroll),
+			"the dope sheet and the lane stack share one column")
+		if lane_scroll != null:
+			_check(stack_kids.find(editor._timeline) < stack_kids.find(lane_scroll),
+				"the dope sheet sits above the lane stack")
+		if lane_scroll != null and lane_body != null:
+			var lane_kids: Array = lane_body.get_children()
+			_check(lane_kids.has(lane) and lane_kids.has(media_lanes),
+				"clip lane and media lanes share one scrollable lane stack")
+			_check(lane_kids.find(lane) < lane_kids.find(media_lanes),
+				"the clip lane sits above the media lanes")
 		_check(lane.doc == doc, "the clip lane reads the adopted document")
 		_check(media_lanes._doc == doc, "media lanes read the adopted document")
 	if lane != null:

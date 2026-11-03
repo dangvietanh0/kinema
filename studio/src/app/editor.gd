@@ -105,6 +105,8 @@ var _video_overlay: Control
 var _timeline_panel: PanelContainer
 var _timeline_frame: VBoxContainer
 var _timeline_stack: VBoxContainer
+var _lane_scroll: ScrollContainer
+var _lane_body: VBoxContainer
 var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
 var _media_lanes: VBoxContainer
@@ -464,19 +466,14 @@ func _build_timeline() -> void:
 	_timeline_frame.add_theme_constant_override("separation", 0)
 	_timeline_panel.add_child(_timeline_frame)
 
-	# The timeline area is now three stacked surfaces: the sequence clip lane
-	# on top, the single-object dope sheet below it and the media lanes under
-	# that. One stack keeps the folding maths in one place.
+	# The timeline area is two stacked surfaces: the dope sheet (whose transport
+	# is mounted below) and one lane stack. The lane stack holds the clip lane
+	# and the media lanes inside a scroll viewport, so More can reveal both even
+	# when the 46 percent cap cannot fit their natural heights.
 	_timeline_stack = VBoxContainer.new()
 	_timeline_stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline_stack.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_timeline_frame.add_child(_timeline_stack)
-
-	_clip_lane = ClipLaneScript.new()
-	_clip_lane.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	_clip_lane.notice.connect(_on_timeline_notice)
-	_clip_lane.sheet_requested.connect(_on_lane_sheet_requested)
-	_timeline_stack.add_child(_clip_lane)
 
 	_timeline = TimelineScript.new()
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -487,6 +484,24 @@ func _build_timeline() -> void:
 	_timeline.duration_row_changed.connect(_on_timeline_duration_row_changed)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
 	_timeline_stack.add_child(_timeline)
+
+	_lane_scroll = ScrollContainer.new()
+	_lane_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_lane_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_lane_scroll.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_lane_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_timeline_stack.add_child(_lane_scroll)
+
+	_lane_body = VBoxContainer.new()
+	_lane_body.add_theme_constant_override("separation", int(Kit.GUTTER))
+	_lane_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lane_scroll.add_child(_lane_body)
+
+	_clip_lane = ClipLaneScript.new()
+	_clip_lane.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_clip_lane.notice.connect(_on_timeline_notice)
+	_clip_lane.sheet_requested.connect(_on_lane_sheet_requested)
+	_lane_body.add_child(_clip_lane)
 
 	_media_lanes = MediaLanesScript.new()
 	_media_lanes.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
@@ -501,7 +516,7 @@ func _build_timeline() -> void:
 	_media_lanes.set_collapsed(true)
 	if doc != null:
 		_media_lanes.setup(doc)
-	_timeline_stack.add_child(_media_lanes)
+	_lane_body.add_child(_media_lanes)
 
 	# The transport is one instance owned by the timeline; mount it below the
 	# stack instead of building a second row.
@@ -1713,6 +1728,9 @@ func _sync_timeline_visibility() -> void:
 			_media_lanes.fit_height(-1.0)
 		if _clip_lane != null:
 			_clip_lane.visible = false
+		if _lane_scroll != null:
+			_lane_scroll.visible = false
+			_lane_scroll.custom_minimum_size.y = 0.0
 		_set_timeline_overlay_height(FOLDED_TIMELINE)
 		_sync_nav_gizmo_inset(FOLDED_TIMELINE)
 		return
@@ -1736,39 +1754,73 @@ func _sync_timeline_visibility() -> void:
 	var show_media := _media_lanes != null
 	var lane_part := 0.0
 	var media_part := 0.0
-	# Room left next to the transport row and the preferred sheet.
-	var room := budget - FOLDED_TIMELINE - tl_content
-	if room >= lane_min + media_want:
-		lane_part = lane_min
-		media_part = media_want
-	elif room >= lane_min + 44.0:
-		lane_part = lane_min
-		media_part = 44.0
-	elif room >= 44.0:
-		show_lane = false
-		media_part = minf(media_want, room)
-	else:
-		# The preferred sheet is unaffordable: keep the header folded, drop
-		# the sequence lane and shrink the sheet to its 48 dp floor so the
-		# collapsed media header gets one more chance.
-		show_lane = false
-		var floor_room := budget - FOLDED_TIMELINE - 48.0
-		if floor_room >= 44.0:
-			_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
-			media_part = minf(media_want, floor_room)
+	var lane_total := 0.0
+	var more_lanes := false
+	if _timeline_more:
+		# The explicit More state must mount both lanes. The sheet keeps its
+		# 48 dp floor and the lane stack gets everything above it, capped at the
+		# natural height and scrolled inside the cap when it does not fit.
+		var lane_natural := lane_min if show_lane else 0.0
+		if show_media:
+			lane_natural += media_want
+		if show_lane and show_media:
+			lane_natural += float(Kit.GUTTER)
+		var lane_room := budget - FOLDED_TIMELINE - 48.0
+		if lane_natural > 0.0 and lane_room >= 44.0:
+			lane_total = minf(lane_natural, lane_room)
+			lane_part = lane_total
+			more_lanes = true
 		else:
-			# Even the floor cannot host the header. Fold the lanes whole and
-			# collapse the media lanes explicitly so the next pass (a taller
-			# stage, a resize) shows the header again instead of burying it.
+			show_lane = false
 			show_media = false
-			media_part = 0.0
-	if _media_lanes != null:
-		_media_lanes.fit_height(media_part if show_media else -1.0)
-		_media_lanes.visible = show_media and media_part >= 44.0
-		if not _media_lanes.visible:
-			_media_lanes.set_collapsed(true)
-	if _clip_lane != null:
-		_clip_lane.visible = show_lane
+	else:
+		# Room left next to the transport row and the preferred sheet.
+		var room := budget - FOLDED_TIMELINE - tl_content
+		if room >= lane_min + media_want:
+			lane_part = lane_min
+			media_part = media_want
+		elif room >= lane_min + 44.0:
+			lane_part = lane_min
+			media_part = 44.0
+		elif room >= 44.0:
+			show_lane = false
+			media_part = minf(media_want, room)
+		else:
+			# The preferred sheet is unaffordable: keep the header folded, drop
+			# the sequence lane and shrink the sheet to its 48 dp floor so the
+			# collapsed media header gets one more chance.
+			show_lane = false
+			var floor_room := budget - FOLDED_TIMELINE - 48.0
+			if floor_room >= 44.0:
+				_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
+				media_part = minf(media_want, floor_room)
+			else:
+				# Even the floor cannot host the header. Fold the lanes whole and
+				# collapse the media lanes explicitly so the next pass (a taller
+				# stage, a resize) shows the header again instead of burying it.
+				show_media = false
+				media_part = 0.0
+		lane_total = lane_part + media_part
+		if show_lane and show_media:
+			lane_total += float(Kit.GUTTER)
+	if more_lanes:
+		if _media_lanes != null:
+			_media_lanes.fit_height(-1.0)
+			_media_lanes.visible = show_media
+		if _clip_lane != null:
+			_clip_lane.visible = show_lane
+	else:
+		if _media_lanes != null:
+			_media_lanes.fit_height(media_part if show_media else -1.0)
+			_media_lanes.visible = show_media and media_part >= 44.0
+			if not _media_lanes.visible:
+				_media_lanes.set_collapsed(true)
+		if _clip_lane != null:
+			_clip_lane.visible = show_lane
+	if _lane_scroll != null:
+		_lane_scroll.visible = lane_total >= 44.0 and \
+			(show_lane or (_media_lanes != null and _media_lanes.visible))
+		_lane_scroll.custom_minimum_size.y = lane_total if _lane_scroll.visible else 0.0
 	# The compact header returns only when it can coexist with a 48 dp sheet:
 	# available >= header + 48 + the 1 px rule. The sheet then takes what is
 	# left, never below 48 dp.
