@@ -542,7 +542,11 @@ func _test_look_through() -> void:
 
 	# Seed the two workbench overlays that must not leak into the clean
 	# document-camera view. The dock is open on the Rig tab, so the rig overlay
-	# is genuinely enabled before entry.
+	# is genuinely enabled before entry. An active rig is required after the
+	# G3 workbench merge: the overlay only engages when there is something to
+	# draw, even though the tab itself is visible.
+	var probe_rig: String = _doc.rig_system.create_rig("Overlay Probe", Vector3(0.0, 0.0, 0.0))
+	_check(probe_rig != "", "the look-through fixture has an active rig")
 	_doc.media_system.load_data({"media": {"audio": [], "video_refs": [{
 		"id": "look_ref",
 		"name": "Look reference",
@@ -668,6 +672,8 @@ func _test_look_through() -> void:
 	if _editor._drawer_open:
 		_editor._close_drawer()
 	_editor._set_compact_tab("scene")
+	if probe_rig != "":
+		_doc.rig_system.delete_rig(probe_rig)
 	_doc.media_system.load_data({"media": {"audio": [], "video_refs": []}}, "")
 	for _i in 2:
 		await get_tree().process_frame
