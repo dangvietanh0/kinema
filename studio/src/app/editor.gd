@@ -2777,6 +2777,9 @@ func _enter_look_through(camera_id: String) -> void:
 		_video_overlay.set_render_mode(true)
 	if _rig_overlay != null:
 		_rig_overlay.set_enabled(false)
+	# The floating toolbar is a separate stage surface. Re-derive it from the
+	# look-through flag so it cannot stay tappable on the clean camera view.
+	_sync_rig_overlay()
 	_sync_view_header_visibility()
 
 ## The view can leave look-through by itself (the Exit control lives inside

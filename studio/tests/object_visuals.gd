@@ -565,6 +565,10 @@ func _test_look_through() -> void:
 	var rig_overlay = _editor._rig_overlay
 	_check(video_overlay != null and video_overlay.visible, "the rotoscope is visible before look-through")
 	_check(rig_overlay != null and rig_overlay.is_enabled(), "the rig overlay is enabled on the Rig tab before look-through")
+	var toolbar: Control = _editor._rig_toolbar
+	var add_bone: Button = toolbar.find_child("ToolbarAddBoneButton", true, false) if toolbar != null else null
+	_check(toolbar != null and toolbar.visible, "the floating rig toolbar is visible on the Rig tab before look-through")
+	_check(add_bone != null and add_bone.is_visible_in_tree(), "Add bone is reachable on the Rig tab before look-through")
 
 	var timeline_visible: bool = _editor._timeline_panel.visible
 	var dock_visible: bool = _editor._dock.visible
@@ -594,6 +598,8 @@ func _test_look_through() -> void:
 	_check(_editor._bottom_bar.visible == bottom_visible, "the transport keeps its state in look-through")
 	_check(video_overlay != null and not video_overlay.visible, "the rotoscope hides in look-through")
 	_check(rig_overlay != null and not rig_overlay.is_enabled(), "the rig overlay disables in look-through")
+	_check(toolbar != null and not toolbar.visible, "the floating rig toolbar hides on the clean look-through view")
+	_check(add_bone != null and not add_bone.is_visible_in_tree(), "Add bone is not reachable in look-through")
 	# The dock stays live, so the Rig tab is reachable after entry. Opening it
 	# must not re-enable the rig overlay or bring the rotoscope back.
 	_editor._set_compact_tab("rig")
@@ -644,6 +650,8 @@ func _test_look_through() -> void:
 	_check(_view._nav_gizmo.visible == saved_nav, "exiting restores the navigation gizmo")
 	_check(video_overlay != null and video_overlay.visible, "exiting restores the rotoscope")
 	_check(rig_overlay != null and rig_overlay.is_enabled(), "exiting restores the rig overlay for the active Rig tab")
+	_check(toolbar != null and toolbar.visible, "exiting restores the floating rig toolbar")
+	_check(add_bone != null and add_bone.is_visible_in_tree(), "exiting makes Add bone reachable again")
 	# The drawer is an editing layer in its own right; dismiss it before
 	# judging the header, which the drawer also covers while open.
 	if _editor._drawer_open:
