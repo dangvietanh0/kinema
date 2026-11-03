@@ -67,14 +67,12 @@ func _apply_startup_display() -> void:
 
 ## A pending renderer is verified once, before the user starts working. The
 ## restart happens only outside headless tests and only through Godot's own
-## restart-on-exit path.
+## restart-on-exit path. Reaching the home shell is not proof: the crash this
+## gate catches happens on the editor's first 3D frame, so readiness is marked
+## from `_open_editor()` instead.
 func _ensure_startup_renderer() -> void:
 	var result: Dictionary = Gfx.ensure_renderer()
 	if str(result.get("action", "none")) != "restart":
-		# This launch reached the shell: the running backend is proven. A
-		# fallback also marks ready so the next launch does not retry a backend
-		# that already failed once. Never mark on the restart path.
-		Gfx.mark_renderer_ready()
 		return
 	var args := Gfx.consume_restart_request()
 	if args.is_empty() or DisplayServer.get_name() == "headless":
@@ -222,6 +220,20 @@ func _open_editor(record: Dictionary, template: String, loaded: bool) -> void:
 	if _home != null:
 		_home.visible = false
 	refresh_layout_scale()
+	_await_editor_first_frame()
+
+
+## The renderer request is proven only when the editor's own 3D viewport has
+## drawn. This one-shot wait keeps `renderer_ready` false through the home
+## shell, so a Vulkan crash on the first editor frame still counts as the one
+## failed attempt on the next launch. Headless runs have no drawable frame; the
+## shell is the only surface and the suite never relies on device readiness.
+func _await_editor_first_frame() -> void:
+	if DisplayServer.get_name() == "headless":
+		Gfx.mark_renderer_ready()
+		return
+	await RenderingServer.frame_post_draw
+	Gfx.mark_renderer_ready()
 
 func _on_workspace_mode_changed(_mode: String) -> void:
 	refresh_layout_scale()

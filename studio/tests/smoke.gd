@@ -2353,6 +2353,15 @@ func _ready() -> void:
 	_check(str(failed_boot.get("reason", "")) != "", "the failed boot has a readable reason")
 	var normal_retry: Dictionary = Gfx.resolve_startup_renderer("forward_plus", "forward_plus", "mobile", 0, "Android", true)
 	_check(str(normal_retry["action"]) == "restart", "a supported backend keeps the two-attempt retry path")
+	# A launch that reached the pending backend but never marked ready (for
+	# example a first-frame Vulkan crash) keeps the request. The following
+	# launch must treat that as the failed attempt instead of clearing it.
+	var unproven_boot: Dictionary = Gfx.resolve_startup_renderer("forward_plus", "forward_plus", "forward_plus", 1, "Android", false)
+	_check(str(unproven_boot["action"]) == "none", "an unproven pending backend does not restart on its own launch")
+	_check(str(unproven_boot["pending"]) == "forward_plus", "an unproven pending backend keeps its request")
+	var after_unproven: Dictionary = Gfx.resolve_startup_renderer("forward_plus", str(unproven_boot["pending"]), "mobile", 1, "Android", false)
+	_check(str(after_unproven["action"]) == "fallback", "the next launch after an unmarked boot falls back")
+	_check(str(after_unproven["pending"]) == "", "the failed-over pending request is cleared")
 	var stale_pending_state: Dictionary = Gfx.resolve_startup_renderer("mobile", "vulkan", "mobile", 0, "Android")
 	_check(str(stale_pending_state["action"]) == "fallback", "an unsupported pending renderer falls back")
 	_check(str(stale_pending_state["pending"]) == "", "an unsupported pending renderer is cleared")
@@ -2366,6 +2375,23 @@ func _ready() -> void:
 	_check(Gfx.renderer_ready, "mark_renderer_ready writes renderer_ready")
 	_check(Gfx.last_renderer_error == "keep the fallback explanation", "mark_renderer_ready keeps the fallback explanation readable")
 	_check(bool(Gfx.to_dict().get("renderer_ready", false)), "renderer_ready survives to_dict")
+
+	# The home shell runs ensure_renderer but must not clear an unproven
+	# request: readiness is only written after the editor's first 3D frame.
+	var actual_now: String = Gfx.actual_method()
+	Gfx.renderer_preference = actual_now
+	Gfx.renderer_choice = actual_now
+	Gfx.renderer_pending = actual_now
+	Gfx.renderer_attempts = 1
+	Gfx.renderer_attempt_at = 0.0
+	Gfx.renderer_ready = false
+	Gfx.last_renderer_error = ""
+	var unproven_run: Dictionary = Gfx.ensure_renderer()
+	_check(str(unproven_run.get("action", "")) == "none", "an unproven pending backend does not restart again")
+	_check(Gfx.renderer_pending == actual_now, "an unproven pending backend keeps its request through the home shell")
+	_check(not Gfx.renderer_ready, "the home shell does not mark an unproven backend ready")
+	Gfx.mark_renderer_ready()
+	_check(Gfx.renderer_ready and Gfx.renderer_pending == "", "the editor's first frame clears the proven request")
 
 	# Mobile-safe profile: clamps a stored quality preset on Android Forward+,
 	# leaves the same values untouched on a desktop backend.

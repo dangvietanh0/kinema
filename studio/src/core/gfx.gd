@@ -386,8 +386,13 @@ func resolve_startup_renderer(preference: String, pending: String, actual: Strin
 	var clean := sanitize_renderer_state(preference, pending, resolved)
 	var safe_preference: String = str(clean.get("preference", preference))
 	var safe_pending: String = str(clean.get("pending", ""))
-	if safe_pending == "" or safe_pending == actual:
+	if safe_pending == "":
 		return {"action": "none", "preference": safe_preference, "pending": "", "args": PackedStringArray(), "reason": ""}
+	if safe_pending == actual:
+		# The requested backend is running, but it is not proven until the
+		# editor's 3D viewport has drawn. Keep the request so a crash before
+		# that frame still counts as the one failed attempt next launch.
+		return {"action": "none", "preference": safe_preference, "pending": safe_pending, "args": PackedStringArray(), "reason": ""}
 	if attempts < 2:
 		return {
 			"action": "restart",
@@ -419,11 +424,20 @@ func ensure_renderer() -> Dictionary:
 	)
 	match str(result.get("action", "none")):
 		"none":
-			renderer_pending = ""
-			renderer_attempts = 0
-			renderer_attempt_at = 0.0
-			_restart_request = PackedStringArray()
-			last_renderer_error = ""
+			if renderer_pending != "" and not renderer_ready \
+					and renderer_pending == actual_method():
+				# The requested backend is running but the editor has not drawn
+				# its first 3D frame yet. Keep the pending request and the
+				# attempt bookkeeping; mark_renderer_ready() clears them after
+				# that frame, and a crash before it fails over next launch.
+				_restart_request = PackedStringArray()
+				last_renderer_error = ""
+			else:
+				renderer_pending = ""
+				renderer_attempts = 0
+				renderer_attempt_at = 0.0
+				_restart_request = PackedStringArray()
+				last_renderer_error = ""
 		"restart":
 			renderer_attempts += 1
 			renderer_attempt_at = now
