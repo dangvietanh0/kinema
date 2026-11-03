@@ -56,6 +56,7 @@ func _ready() -> void:
 	await _test_selection_roundtrip()
 	await _test_obj_import_gate()
 	await _test_outliner_tree()
+	await _test_outliner_import_discovery()
 	await _test_outliner_selection()
 	await _test_outliner_visibility()
 	await _test_outliner_search()
@@ -165,12 +166,12 @@ func _free_doc(doc: Variant) -> void:
 
 ## Imports the fixture and appends the Skeleton3D that glTF skin export would
 ## otherwise be needed to provide.
-func _import(doc: Variant) -> String:
+func _import(doc: Variant, display_name: String = "Rig") -> String:
 	var imported: Dictionary = Store.import_model(_fixture, str(doc.project_dir), "Rig")
 	if not bool(imported.get("ok", false)):
 		_check(false, "ProjectStore imports the hierarchy fixture (%s)" % str(imported.get("error", "")))
 		return ""
-	var id: String = doc.add_imported(str(imported.get("rel_path", "")), "Rig")
+	var id: String = doc.add_imported(str(imported.get("rel_path", "")), display_name)
 	var object_node: Node3D = doc.nodes.get(id)
 	if object_node != null:
 		var model := object_node.get_node_or_null("Model")
@@ -465,9 +466,9 @@ func _test_obj_import_gate() -> void:
 # Outliner
 # -------------------------------------------------------------------------
 
-func _new_outliner(doc: Variant) -> Variant:
+func _new_outliner(doc: Variant, width: float = 280.0) -> Variant:
 	var host := Control.new()
-	host.size = Vector2(280.0, 760.0)
+	host.size = Vector2(width, 760.0)
 	add_child(host)
 	var outliner: Variant = OutlinerScript.new()
 	host.add_child(outliner)
@@ -636,6 +637,92 @@ func _test_outliner_tree() -> void:
 	for row in outliner._list.get_children():
 		max_height = maxf(max_height, (row as Control).size.y)
 	_check(max_height <= ROW_HEIGHT + 0.6, "expanded rows never grow taller than 44 dp")
+	await _free_doc(doc)
+
+
+func _test_outliner_import_discovery() -> void:
+	print("HIERARCHY STEP: new import auto-expands one level")
+	var doc: Variant = await _new_doc("ImportDiscovery")
+	# Mount the outliner before the import so the imported_scene_ready hook is
+	# what reveals the hierarchy, not a later project load.
+	var outliner: Variant = await _new_outliner(doc, 196.0)
+	_check(outliner._expanded.is_empty(), "a mounted outliner starts with no expansion")
+	var long_name := "An extremely long imported model name that must truncate"
+	var id: String = await _import(doc, long_name)
+	if id == "":
+		await _free_doc(doc)
+		return
+	_check(outliner._expanded.has(id),
+		"a new import with parts auto-expands its root")
+	_check(_part_rows(outliner).size() == 5,
+		"auto-expand reveals exactly one level (got %d rows)" % _part_rows(outliner).size())
+	_check(_part_row(outliner, id, HEAD) == null,
+		"auto-expand does not open nested parts")
+	# Refresh the snapshot for the Skeleton the fixture adds after the signal.
+	outliner._rebuild()
+	await get_tree().process_frame
+	var root: Control = _root_row(outliner, id)
+	_check(root != null, "the auto-expanded import keeps its root row")
+	var disclosure: Button = _disclosure(root)
+	_check(disclosure != null, "the auto-expanded root keeps its disclosure")
+	if disclosure != null:
+		_check(disclosure.icon == Kit.icon_texture("chevron-down"),
+			"an expanded root uses the chevron-down icon")
+		_check(disclosure.tooltip_text == "Collapse hierarchy · 7 nodes",
+			"the expanded tooltip names the exact part count")
+		_check(absf(disclosure.custom_minimum_size.x - ROW_HEIGHT) < 0.01
+			and absf(disclosure.custom_minimum_size.y - ROW_HEIGHT) < 0.01,
+			"the hierarchy disclosure keeps a 44x44 target")
+	var badge: Label = _control_role(root, "part-count") as Label
+	_check(badge != null, "the import root carries a part-count badge")
+	if badge != null:
+		_check(badge.text == "7", "the badge shows the real part count")
+		_check(badge.get_theme_font_size("font_size") == 10,
+			"the badge uses the 10 px meta size")
+		_check(badge.get_theme_color("font_color").is_equal_approx(Kit.TEXT_DIM),
+			"the badge uses the dim text colour")
+	var name_label := _control_role(root, "name") as Label
+	_check(name_label != null, "the import root carries its name label")
+	if name_label != null:
+		_check(name_label.tooltip_text == long_name,
+			"the root name keeps the full name in a tooltip")
+		var natural_width: float = Kit.font_regular.get_string_size(
+			name_label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		_check(name_label.size.x < natural_width,
+			"a long import name truncates before the badge")
+	_check(root.get_combined_minimum_size().x <= 196.0 + 0.5,
+		"the 196 dp row does not overflow with a long name")
+	_check(_control_role(root, "eye") != null,
+		"the truncated row still keeps its eye control")
+	# A manual collapse is UI state and must survive the next rebuild and a
+	# selection change; only a new import or project identity resets it.
+	_disclosure(root).pressed.emit()
+	await get_tree().process_frame
+	_check(_part_rows(outliner).is_empty(), "the user can collapse the auto-expanded root")
+	doc.add_primitive("cube")
+	await get_tree().process_frame
+	outliner._rebuild()
+	await get_tree().process_frame
+	_check(_part_rows(outliner).is_empty(),
+		"a manual collapse persists across rebuilds")
+	doc.set_selection(id)
+	await get_tree().process_frame
+	_check(_part_rows(outliner).is_empty(),
+		"selecting the root does not override the manual collapse")
+	var collapsed: Button = _disclosure(_root_row(outliner, id))
+	if collapsed != null:
+		_check(collapsed.icon == Kit.icon_texture("list"),
+			"a collapsed root uses the list icon")
+		_check(collapsed.tooltip_text == "Expand hierarchy · 7 nodes",
+			"the collapsed tooltip names the exact part count")
+	# Part names also keep their full text in a tooltip.
+	_disclosure(_root_row(outliner, id)).pressed.emit()
+	await get_tree().process_frame
+	var body_row: Control = _part_row(outliner, id, BODY)
+	if body_row != null:
+		var body_name := _control_role(body_row, "name") as Label
+		_check(body_name != null and body_name.tooltip_text == "Body",
+			"a part name carries its full text in a tooltip")
 	await _free_doc(doc)
 
 

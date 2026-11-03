@@ -144,6 +144,9 @@ var _scene_transient_width := -1.0
 var layout_info: Dictionary = {}
 var workbench_mode := "studio"
 var _timeline_visible := false
+## Session-only "More" state: raises the overlay budget to the full cap until
+## the sheet is closed or reopened. It is never persisted.
+var _timeline_more := false
 var _closing := false
 var _last_save_auto := false
 
@@ -480,6 +483,9 @@ func _build_timeline() -> void:
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.close_requested.connect(_on_timeline_close_requested)
 	_timeline.mode_changed.connect(_on_timeline_mode_changed)
+	_timeline.more_requested.connect(_on_timeline_more_requested)
+	_timeline.duration_row_changed.connect(_on_timeline_duration_row_changed)
+	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
 	_timeline_stack.add_child(_timeline)
 
 	_media_lanes = MediaLanesScript.new()
@@ -1656,15 +1662,17 @@ func _stage_height() -> float:
 	return maxf(height, 120.0)
 
 
-## The expanded sheet is capped at 42 percent of the stage host so the live 3D
-## view keeps at least 55 percent of its height, and at 240 dp on tall
-## screens. It never drops below the transport plus a 72 dp sheet.
+## The expanded sheet defaults to the compact budget: 34 percent of the stage
+## host, capped at 208 dp and never below 104 dp (transport 56 + a 48 dp sheet
+## floor). The explicit More control raises the session-only cap to 46 percent
+## / 260 dp; it is never the default and is capped independently of the view
+## height so the stage always keeps over half of its height.
 func _timeline_overlay_budget(stage_height: float) -> float:
 	if not _timeline_should_show():
 		return FOLDED_TIMELINE
-	var budget := minf(240.0, maxf(FOLDED_TIMELINE + 72.0, stage_height * 0.42))
-	budget = minf(budget, maxf(FOLDED_TIMELINE + 72.0, stage_height - 96.0))
-	return budget
+	var ratio := 0.46 if _timeline_more else 0.34
+	var cap := 260.0 if _timeline_more else 208.0
+	return minf(cap, maxf(104.0, stage_height * ratio))
 
 
 func _set_timeline_overlay_height(value: float) -> void:
@@ -1673,6 +1681,22 @@ func _set_timeline_overlay_height(value: float) -> void:
 	_timeline_panel.offset_top = -value
 	_timeline_panel.offset_bottom = 0.0
 	_timeline_panel.custom_minimum_size.y = value
+
+
+## The nav gizmo hugs the bottom-right of the stage, where the always-present
+## transport strip now lives. Lift it by the current overlay height plus the
+## 12 dp inset it already keeps from the edges so its axis tips stay tappable
+## instead of landing under the transport.
+func _sync_nav_gizmo_inset(timeline_height: float) -> void:
+	if _view == null:
+		return
+	var nav = _view.get("_nav_gizmo")
+	if nav == null or not is_instance_valid(nav):
+		return
+	var nav_size := 116.0
+	var inset := maxf(FOLDED_TIMELINE, timeline_height) + 12.0
+	nav.offset_bottom = -inset
+	nav.offset_top = -(nav_size + inset)
 
 
 func _sync_timeline_visibility() -> void:
@@ -1690,6 +1714,7 @@ func _sync_timeline_visibility() -> void:
 		if _clip_lane != null:
 			_clip_lane.visible = false
 		_set_timeline_overlay_height(FOLDED_TIMELINE)
+		_sync_nav_gizmo_inset(FOLDED_TIMELINE)
 		return
 
 	var budget := _timeline_overlay_budget(_stage_height())
@@ -1724,10 +1749,10 @@ func _sync_timeline_visibility() -> void:
 		media_part = minf(media_want, room)
 	else:
 		# The preferred sheet is unaffordable: keep the header folded, drop
-		# the sequence lane and shrink the sheet to its 72 dp floor so the
+		# the sequence lane and shrink the sheet to its 48 dp floor so the
 		# collapsed media header gets one more chance.
 		show_lane = false
-		var floor_room := budget - FOLDED_TIMELINE - 73.0
+		var floor_room := budget - FOLDED_TIMELINE - 48.0
 		if floor_room >= 44.0:
 			_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
 			media_part = minf(media_want, floor_room)
@@ -1744,17 +1769,18 @@ func _sync_timeline_visibility() -> void:
 			_media_lanes.set_collapsed(true)
 	if _clip_lane != null:
 		_clip_lane.visible = show_lane
-	# The compact header returns only when it can coexist with a 72 dp sheet:
-	# available >= header + 72 + the 1 px rule. The sheet then takes what is
-	# left, never below 72 dp.
+	# The compact header returns only when it can coexist with a 48 dp sheet:
+	# available >= header + 48 + the 1 px rule. The sheet then takes what is
+	# left, never below 48 dp.
 	var can_host_header: bool = _timeline.header_allowed() and \
 		budget - FOLDED_TIMELINE - lane_part - media_part >= \
-		_timeline.header_height() + 72.0 + _timeline.sheet_rule_height()
+		_timeline.header_height() + 48.0 + _timeline.sheet_rule_height()
 	if can_host_header:
 		_timeline.set_header_folded(false)
-	# Final pass: the sheet takes what is left, never below 72 dp.
+	# Final pass: the sheet takes what is left, never below 48 dp.
 	_timeline.fit_sheet_height(budget - FOLDED_TIMELINE - lane_part - media_part)
 	_set_timeline_overlay_height(budget)
+	_sync_nav_gizmo_inset(budget)
 
 func _on_timeline_mode_changed(_mode: String) -> void:
 	_sync_timeline_visibility()
@@ -1940,8 +1966,40 @@ func _on_chrome_action(action: String) -> void:
 func _toggle_timeline() -> void:
 	_timeline_user_override = true
 	_timeline_visible = not _timeline_visible
+	# More is session-only and belongs to one open sheet: every close/reopen
+	# returns to the compact default.
+	_timeline_more = false
+	if _timeline != null:
+		_timeline.set_more_state(false)
 	_sync_timeline_visibility()
+	# The gesture hint belongs to the user's open action, not to boot/resize
+	# syncs. The timeline itself guarantees it only appears once.
+	if _timeline_visible and _timeline != null:
+		_timeline.show_gesture_hint_once()
 	_update_bottom_bar()
+
+
+## The timeline's explicit More control. Toggling only changes the overlay
+## budget; the document and the sheet content are untouched.
+func _on_timeline_more_requested() -> void:
+	_timeline_more = not _timeline_more
+	if _timeline != null:
+		_timeline.set_more_state(_timeline_more)
+	_sync_timeline_visibility()
+
+
+func _on_timeline_duration_row_changed(_open: bool) -> void:
+	_sync_timeline_visibility()
+
+
+## A shrink that would delete keys asks first. The timeline has already left
+## the document untouched; confirming applies the exact requested length.
+func _on_timeline_duration_confirmation(value: float, message: String) -> void:
+	var target := clampf(value, 0.25, 3600.0)
+	_overlay.confirm("Shorten the clip?", message, "Shorten", func() -> void:
+		if _timeline != null:
+			_timeline.apply_duration(target)
+	)
 
 
 func _on_timeline_close_requested() -> void:
@@ -2243,13 +2301,19 @@ func _on_model_selected(status: bool, paths: PackedStringArray, _filter_index: i
 		return
 	var at := _spawn_point()
 	at.y = 0.0
-	doc.add_imported(str(result.get("rel_path", "")), str(result.get("name", "Model")), at)
+	var imported_id: String = doc.add_imported(
+		str(result.get("rel_path", "")), str(result.get("name", "Model")), at)
 	_save_project(false)
 	var warning := str(result.get("warning", ""))
 	if warning != "":
 		_overlay.toast(warning, "triangle-alert", Kit.WARNING)
 	else:
-		_overlay.toast("Imported " + str(result.get("name", "model")), "package-open", Kit.SUCCESS)
+		# Name the hierarchy the import just made discoverable: OBJ stays one
+		# mesh row, while glTF/GLB reports the real part count.
+		var parts: Array = doc.import_parts(imported_id)
+		var detail := "single mesh" if parts.is_empty() else "%d hierarchy nodes" % parts.size()
+		_overlay.toast("Imported " + str(result.get("name", "model")) + " · " + detail,
+			"package-open", Kit.SUCCESS)
 	_focus_selection()
 
 func _open_import_sheet() -> void:
