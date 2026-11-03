@@ -314,7 +314,8 @@ public final class KinemaVideoEncoder {
                 if (sCancelled) {
                     throw new CancelledException();
                 }
-                muxer.writeSampleData(sample.track, sample.data, sample.info);
+                ByteBuffer buffer = ByteBuffer.wrap(sample.data);
+                muxer.writeSampleData(sample.track, buffer, sample.info);
             }
         } finally {
             try {
@@ -580,32 +581,32 @@ public final class KinemaVideoEncoder {
             case MediaCodecInfo.CodecProfileLevel.AVCLevel1:
             case MediaCodecInfo.CodecProfileLevel.AVCLevel1b:
                 return new long[]{99L, 1485L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel1_1:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel11:
                 return new long[]{396L, 3000L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel1_2:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel12:
                 return new long[]{396L, 6000L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel1_3:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel13:
             case MediaCodecInfo.CodecProfileLevel.AVCLevel2:
                 return new long[]{396L, 11880L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel2_1:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel21:
                 return new long[]{792L, 19800L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel2_2:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel22:
             case MediaCodecInfo.CodecProfileLevel.AVCLevel3:
                 return new long[]{1620L, 40500L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel3_1:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel31:
                 return new long[]{3600L, 108000L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel3_2:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel32:
                 return new long[]{5120L, 216000L};
             case MediaCodecInfo.CodecProfileLevel.AVCLevel4:
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel4_1:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel41:
                 return new long[]{8192L, 245760L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel4_2:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel42:
                 return new long[]{8704L, 522240L};
             case MediaCodecInfo.CodecProfileLevel.AVCLevel5:
                 return new long[]{22080L, 589824L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel5_1:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel51:
                 return new long[]{36864L, 983040L};
-            case MediaCodecInfo.CodecProfileLevel.AVCLevel5_2:
+            case MediaCodecInfo.CodecProfileLevel.AVCLevel52:
                 return new long[]{36864L, 2073600L};
             default:
                 return null;
@@ -923,7 +924,9 @@ public final class KinemaVideoEncoder {
         Sample(byte[] data, MediaCodec.BufferInfo info) {
             this.data = data;
             this.info = new MediaCodec.BufferInfo();
-            this.info.set(info.offset, info.size, info.presentationTimeUs, info.flags);
+            // The payload was copied out of the codec buffer into a byte[] that
+            // starts at index 0, so the muxer must not re-apply the codec offset.
+            this.info.set(0, info.size, info.presentationTimeUs, info.flags);
         }
     }
 
