@@ -34,6 +34,17 @@ var _rz: PanelContainer
 var _sx: PanelContainer
 var _sy: PanelContainer
 var _sz: PanelContainer
+var _pose_px: PanelContainer
+var _pose_py: PanelContainer
+var _pose_pz: PanelContainer
+var _pose_rx: PanelContainer
+var _pose_ry: PanelContainer
+var _pose_rz: PanelContainer
+var _pose_sx: PanelContainer
+var _pose_sy: PanelContainer
+var _pose_sz: PanelContainer
+var _rest_section: VBoxContainer
+var _pose_section: VBoxContainer
 var _length_field: PanelContainer
 var _influence_field: PanelContainer
 var _reset_button: Button
@@ -228,7 +239,7 @@ func _build_inspector() -> void:
 	head.add_child(_inspector_title)
 	_reset_button = Kit.text_button("Reset pose", "restart", false, true)
 	_reset_button.name = "ResetPoseButton"
-	_reset_button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	_reset_button.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_reset_button.pressed.connect(_on_reset_pose)
 	head.add_child(_reset_button)
 	_reset_all_button = Kit.icon_button("restart", "Reset all bone poses", 44, 18)
@@ -242,34 +253,76 @@ func _build_inspector() -> void:
 	_imported_note.visible = false
 	_inspector.add_child(_imported_note)
 
+	_rest_section = VBoxContainer.new()
+	_rest_section.name = "RestSection"
+	_rest_section.add_theme_constant_override("separation", 4)
+	_inspector.add_child(_rest_section)
+	var rest_label := Kit.section_label("Rest")
+	rest_label.name = "RestSectionLabel"
+	_rest_section.add_child(rest_label)
 	var position_row := HBoxContainer.new()
 	position_row.add_theme_constant_override("separation", 2)
-	_inspector.add_child(position_row)
+	_rest_section.add_child(position_row)
 	_px = _num("X", "RestPX", position_row)
 	_py = _num("Y", "RestPY", position_row)
 	_pz = _num("Z", "RestPZ", position_row)
 	var rotation_row := HBoxContainer.new()
 	rotation_row.add_theme_constant_override("separation", 2)
-	_inspector.add_child(rotation_row)
+	_rest_section.add_child(rotation_row)
 	_rx = _num("X°", "RestRX", rotation_row)
 	_ry = _num("Y°", "RestRY", rotation_row)
 	_rz = _num("Z°", "RestRZ", rotation_row)
 	var scale_row := HBoxContainer.new()
 	scale_row.add_theme_constant_override("separation", 2)
-	_inspector.add_child(scale_row)
+	_rest_section.add_child(scale_row)
 	_sx = _num("X", "RestSX", scale_row)
 	_sy = _num("Y", "RestSY", scale_row)
 	_sz = _num("Z", "RestSZ", scale_row)
 
 	var metrics := HBoxContainer.new()
 	metrics.add_theme_constant_override("separation", 4)
-	_inspector.add_child(metrics)
+	_rest_section.add_child(metrics)
 	_length_field = _num("Len", "BoneLengthField", metrics, 0.0001, 100.0, 0.01)
 	_influence_field = _num("Inf", "BoneInfluenceField", metrics, 0.0, 1000.0, 0.05)
 	_length_field.value_changed.connect(func(_value: float) -> void: _apply_rest())
 	_influence_field.value_changed.connect(func(value: float) -> void: _apply_influence(value))
 	for field in [_px, _py, _pz, _rx, _ry, _rz, _sx, _sy, _sz]:
 		field.value_changed.connect(func(_value: float) -> void: _apply_rest())
+
+	_pose_section = VBoxContainer.new()
+	_pose_section.name = "PoseSection"
+	_pose_section.add_theme_constant_override("separation", 4)
+	_inspector.add_child(_pose_section)
+	var pose_label := Kit.section_label("Pose")
+	pose_label.name = "PoseSectionLabel"
+	_pose_section.add_child(pose_label)
+	var pose_position_row := HBoxContainer.new()
+	pose_position_row.add_theme_constant_override("separation", 2)
+	_pose_section.add_child(pose_position_row)
+	_pose_px = _num("X", "PosePX", pose_position_row)
+	_pose_py = _num("Y", "PosePY", pose_position_row)
+	_pose_pz = _num("Z", "PosePZ", pose_position_row)
+	var pose_rotation_row := HBoxContainer.new()
+	pose_rotation_row.add_theme_constant_override("separation", 2)
+	_pose_section.add_child(pose_rotation_row)
+	_pose_rx = _num("X°", "PoseRX", pose_rotation_row)
+	_pose_ry = _num("Y°", "PoseRY", pose_rotation_row)
+	_pose_rz = _num("Z°", "PoseRZ", pose_rotation_row)
+	var pose_scale_row := HBoxContainer.new()
+	pose_scale_row.add_theme_constant_override("separation", 2)
+	_pose_section.add_child(pose_scale_row)
+	_pose_sx = _num("X", "PoseSX", pose_scale_row)
+	_pose_sy = _num("Y", "PoseSY", pose_scale_row)
+	_pose_sz = _num("Z", "PoseSZ", pose_scale_row)
+	_pose_px.value_changed.connect(func(_value: float) -> void: _apply_pose_position())
+	_pose_py.value_changed.connect(func(_value: float) -> void: _apply_pose_position())
+	_pose_pz.value_changed.connect(func(_value: float) -> void: _apply_pose_position())
+	_pose_rx.value_changed.connect(func(_value: float) -> void: _apply_pose_rotation())
+	_pose_ry.value_changed.connect(func(_value: float) -> void: _apply_pose_rotation())
+	_pose_rz.value_changed.connect(func(_value: float) -> void: _apply_pose_rotation())
+	_pose_sx.value_changed.connect(func(_value: float) -> void: _apply_pose_scale())
+	_pose_sy.value_changed.connect(func(_value: float) -> void: _apply_pose_scale())
+	_pose_sz.value_changed.connect(func(_value: float) -> void: _apply_pose_scale())
 
 
 func _num(axis: String, node_name: String, parent: HBoxContainer, minimum: float = -1000.0, maximum: float = 1000.0, step: float = 0.01) -> PanelContainer:
@@ -379,6 +432,9 @@ func _build_keys() -> void:
 	_key_pose.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_key_pose.pressed.connect(_on_key_pose)
 	row.add_child(_key_pose)
+	var caption := Kit.label("Rotation, position and scale", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	caption.name = "KeyChannelsCaption"
+	section.add_child(caption)
 
 
 func refresh() -> void:
@@ -451,7 +507,67 @@ func _refresh_inspector() -> void:
 	_influence_field.set_value_silent(float(bone.get("influence_scale", 1.0)))
 	for field in [_px, _py, _pz, _rx, _ry, _rz, _sx, _sy, _sz, _length_field, _influence_field]:
 		_set_field_editable(field, not imported)
+	var node: Node3D = doc.nodes.get(str(rig.get("object_id", ""))) if doc != null else null
+	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D if node != null else null
+	_refresh_pose_fields(skeleton, bone_name)
 	_updating = false
+
+func _refresh_pose_fields(skeleton: Skeleton3D, bone_name: String) -> void:
+	if _pose_px == null:
+		return
+	var position := Vector3.ZERO
+	var rotation := Quaternion.IDENTITY
+	var scale := Vector3.ONE
+	if skeleton != null:
+		var index := skeleton.find_bone(bone_name)
+		if index >= 0:
+			position = skeleton.get_bone_pose_position(index)
+			rotation = skeleton.get_bone_pose_rotation(index)
+			scale = skeleton.get_bone_pose_scale(index)
+	var euler := rotation.get_euler()
+	_pose_px.set_value_silent(position.x)
+	_pose_py.set_value_silent(position.y)
+	_pose_pz.set_value_silent(position.z)
+	_pose_rx.set_value_silent(rad_to_deg(euler.x))
+	_pose_ry.set_value_silent(rad_to_deg(euler.y))
+	_pose_rz.set_value_silent(rad_to_deg(euler.z))
+	_pose_sx.set_value_silent(scale.x)
+	_pose_sy.set_value_silent(scale.y)
+	_pose_sz.set_value_silent(scale.z)
+	for field in [_pose_px, _pose_py, _pose_pz, _pose_rx, _pose_ry, _pose_rz, _pose_sx, _pose_sy, _pose_sz]:
+		_set_field_editable(field, true)
+
+
+func _apply_pose_patch(patch: Dictionary) -> void:
+	if _updating or rig_system == null:
+		return
+	var rig := _active_rig()
+	if rig.is_empty():
+		return
+	var bone_name := str(rig.get("active_bone", ""))
+	if bone_name == "":
+		return
+	_updating = true
+	rig_system.begin_pose_edit("Pose bone")
+	rig_system.set_bone_pose(str(rig.get("object_id", "")), bone_name, patch)
+	rig_system.end_pose_edit()
+	var node: Node3D = doc.nodes.get(str(rig.get("object_id", ""))) if doc != null else null
+	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D if node != null else null
+	_refresh_pose_fields(skeleton, bone_name)
+	_updating = false
+
+
+func _apply_pose_position() -> void:
+	_apply_pose_patch({"p": Vector3(_pose_px.value, _pose_py.value, _pose_pz.value)})
+
+
+func _apply_pose_rotation() -> void:
+	_apply_pose_patch({"r": Quaternion.from_euler(Vector3(
+		deg_to_rad(_pose_rx.value), deg_to_rad(_pose_ry.value), deg_to_rad(_pose_rz.value)))})
+
+
+func _apply_pose_scale() -> void:
+	_apply_pose_patch({"s": Vector3(_pose_sx.value, _pose_sy.value, _pose_sz.value)})
 
 
 func _set_field_editable(field: Control, value: bool) -> void:

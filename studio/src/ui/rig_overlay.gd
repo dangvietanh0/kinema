@@ -35,16 +35,22 @@ var rig_system = null
 var _rig_id := ""
 var _enabled := false
 var _mode := "pose"
+var _transform := "rotate"
+var _axis := "free"
 var _dragging := false
 var _drag_bone := ""
 var _drag_origin := Vector2.ZERO
 var _drag_start_rotation := Quaternion.IDENTITY
+var _drag_start_position := Vector3.ZERO
+var _drag_start_scale := Vector3.ONE
 var _drag_target := ""
 var _drag_kind := ""
 var _drag_rest_start: Dictionary = {}
 var _drag_rest_current: Dictionary = {}
 var _drag_head_world := Vector3.ZERO
 var _drag_plane := Plane()
+var _readout_text := ""
+var _readout_screen := Vector2.ZERO
 
 
 func _ready() -> void:
@@ -94,6 +100,38 @@ func hit_radius() -> float:
 
 func mode() -> String:
 	return _mode
+
+
+func transform_mode() -> String:
+	return _transform
+
+
+func axis_mode() -> String:
+	return _axis
+
+
+func set_transform_mode(mode: String) -> void:
+	var clean := mode if mode in ["rotate", "move"] else "rotate"
+	if _transform == clean:
+		return
+	_transform = clean
+	queue_redraw()
+
+
+func set_axis_mode(axis: String) -> void:
+	var clean := axis if axis in ["free", "x", "y", "z"] else "free"
+	if _axis == clean:
+		return
+	_axis = clean
+	queue_redraw()
+
+
+func readout_visible() -> bool:
+	return _dragging and _readout_text != ""
+
+
+func readout_text() -> String:
+	return _readout_text
 
 
 func is_edit_mode() -> bool:
@@ -337,6 +375,13 @@ func _draw() -> void:
 			draw_dashed_line(effector, target_screen, Kit.FOCUS_DARK, 1.0)
 		draw_arc(target_screen, TARGET_HANDLE_RADIUS, 0.0, TAU, 32, Kit.FOCUS_BRIGHT, 1.0)
 		draw_circle(target_screen, 4.0, Kit.FOCUS_BRIGHT)
+	if _dragging and _readout_text != "":
+		var font := ThemeDB.fallback_font
+		var text_size := font.get_string_size(_readout_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14)
+		var anchor := _readout_screen + Vector2(14, -18)
+		var rect := Rect2(anchor - Vector2(6, text_size.y), text_size + Vector2(12, 8))
+		draw_rect(rect, Kit.SURFACE_3, true)
+		draw_string(font, anchor, _readout_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Kit.TEXT)
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -402,7 +447,10 @@ func drag_at(screen: Vector2) -> void:
 	elif _drag_target != "":
 		_move_target(screen)
 	elif _dragging:
-		_rotate_drag(screen)
+		if _transform == "move":
+			_move_drag(screen)
+		else:
+			_rotate_drag(screen)
 
 
 func release_drag() -> void:
@@ -418,8 +466,20 @@ func _begin_drag(bone: String, screen: Vector2) -> void:
 		var index := skeleton.find_bone(bone)
 		if index >= 0:
 			_drag_start_rotation = skeleton.get_bone_pose_rotation(index)
+			_drag_start_position = skeleton.get_bone_pose_position(index)
+			_drag_start_scale = skeleton.get_bone_pose_scale(index)
+			_drag_head_world = skeleton.to_global(skeleton.get_bone_global_pose(index).origin)
+	_readout_text = ""
+	var ray: Dictionary = view.screen_ray(screen) if view != null else {}
+	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
+	var normal := -direction
+	if normal.length_squared() <= 0.000001:
+		normal = Vector3.BACK
+	normal = normal.normalized()
+	_drag_plane = Plane(normal, normal.dot(_drag_head_world))
 	rig_system.set_active_bone(_rig_id, bone)
 	bone_selected.emit(bone)
+	rig_system.begin_pose_edit("Pose bone")
 
 
 func _end_drag() -> void:
@@ -428,6 +488,9 @@ func _end_drag() -> void:
 			# One gesture, one undo entry: the preview only becomes a rest
 			# edit when the finger lifts.
 			rig_system.set_bone_rest(_rig_id, _drag_bone, _drag_rest_current)
+	if _dragging and _drag_bone != "":
+		rig_system.end_pose_edit()
+	_readout_text = ""
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
@@ -438,6 +501,16 @@ func _end_drag() -> void:
 
 
 func _cancel_drag() -> void:
+	if _dragging and _drag_bone != "":
+		# Cancel restores the pose captured on press, then closes the one
+		# transaction the gesture opened.
+		rig_system.set_bone_pose(_rig_id, _drag_bone, {
+			"p": _drag_start_position,
+			"r": _drag_start_rotation,
+			"s": _drag_start_scale,
+		})
+		rig_system.end_pose_edit()
+	_readout_text = ""
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
@@ -548,17 +621,104 @@ func _rotate_drag(screen: Vector2) -> void:
 	if index < 0:
 		return
 	var delta := screen - _drag_origin
-	var up := Vector3.UP
-	var right := Vector3.RIGHT
-	if view != null:
-		var camera = view.get("_camera")
-		if camera is Camera3D:
-			up = (camera as Camera3D).global_transform.basis.y.normalized()
-			right = (camera as Camera3D).global_transform.basis.x.normalized()
-	var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
-	var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
-	skeleton.set_bone_pose_rotation(index, (yaw * pitch * _drag_start_rotation).normalized())
+	var next_rotation := _drag_start_rotation
+	if _axis == "free":
+		var up := Vector3.UP
+		var right := Vector3.RIGHT
+		if view != null:
+			var camera = view.get("_camera")
+			if camera is Camera3D:
+				up = (camera as Camera3D).global_transform.basis.y.normalized()
+				right = (camera as Camera3D).global_transform.basis.x.normalized()
+		var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
+		var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
+		next_rotation = (yaw * pitch * _drag_start_rotation).normalized()
+	else:
+		var local_axis := _axis_vector()
+		var world_axis := (skeleton.global_transform.basis * (skeleton.get_bone_global_pose(index).basis * local_axis)).normalized()
+		var screen_axis := _screen_axis(world_axis, _drag_head_world)
+		if screen_axis.length_squared() <= 0.000001:
+			return
+		var sign := 1.0
+		if delta.dot(screen_axis) < 0.0:
+			sign = -1.0
+		var projected := absf(delta.dot(screen_axis.normalized()))
+		var angle := clampf(sign * projected * DRAG_SENSITIVITY, -PI, PI)
+		next_rotation = (_drag_start_rotation * Quaternion(local_axis, angle)).normalized()
+	rig_system.set_bone_pose(_rig_id, _drag_bone, {"r": next_rotation})
+	_set_readout("%.0f°" % rad_to_deg(next_rotation.angle_to(_drag_start_rotation)),
+		view.world_to_screen(_drag_head_world) if view != null else screen)
 	queue_redraw()
+
+
+func _move_drag(screen: Vector2) -> void:
+	var skeleton := _skeleton()
+	if skeleton == null or _drag_bone == "" or view == null:
+		return
+	var index := skeleton.find_bone(_drag_bone)
+	if index < 0:
+		return
+	var parent := skeleton.get_bone_parent(index)
+	var parent_basis := Basis.IDENTITY
+	if parent >= 0:
+		parent_basis = skeleton.get_bone_global_pose(parent).basis
+	var delta_parent := Vector3.ZERO
+	if _axis == "free":
+		var hit = _plane_hit(screen)
+		if hit == null:
+			return
+		delta_parent = parent_basis.inverse() * (skeleton.to_local(hit) - skeleton.to_local(_drag_head_world))
+	else:
+		var axis_world := _axis_world_vector()
+		var screen_axis := _screen_axis(axis_world, _drag_head_world)
+		if screen_axis.length_squared() <= 0.000001:
+			return
+		var units := (screen - _drag_origin).dot(screen_axis.normalized()) / screen_axis.length()
+		var axis_skeleton := skeleton.global_transform.basis.inverse() * axis_world
+		delta_parent = parent_basis.inverse() * (axis_skeleton * units)
+	var next_position := _drag_start_position + delta_parent
+	if doc != null and doc.snap:
+		next_position = Vector3(
+			roundf(next_position.x / 0.01) * 0.01,
+			roundf(next_position.y / 0.01) * 0.01,
+			roundf(next_position.z / 0.01) * 0.01)
+	rig_system.set_bone_pose(_rig_id, _drag_bone, {"p": next_position})
+	_set_readout("%.2f u" % next_position.distance_to(_drag_start_position),
+		view.world_to_screen(_drag_head_world))
+	queue_redraw()
+
+
+func _axis_vector() -> Vector3:
+	match _axis:
+		"x":
+			return Vector3.RIGHT
+		"y":
+			return Vector3.UP
+		"z":
+			return Vector3.BACK
+	return Vector3.ZERO
+
+
+func _axis_world_vector() -> Vector3:
+	match _axis:
+		"x":
+			return Vector3.RIGHT
+		"y":
+			return Vector3.UP
+		"z":
+			return Vector3.BACK
+	return Vector3.ZERO
+
+
+func _screen_axis(world_axis: Vector3, origin_world: Vector3) -> Vector2:
+	if view == null:
+		return Vector2.ZERO
+	return view.world_to_screen(origin_world + world_axis) - view.world_to_screen(origin_world)
+
+
+func _set_readout(text: String, screen: Vector2) -> void:
+	_readout_text = text
+	_readout_screen = screen
 
 
 func _chain_at(screen: Vector2) -> String:

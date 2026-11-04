@@ -874,6 +874,9 @@ func open_loaded(meta: Dictionary, data: Dictionary) -> void:
 	_update_header()
 
 func _adopt_document(document: Node3D) -> void:
+	if doc != null and is_instance_valid(doc) and doc != document \
+			and doc.rig_adopted.is_connected(_on_rig_adopted):
+		doc.rig_adopted.disconnect(_on_rig_adopted)
 	doc = document
 	_rig_mode = false
 	if not Gfx.changed.is_connected(_on_graphics_changed):
@@ -896,6 +899,8 @@ func _adopt_document(document: Node3D) -> void:
 	doc.scene_changed.connect(_on_document_scene_changed)
 	if not doc.rigs_changed.is_connected(_on_document_rigs_changed):
 		doc.rigs_changed.connect(_on_document_rigs_changed)
+	if not doc.rig_adopted.is_connected(_on_rig_adopted):
+		doc.rig_adopted.connect(_on_rig_adopted)
 	doc.selection_changed.connect(_on_document_selection_changed)
 	doc.dirty_changed.connect(_on_document_dirty_changed)
 	doc.history_changed.connect(_on_document_history_changed)
@@ -2342,9 +2347,7 @@ func _pick_model() -> void:
 	if doc.project_dir == "":
 		_save_project(false)
 	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
-		var filters := PackedStringArray([
-			"*.glb, *.gltf, *.obj;3D models;model/gltf-binary,model/gltf+json,application/octet-stream",
-		])
+		var filters: PackedStringArray = model_picker_filters()
 		var err := DisplayServer.file_dialog_show(
 			"Import 3D model", "", "", false,
 			DisplayServer.FILE_DIALOG_MODE_OPEN_FILE, filters, _on_model_selected
@@ -2354,10 +2357,81 @@ func _pick_model() -> void:
 	else:
 		_overlay.toast("This platform has no native file picker", "triangle-alert", Kit.DANGER)
 
+
+static func model_picker_filters() -> PackedStringArray:
+	return PackedStringArray([
+		"*.glb, *.gltf, *.obj, *.fbx;3D models;model/gltf-binary,model/gltf+json,application/octet-stream",
+	])
+
+
+static func fbx_conversion_copy() -> Dictionary:
+	return {
+		"title": "FBX needs a conversion",
+		"body": "Godot's FBX importer only exists in the editor, so it cannot run on Android. Convert the model to glTF 2.0 first.",
+		"steps": [
+			"Open the model in Blender.",
+			"File → Export → glTF 2.0.",
+			"Choose glTF Binary (.glb).",
+			"Import the .glb in Kinema.",
+		],
+		"actions": [
+			{"text": "Choose another file", "primary": true},
+			{"text": "Cancel", "primary": false},
+		],
+	}
+
+
+static func rig_adopted_toast(bone_count: int) -> String:
+	return "Skeleton detected · %d bones · Pose mode is ready." % bone_count
+
+
+func _show_fbx_conversion_sheet() -> void:
+	var copy: Dictionary = fbx_conversion_copy()
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 10)
+	var paragraph := Kit.label(str(copy.get("body", "")), Kit.TYPE_BODY, Kit.TEXT)
+	paragraph.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(paragraph)
+	var steps := VBoxContainer.new()
+	steps.add_theme_constant_override("separation", 6)
+	var index := 1
+	for step in copy.get("steps", []):
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		var number := Kit.mono_label("%d" % index, Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+		number.custom_minimum_size.x = 18
+		row.add_child(number)
+		var text := Kit.label(str(step), Kit.TYPE_BODY, Kit.TEXT)
+		text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(text)
+		steps.add_child(row)
+		index += 1
+	body.add_child(steps)
+	var actions: Array = []
+	for raw in copy.get("actions", []):
+		if not raw is Dictionary:
+			continue
+		var action: Dictionary = (raw as Dictionary).duplicate(true)
+		if bool(action.get("primary", false)):
+			action["callback"] = _pick_model
+		actions.append(action)
+	_overlay.show_sheet(str(copy.get("title", "")), "", body, actions)
+
+
+func _on_rig_adopted(_object_id: String, bone_count: int) -> void:
+	if _overlay == null:
+		return
+	_overlay.toast(rig_adopted_toast(bone_count), "user-round", Kit.SUCCESS)
+
+
 func _on_model_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
 	if not status or paths.is_empty() or doc == null:
 		return
 	var uri := paths[0]
+	if uri.get_extension().to_lower() == "fbx":
+		_show_fbx_conversion_sheet()
+		return
 	var result: Dictionary = Store.import_model(uri, doc.project_dir, "Model")
 	if not bool(result.get("ok", false)):
 		_overlay.toast(str(result.get("error", "The model could not be imported")), "triangle-alert", Kit.DANGER)

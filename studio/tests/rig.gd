@@ -14,6 +14,7 @@ const BoneTreeScript = preload("res://src/ui/bone_tree.gd")
 const PosePanelScript = preload("res://src/ui/pose_panel.gd")
 const IkPanelScript = preload("res://src/ui/ik_panel.gd")
 const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
+const EditorAppScript = preload("res://src/app/editor.gd")
 
 const CAPTURE_DIR := "/tmp/opencode/wave2-rig-captures"
 
@@ -65,7 +66,12 @@ func _ready() -> void:
 	await _test_undo()
 	await _test_ik()
 	await _test_pose_and_bone_keys()
+	await _test_pose_v2()
+	await _test_pose_transactions()
+	await _test_touch_pose_editing()
 	await _test_imported_adoption()
+	await _test_gltf_external_buffers()
+	await _test_fbx_and_adoption()
 	await _test_ui()
 	await _test_overlay()
 	await _test_overlay_hit_transform()
@@ -755,6 +761,540 @@ func _test_pose_and_bone_keys() -> void:
 
 
 # -------------------------------------------------------------------------
+# C4b — pose v2 and persistence
+# -------------------------------------------------------------------------
+
+func _test_pose_v2() -> void:
+	print("RIG STEP: pose v2")
+	var doc := _new_doc("Pose V2")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var skel := _skeleton(doc, rig_id)
+	var node: Node3D = doc.nodes[rig_id]
+	var p_root := Vector3(0.2, 0.3, 0.4)
+	var q_root := Quaternion(Vector3.UP, 0.5)
+	var s_root := Vector3(1.2, 1.3, 1.4)
+	skel.set_bone_pose_position(0, p_root)
+	skel.set_bone_pose_rotation(0, q_root)
+	skel.set_bone_pose_scale(0, s_root)
+	skel.set_bone_pose_position(1, Vector3(0.1, 0.5, 0.0))
+	skel.set_bone_pose_rotation(1, Quaternion(Vector3.RIGHT, -0.2))
+	skel.set_bone_pose_scale(1, Vector3(0.9, 1.1, 1.0))
+	node.position = Vector3(0.4, -0.2, 0.7)
+	doc.get_object(rig_id)["position"] = Vector3(0.4, -0.2, 0.7)
+
+	var pose: Dictionary = PoseLibraryScript.capture(skel, node)
+	var bones: Dictionary = pose.get("bones", {})
+	_check(bones.size() == 2, "pose capture writes every bone")
+	var root_pose: Dictionary = bones.get("Root", {})
+	_check(root_pose.get("p", []) is Array and (root_pose["p"] as Array).size() == 3, "pose capture writes a p array")
+	_check(root_pose.get("r", []) is Array and (root_pose["r"] as Array).size() == 4, "pose capture writes an r array")
+	_check(root_pose.get("s", []) is Array and (root_pose["s"] as Array).size() == 3, "pose capture writes an s array")
+	_check(PoseLibraryScript.array_to_vec3(root_pose.get("p", [])) == p_root, "pose capture stores the real position")
+	_check(PoseLibraryScript.array_to_quat(root_pose.get("r", [])).angle_to(q_root) < 0.001, "pose capture stores the real rotation")
+	_check(PoseLibraryScript.array_to_vec3(root_pose.get("s", [])) == s_root, "pose capture stores the real scale")
+	_check(pose.get("root_position", []) is Array, "pose capture keeps a JSON root position")
+
+	# apply_bones never moves the root node.
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	node.position = Vector3(9, 9, 9)
+	PoseLibraryScript.apply_bones(skel, pose)
+	_check(node.position == Vector3(9, 9, 9), "apply_bones leaves the root node untouched")
+	_check(skel.get_bone_pose_position(0).distance_to(p_root) < 0.0001, "apply_bones restores the bone position")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "apply_bones restores the bone rotation")
+	_check(skel.get_bone_pose_scale(0).distance_to(s_root) < 0.0001, "apply_bones restores the bone scale")
+
+	PoseLibraryScript.apply(skel, node, pose)
+	_check(node.position.distance_to(Vector3(0.4, -0.2, 0.7)) < 0.0001, "apply restores the root position explicitly")
+
+	# A legacy quaternion pose stays readable and changes rotation only.
+	skel.set_bone_pose_position(0, Vector3(0.25, 0.1, -0.1))
+	skel.set_bone_pose_scale(0, Vector3(1.5, 1.6, 1.7))
+	var legacy_q := Quaternion(Vector3.RIGHT, 0.35)
+	var legacy := {"bones": {"Root": [legacy_q.x, legacy_q.y, legacy_q.z, legacy_q.w]}}
+	PoseLibraryScript.apply_bones(skel, legacy)
+	_check(skel.get_bone_pose_rotation(0).angle_to(legacy_q) < 0.001, "a legacy quaternion pose applies rotation")
+	_check(skel.get_bone_pose_position(0).distance_to(Vector3(0.25, 0.1, -0.1)) < 0.0001, "a legacy pose leaves the position untouched")
+	_check(skel.get_bone_pose_scale(0).distance_to(Vector3(1.5, 1.6, 1.7)) < 0.0001, "a legacy pose leaves the scale untouched")
+	var legacy_serialized: Dictionary = PoseLibraryScript.deserialize(legacy)
+	_check(legacy_serialized.get("bones", {}).has("Root"), "deserialize keeps a legacy pose bone")
+	var serialized: Dictionary = PoseLibraryScript.serialize(pose)
+	_check((serialized.get("bones", {}).get("Root", {}) as Dictionary).has("s"), "serialize preserves the v2 shape")
+
+	skel.set_bone_pose_position(0, p_root)
+	skel.set_bone_pose_rotation(0, q_root)
+	skel.set_bone_pose_scale(0, s_root)
+
+	# Rig JSON carries the live pose.
+	var data: Dictionary = doc.to_data()
+	var rigs: Array = data.get("rigs", [])
+	_check(rigs.size() == 1 and (rigs[0] as Dictionary).has("pose"), "to_data writes a top-level rig pose")
+	var json_pose: Dictionary = (rigs[0] as Dictionary).get("pose", {})
+	_check((json_pose.get("bones", {}) as Dictionary).has("Root"), "the rig pose holds every bone")
+
+	# Save, rebuild and load restores p/r/s without a history entry.
+	var doc2 := _new_doc("Pose V2 Load")
+	doc2.load_project(data, _tmp_dir)
+	var skel2 := _skeleton(doc2, rig_id)
+	_check(skel2 != null, "the pose roundtrip rebuilds the skeleton")
+	if skel2 != null:
+		_check(skel2.get_bone_pose_position(0).distance_to(p_root) < 0.001 and skel2.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "load restores the bone position and rotation")
+		_check(skel2.get_bone_pose_scale(0).distance_to(s_root) < 0.001, "load restores the bone scale")
+	_check(not doc2.has_open_edit(), "loading a pose opens no edit")
+	_check(not doc2.can_undo(), "loading a pose creates no undo entry")
+
+	# The object transform stays authoritative: a stale root_position in the
+	# saved pose cannot move the loaded object.
+	(data["rigs"][0] as Dictionary)["pose"]["root_position"] = [9, 9, 9]
+	var doc3 := _new_doc("Pose V2 Root")
+	doc3.load_project(data, _tmp_dir)
+	var node3: Node3D = doc3.nodes[rig_id]
+	_check(node3.position.distance_to(Vector3(0.4, -0.2, 0.7)) < 0.001, "load ignores the saved pose root_position")
+	_check(node3.position.distance_to(Vector3(9, 9, 9)) > 1.0, "the saved pose cannot move the object root")
+
+	# save_pose stores the v2 bone map and apply_pose restores all channels.
+	node.position = Vector3(0.4, -0.2, 0.7)
+	var pose_id: String = rs.save_pose(rig_id, "V2 Pose")
+	var stored_poses: Array = rs.get_rig(rig_id).get("poses", [])
+	_check(pose_id != "" and not stored_poses.is_empty(), "save_pose stores a v2 pose")
+	if not stored_poses.is_empty():
+		var stored_bones: Dictionary = (stored_poses[0] as Dictionary).get("bones", {})
+		var stored_root: Dictionary = stored_bones.get("Root", {})
+		_check(stored_root.has("p") and stored_root.has("r") and stored_root.has("s"), "save_pose stores p, r and s")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	doc.get_object(rig_id)["position"] = Vector3(0.4, -0.2, 0.7)
+	rs.apply_pose(rig_id, pose_id)
+	_check(skel.get_bone_pose_position(0).distance_to(p_root) < 0.001, "apply_pose restores the position")
+	_check(skel.get_bone_pose_scale(0).distance_to(s_root) < 0.001, "apply_pose restores the scale")
+	doc.queue_free()
+	doc2.queue_free()
+	doc3.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C4c — pose transactions, autokey and three-channel bone keys
+# -------------------------------------------------------------------------
+
+func _bone_track_index(doc: Node3D, rig_id: String, bone: String, type: int) -> int:
+	if doc.animation == null:
+		return -1
+	var path: NodePath = doc._bone_track_path(rig_id, bone)
+	for ti in range(doc.animation.get_track_count()):
+		if doc.animation.track_get_type(ti) == type and doc.animation.track_get_path(ti) == path:
+			return ti
+	return -1
+
+
+func _bone_key_at(doc: Node3D, rig_id: String, bone: String, type: int, time: float) -> int:
+	var track := _bone_track_index(doc, rig_id, bone, type)
+	if track < 0:
+		return -1
+	return doc.animation.track_find_key(track, time, Animation.FIND_MODE_EXACT)
+
+
+func _bone_key_count(doc: Node3D, rig_id: String, bone: String, type: int) -> int:
+	var track := _bone_track_index(doc, rig_id, bone, type)
+	if track < 0:
+		return 0
+	return doc.animation.track_get_key_count(track)
+
+
+func _test_pose_transactions() -> void:
+	print("RIG STEP: pose transactions")
+	var doc := _new_doc("Pose Transactions")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var skel := _skeleton(doc, rig_id)
+
+	var p_root := Vector3(0.15, 0.25, 0.35)
+	var q_root := Quaternion(Vector3.UP, 0.45)
+	var s_root := Vector3(1.1, 1.2, 1.3)
+
+	# insert_pose_channel writes one track per channel at current_time.
+	doc.current_time = 1.25
+	var rot_key: int = doc.insert_pose_channel(rig_id, "Root", "rotation", q_root)
+	var pos_key: int = doc.insert_pose_channel(rig_id, "Root", "position", p_root)
+	var scale_key: int = doc.insert_pose_channel(rig_id, "Root", "scale", s_root)
+	_check(rot_key >= 0 and pos_key >= 0 and scale_key >= 0, "insert_pose_channel returns a key index")
+	_check(_bone_track_index(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D) >= 0, "insert_pose_channel creates a rotation track")
+	_check(_bone_track_index(doc, rig_id, "Root", Animation.TYPE_POSITION_3D) >= 0, "insert_pose_channel creates a position track")
+	_check(_bone_track_index(doc, rig_id, "Root", Animation.TYPE_SCALE_3D) >= 0, "insert_pose_channel creates a scale track")
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D) == 1, "the rotation track holds one key")
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_POSITION_3D) == 1, "the position track holds one key")
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_SCALE_3D) == 1, "the scale track holds one key")
+
+	# A second call at the same time updates instead of duplicating.
+	var updated_q := Quaternion(Vector3.RIGHT, 0.2)
+	doc.insert_pose_channel(rig_id, "Root", "rotation", updated_q)
+	var rot_track := _bone_track_index(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D)
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D) == 1, "insert_pose_channel updates an existing key")
+	if rot_track >= 0:
+		_check((doc.animation.track_get_key_value(rot_track, 0) as Quaternion).angle_to(updated_q) < 0.001, "the updated key stores the new rotation")
+
+	# insert_pose_keys writes all three channels for a v2 bone.
+	doc.current_time = 2.0
+	doc.insert_pose_keys(rig_id, {"bones": {"Spine": {
+		"p": Vector3(0.1, 0.5, 0.0),
+		"r": [0.0, 0.2, 0.0, 0.98],
+		"s": Vector3(0.9, 1.0, 1.1),
+	}}})
+	var rotation_type := Animation.TYPE_ROTATION_3D
+	var position_type := Animation.TYPE_POSITION_3D
+	var scale_type := Animation.TYPE_SCALE_3D
+	for type in [position_type, rotation_type, scale_type]:
+		_check(_bone_key_count(doc, rig_id, "Spine", type) == 1, "insert_pose_keys writes channel %d" % type)
+
+	# A legacy quaternion map still writes rotation only.
+	doc.current_time = 2.5
+	doc.insert_pose_keys(rig_id, {"bones": {"Spine": [0.0, 0.0, 0.0, 1.0]}})
+	_check(_bone_key_count(doc, rig_id, "Spine", rotation_type) == 2, "a legacy map writes a rotation key")
+	_check(_bone_key_count(doc, rig_id, "Spine", position_type) == 1, "a legacy map writes no position key")
+	_check(_bone_key_count(doc, rig_id, "Spine", scale_type) == 1, "a legacy map writes no scale key")
+
+	# set_bone_pose applies only the supplied channels and autokeys them.
+	doc.set_autokey(true)
+	doc.current_time = 3.0
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	var q_set := Quaternion(Vector3.FORWARD, 0.3)
+	_check(rs.set_bone_pose(rig_id, "Root", {"r": q_set}), "set_bone_pose applies a rotation patch")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_set) < 0.001, "set_bone_pose changes the live rotation")
+	_check(_bone_key_at(doc, rig_id, "Root", rotation_type, 3.0) >= 0, "autokey writes a rotation key")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 3.0) < 0, "a rotation patch writes no position key")
+	_check(_bone_key_at(doc, rig_id, "Root", scale_type, 3.0) < 0, "a rotation patch writes no scale key")
+
+	var p_set := Vector3(0.2, 0.3, 0.4)
+	var s_set := Vector3(1.2, 1.3, 1.4)
+	_check(rs.set_bone_pose(rig_id, "Root", {"p": p_set, "s": s_set}), "set_bone_pose applies a position and scale patch")
+	_check(skel.get_bone_pose_position(0).distance_to(p_set) < 0.0001 and skel.get_bone_pose_scale(0).distance_to(s_set) < 0.0001, "set_bone_pose changes position and scale")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_set) < 0.001, "a p/s patch leaves the rotation untouched")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 3.0) >= 0, "autokey writes a position key")
+	_check(_bone_key_at(doc, rig_id, "Root", scale_type, 3.0) >= 0, "autokey writes a scale key")
+
+	# An existing time updates the key.
+	var p_updated := Vector3(-0.2, -0.3, -0.4)
+	doc.insert_pose_channel(rig_id, "Root", "position", p_set)
+	rs.set_bone_pose(rig_id, "Root", {"p": p_updated})
+	var pos_track := _bone_track_index(doc, rig_id, "Root", position_type)
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 3.0) >= 0, "autokey keeps the existing position key")
+	if pos_track >= 0:
+		var pos_at: int = doc.animation.track_find_key(pos_track, 3.0, Animation.FIND_MODE_EXACT)
+		_check(pos_at >= 0 and (doc.animation.track_get_key_value(pos_track, pos_at) as Vector3).distance_to(p_updated) < 0.0001, "autokey updates the key value")
+
+	# Autokey off changes the skeleton and writes nothing.
+	doc.set_autokey(false)
+	doc.current_time = 4.0
+	_check(rs.set_bone_pose(rig_id, "Root", {"p": Vector3(0.9, 0.9, 0.9)}), "set_bone_pose works with autokey off")
+	_check(skel.get_bone_pose_position(0).distance_to(Vector3(0.9, 0.9, 0.9)) < 0.0001, "autokey off still moves the bone")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 4.0) < 0, "autokey off writes no key")
+	_check(not rs.set_bone_pose(rig_id, "Missing", {"r": q_set}), "set_bone_pose refuses a missing bone")
+
+	# apply_saved_pose is one transaction and applies autokey.
+	skel.set_bone_pose_position(0, p_root)
+	skel.set_bone_pose_rotation(0, q_root)
+	skel.set_bone_pose_scale(0, s_root)
+	var saved_pose: String = rs.save_pose(rig_id, "Transaction Pose")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	doc.set_autokey(true)
+	doc.current_time = 5.0
+	_check(rs.apply_saved_pose(rig_id, saved_pose), "apply_saved_pose succeeds")
+	_check(skel.get_bone_pose_position(0).distance_to(p_root) < 0.001, "apply_saved_pose restores the position")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "apply_saved_pose restores the rotation")
+	_check(skel.get_bone_pose_scale(0).distance_to(s_root) < 0.001, "apply_saved_pose restores the scale")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 5.0) >= 0, "apply_saved_pose autokeys the position")
+	_check(_bone_key_at(doc, rig_id, "Root", rotation_type, 5.0) >= 0, "apply_saved_pose autokeys the rotation")
+	_check(_bone_key_at(doc, rig_id, "Root", scale_type, 5.0) >= 0, "apply_saved_pose autokeys the scale")
+	_check(doc.undo_label() == "Apply pose", "apply_saved_pose is one undo entry")
+	doc.undo()
+	skel = _skeleton(doc, rig_id)
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 5.0) < 0, "one undo removes the applied pose keys")
+	_check(_bone_key_at(doc, rig_id, "Root", rotation_type, 5.0) < 0, "one undo removes the applied rotation keys")
+
+	# Reset uses the same transaction and autokey path.
+	doc.set_autokey(true)
+	doc.current_time = 6.0
+	skel.set_bone_pose_position(0, Vector3(1.0, 2.0, 3.0))
+	skel.set_bone_pose_rotation(0, Quaternion(Vector3.UP, 0.8))
+	skel.set_bone_pose_scale(0, Vector3(2.0, 2.0, 2.0))
+	rs.reset_bone_pose(rig_id, "Root")
+	_check(skel.get_bone_pose_position(0).length() < 0.0001 and skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001 and skel.get_bone_pose_scale(0).distance_to(Vector3.ONE) < 0.0001, "reset_bone_pose resets p, r and s")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Root", rotation_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Root", scale_type, 6.0) >= 0, "reset_bone_pose autokeys every channel")
+	_check(doc.undo_label() == "Reset pose", "reset_bone_pose is one undo entry")
+
+	skel.set_bone_pose_position(1, Vector3(1.0, 1.0, 1.0))
+	skel.set_bone_pose_rotation(1, Quaternion(Vector3.RIGHT, 0.5))
+	skel.set_bone_pose_scale(1, Vector3(2.0, 2.0, 2.0))
+	rs.reset_all_poses(rig_id)
+	_check(skel.get_bone_pose_position(0).length() < 0.0001 and skel.get_bone_pose_position(1).length() < 0.0001, "reset_all_poses resets every bone position")
+	_check(skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001 and skel.get_bone_pose_rotation(1).angle_to(Quaternion.IDENTITY) < 0.001, "reset_all_poses resets every bone rotation")
+	_check(skel.get_bone_pose_scale(0).distance_to(Vector3.ONE) < 0.0001 and skel.get_bone_pose_scale(1).distance_to(Vector3.ONE) < 0.0001, "reset_all_poses resets every bone scale")
+	_check(_bone_key_at(doc, rig_id, "Spine", position_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Spine", rotation_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Spine", scale_type, 6.0) >= 0, "reset_all_poses autokeys every channel")
+
+	# key_pose writes all three channels and one undo restores the counts.
+	var key_doc := _new_doc("Key Pose Three")
+	var key_rs = key_doc.rig_system
+	var key_rig := _make_chain_rig(key_doc)
+	var key_skel := _skeleton(key_doc, key_rig)
+	key_doc.current_time = 0.0
+	key_doc.insert_pose_channel(key_rig, "Root", "position", Vector3.ZERO)
+	key_doc.current_time = 1.0
+	key_skel.set_bone_pose_position(0, Vector3(0.1, 0.2, 0.3))
+	key_skel.set_bone_pose_rotation(0, Quaternion(Vector3.UP, 0.2))
+	key_skel.set_bone_pose_scale(0, Vector3(1.1, 1.1, 1.1))
+	key_skel.set_bone_pose_position(1, Vector3(0.0, 0.9, 0.0))
+	key_skel.set_bone_pose_rotation(1, Quaternion(Vector3.RIGHT, -0.1))
+	key_skel.set_bone_pose_scale(1, Vector3(0.95, 1.05, 1.0))
+	_check(key_rs.key_pose(key_rig), "key_pose succeeds with the full pose")
+	for type in [position_type, rotation_type, scale_type]:
+		_check(_bone_key_at(key_doc, key_rig, "Root", type, 1.0) >= 0, "key_pose writes the root channel %d" % type)
+		_check(_bone_key_at(key_doc, key_rig, "Spine", type, 1.0) >= 0, "key_pose writes the spine channel %d" % type)
+	_check(key_doc.undo_label() == "Key pose", "key_pose is one undo entry")
+	key_doc.undo()
+	for type in [position_type, rotation_type, scale_type]:
+		_check(_bone_key_at(key_doc, key_rig, "Root", type, 1.0) < 0, "one undo removes the keyed root channel %d" % type)
+	_check(_bone_key_at(key_doc, key_rig, "Root", position_type, 0.0) >= 0, "undo returns the previous key counts")
+
+	# The rotation-only Document contract is unchanged.
+	key_doc.current_time = 2.0
+	key_doc.insert_bone_key(key_rig, "Root", Quaternion(Vector3.UP, 0.3))
+	_check(_bone_key_at(key_doc, key_rig, "Root", rotation_type, 2.0) >= 0, "insert_bone_key writes a rotation key")
+	_check(_bone_key_at(key_doc, key_rig, "Root", position_type, 2.0) < 0 and _bone_key_at(key_doc, key_rig, "Root", scale_type, 2.0) < 0, "insert_bone_key stays rotation-only")
+
+	# One pose gesture is one transaction; a tap opens none.
+	var drag_doc := _new_doc("Pose Drag")
+	var drag_rig := _make_chain_rig(drag_doc)
+	var drag_skel := _skeleton(drag_doc, drag_rig)
+	drag_doc.rig_system.set_active_bone(drag_rig, "Root")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(drag_doc, view, drag_doc.rig_system)
+	overlay.set_rig(drag_rig)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var head: Vector3 = drag_skel.to_global(drag_skel.get_bone_global_pose(0).origin)
+	var screen: Vector2 = view.world_to_screen(head)
+	var undo_before: int = (drag_doc._undo_stack as Array).size()
+	overlay.press_at(screen)
+	overlay.release_drag()
+	_check(not drag_doc.has_open_edit(), "a zero-movement tap closes its transaction")
+	_check((drag_doc._undo_stack as Array).size() == undo_before, "a zero-movement tap creates no undo entry")
+
+	var before: Quaternion = drag_skel.get_bone_pose_rotation(0)
+	overlay.press_at(screen)
+	_check(drag_doc.has_open_edit(), "a pose drag opens one transaction")
+	overlay.drag_at(screen + Vector2(48, 0))
+	overlay.release_drag()
+	_check(not drag_doc.has_open_edit(), "the pose drag closes its transaction")
+	_check(drag_skel.get_bone_pose_rotation(0).angle_to(before) > 0.001, "dragging rotates the bone")
+	_check((drag_doc._undo_stack as Array).size() == undo_before + 1, "a pose drag is one undo entry")
+	drag_doc.undo()
+	drag_skel = _skeleton(drag_doc, drag_rig)
+	_check(drag_skel.get_bone_pose_rotation(0).angle_to(before) < 0.001, "undo restores the start pose")
+
+	overlay.queue_free()
+	view.queue_free()
+	key_doc.queue_free()
+	drag_doc.queue_free()
+	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C4d — touch transform/axis editing and the Rest/Pose panel
+# -------------------------------------------------------------------------
+
+func _test_touch_pose_editing() -> void:
+	print("RIG STEP: touch pose editing")
+	var script = load("res://src/ui/rig_toolbar.gd")
+	var toolbar = script.new()
+	toolbar.name = "TouchToolbar"
+	add_child(toolbar)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(toolbar.transform_mode() == "rotate", "the toolbar defaults to Rotate")
+	_check(toolbar.axis_mode() == "free", "the toolbar defaults to the Free axis")
+	var rotate_button: Button = toolbar.find_child("TransformRotateButton", true, false)
+	var move_button: Button = toolbar.find_child("TransformMoveButton", true, false)
+	var free_button: Button = toolbar.find_child("AxisFreeButton", true, false)
+	var x_button: Button = toolbar.find_child("AxisXButton", true, false)
+	var y_button: Button = toolbar.find_child("AxisYButton", true, false)
+	var z_button: Button = toolbar.find_child("AxisZButton", true, false)
+	_check(rotate_button != null and move_button != null, "the toolbar has Rotate and Move segments")
+	_check(free_button != null and x_button != null and y_button != null and z_button != null, "the toolbar has Free/X/Y/Z axis segments")
+	for button in [rotate_button, move_button, free_button, x_button, y_button, z_button]:
+		_check(button != null and button.custom_minimum_size == Vector2(44, 44), "each Transform/Axis segment is a 44x44 target")
+	var transforms: Array[String] = []
+	var axes: Array[String] = []
+	toolbar.transform_mode_changed.connect(func(mode: String) -> void: transforms.append(mode))
+	toolbar.axis_mode_changed.connect(func(axis: String) -> void: axes.append(axis))
+	if move_button != null:
+		move_button.pressed.emit()
+		_check(toolbar.transform_mode() == "move" and transforms == ["move"], "Move emits one transform change")
+	if rotate_button != null:
+		rotate_button.pressed.emit()
+		_check(toolbar.transform_mode() == "rotate" and transforms == ["move", "rotate"], "Rotate emits one transform change")
+	if x_button != null:
+		x_button.pressed.emit()
+		_check(toolbar.axis_mode() == "x" and axes == ["x"], "X emits one axis change")
+	if free_button != null:
+		free_button.pressed.emit()
+		_check(toolbar.axis_mode() == "free" and axes == ["x", "free"], "Free emits one axis change")
+	toolbar.set_mode("edit")
+	if move_button != null and x_button != null:
+		_check(move_button.disabled and x_button.disabled, "Edit mode disables Transform and Axis")
+	toolbar.set_mode("pose")
+	toolbar.set_imported(true)
+	var edit_button: Button = toolbar.find_child("EditModeButton", true, false)
+	var add_button: Button = toolbar.find_child("ToolbarAddBoneButton", true, false)
+	if move_button != null and x_button != null and free_button != null:
+		_check(not move_button.disabled and not x_button.disabled and not free_button.disabled, "an imported rig keeps Transform and Axis enabled in Pose")
+	if edit_button != null and add_button != null:
+		_check(edit_button.disabled and add_button.disabled, "an imported rig keeps Edit and Add disabled")
+	toolbar.queue_free()
+
+	var doc := _new_doc("Touch Pose")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Root")
+	var skel := _skeleton(doc, rig_id)
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	doc.set_autokey(false)
+	await get_tree().process_frame
+
+	# Axis-locked rotation: local X only, 0.012 rad per pixel, clamped.
+	overlay.set_transform_mode("rotate")
+	overlay.set_axis_mode("x")
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	var screen: Vector2 = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	var undo_before: int = (doc._undo_stack as Array).size()
+	overlay.press_at(screen)
+	overlay.drag_at(screen + Vector2(60, 0))
+	_check(overlay.readout_visible(), "a rotation drag shows the live readout")
+	_check(overlay.readout_text().ends_with("°"), "the rotation readout is in degrees")
+	overlay.release_drag()
+	_check(not overlay.readout_visible(), "the rotation readout hides on release")
+	var rotated := skel.get_bone_pose_rotation(0)
+	var delta := Quaternion.IDENTITY.inverse() * rotated
+	var axis := delta.get_axis()
+	var angle := delta.get_angle()
+	_check(absf(absf(axis.x) - 1.0) < 0.001 and absf(axis.y) < 0.001 and absf(axis.z) < 0.001, "axis-locked rotation uses the local X axis")
+	_check(absf(angle - 60.0 * 0.012) < 0.001, "axis rotation uses 0.012 rad per pixel")
+	_check(absf(delta.get_euler().y) < 0.001 and absf(delta.get_euler().z) < 0.001, "axis-locked rotation leaves the other local axes at the start")
+	_check((doc._undo_stack as Array).size() == undo_before + 1, "one rotation gesture is one undo entry")
+
+	# Axis-locked move: world X only, never rotates.
+	overlay.set_transform_mode("move")
+	overlay.set_axis_mode("x")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	undo_before = (doc._undo_stack as Array).size()
+	overlay.press_at(screen)
+	overlay.drag_at(screen + Vector2(50, 40))
+	_check(overlay.readout_visible(), "a move drag shows the live readout")
+	_check(overlay.readout_text().ends_with(" u"), "the move readout is in units")
+	overlay.release_drag()
+	_check(not overlay.readout_visible(), "the move readout hides on release")
+	var moved := skel.get_bone_pose_position(0)
+	_check(moved.x > 0.01, "axis-locked move changes world X")
+	_check(absf(moved.y) < 0.001 and absf(moved.z) < 0.001, "axis-locked move ignores the other world axes")
+	_check(skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001, "axis-locked move does not rotate")
+	_check((doc._undo_stack as Array).size() == undo_before + 1, "one move gesture is one undo entry")
+
+	# Free move translates in the camera plane and never rotates.
+	overlay.set_axis_mode("free")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	overlay.press_at(screen)
+	overlay.drag_at(screen + Vector2(30, -20))
+	overlay.release_drag()
+	var free_move := skel.get_bone_pose_position(0)
+	_check(free_move.length() > 0.01, "free move translates the active bone")
+	_check(absf(free_move.y) > 0.001, "free move follows the vertical drag")
+	_check(skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001, "free move does not rotate the bone")
+	overlay.queue_free()
+	view.queue_free()
+
+	# Rest/Pose panel sections, pose commits and the per-bone reset.
+	var panel_doc := _new_doc("Rest Pose Panel")
+	var panel_rs = panel_doc.rig_system
+	var panel_rig := _make_chain_rig(panel_doc)
+	panel_rs.get_rig(panel_rig)["imported"] = true
+	panel_rs.set_active_rig(panel_rig)
+	panel_rs.set_active_bone(panel_rig, "Root")
+	var panel = RigPanelScript.new()
+	panel.name = "RestPosePanel"
+	add_child(panel)
+	panel.setup(panel_doc)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var rest_section = panel.find_child("RestSection", true, false)
+	var pose_section = panel.find_child("PoseSection", true, false)
+	_check(rest_section != null and pose_section != null, "the bone inspector has Rest and Pose sections")
+	var rest_label = panel.find_child("RestSectionLabel", true, false)
+	var pose_label = panel.find_child("PoseSectionLabel", true, false)
+	_check(rest_label != null and rest_label.text == "REST", "the Rest section is labelled")
+	_check(pose_label != null and pose_label.text == "POSE", "the Pose section is labelled")
+	var note = panel.find_child("ImportedRigNote", true, false)
+	_check(note != null and note.visible and note.text.contains("Pose and IK still work."), "the imported note says Pose and IK still work")
+	_check(note != null and rest_section != null and note.get_index() < rest_section.get_index(), "the imported note sits directly above Rest")
+
+	var rest_px = panel.find_child("RestPX", true, false)
+	var rest_len = panel.find_child("BoneLengthField", true, false)
+	var pose_px = panel.find_child("PosePX", true, false)
+	var pose_rx = panel.find_child("PoseRX", true, false)
+	var pose_sz = panel.find_child("PoseSZ", true, false)
+	_check(rest_px != null and rest_px.mouse_filter == Control.MOUSE_FILTER_IGNORE, "an imported rig disables the Rest position fields")
+	_check(rest_len != null and rest_len.mouse_filter == Control.MOUSE_FILTER_IGNORE, "an imported rig disables the Rest length field")
+	_check(pose_px != null and pose_px.mouse_filter == Control.MOUSE_FILTER_STOP, "an imported rig keeps the Pose position fields editable")
+	_check(pose_rx != null and pose_rx.mouse_filter == Control.MOUSE_FILTER_STOP, "an imported rig keeps the Pose rotation fields editable")
+	_check(pose_sz != null and pose_sz.mouse_filter == Control.MOUSE_FILTER_STOP, "an imported rig keeps the Pose scale fields editable")
+	var pose_fields := ["PosePX", "PosePY", "PosePZ", "PoseRX", "PoseRY", "PoseRZ", "PoseSX", "PoseSY", "PoseSZ"]
+	for field_name in pose_fields:
+		var field = panel.find_child(field_name, true, false)
+		_check(field != null and field.custom_minimum_size.y >= 43.5, "%s is a 44 dp row" % field_name)
+
+	# A Pose commit goes through set_bone_pose in one transaction and autokeys.
+	var panel_skel := _skeleton(panel_doc, panel_rig)
+	panel_skel.set_bone_pose_position(0, Vector3.ZERO)
+	panel_doc.set_autokey(true)
+	panel_doc.current_time = 1.0
+	var panel_undo: int = (panel_doc._undo_stack as Array).size()
+	if pose_px != null:
+		pose_px.set_value(0.5)
+		pose_px.value_changed.emit(0.5)
+		await get_tree().process_frame
+	_check(panel_skel.get_bone_pose_position(0).distance_to(Vector3(0.5, 0.0, 0.0)) < 0.001, "a Pose field commit moves the bone")
+	_check(_bone_key_at(panel_doc, panel_rig, "Root", Animation.TYPE_POSITION_3D, 1.0) >= 0, "a Pose field commit applies autokey")
+	_check((panel_doc._undo_stack as Array).size() == panel_undo + 1, "a Pose field commit is one undo entry")
+
+	var reset_button: Button = panel.find_child("ResetPoseButton", true, false)
+	_check(reset_button != null and reset_button.custom_minimum_size == Vector2(96, 44), "Reset pose is a 96x44 target")
+	_check(panel.find_child("ResetAllPoseButton", true, false) != null, "reset-all remains")
+	var caption = panel.find_child("KeyChannelsCaption", true, false)
+	_check(caption != null and caption.text == "Rotation, position and scale", "the key buttons state their three channels")
+	_check(panel.find_child("KeyBoneButton", true, false) != null and panel.find_child("KeyPoseButton", true, false) != null, "the rig tab keeps its key buttons")
+
+	panel.queue_free()
+	panel_doc.queue_free()
+	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
 # C2b — imported skeleton adoption
 # -------------------------------------------------------------------------
 
@@ -825,6 +1365,310 @@ func _test_imported_adoption() -> void:
 			_check((doc.rig_system.get_rig(object_id).get("bones", []) as Array).size() == bones_before, "pressing Add bone on an imported rig changes nothing")
 	panel.queue_free()
 	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C2c — glTF external buffers and textures
+# -------------------------------------------------------------------------
+
+const GLTF_MISSING := "This .gltf references files that are not next to it. Move the .gltf, its .bin and its textures into one folder, or export a .glb."
+const GLTF_ESCAPE := "This .gltf references a file outside its folder. Export it as a .glb or keep every file in one folder."
+
+
+func _test_gltf_external_buffers() -> void:
+	print("RIG STEP: glTF external resources")
+	var source_dir := _tmp_dir.path_join("gltf_source")
+	_rmrf(source_dir)
+	DirAccess.make_dir_recursive_absolute(source_dir)
+	var bin_bytes := _gltf_bin_bytes()
+
+	var valid_path := source_dir.path_join("mesh.gltf")
+	_write_bytes(valid_path, _gltf_json("mesh.bin", true).to_utf8_buffer())
+	_write_bytes(source_dir.path_join("mesh.bin"), bin_bytes)
+	var valid: Dictionary = Store.import_model(valid_path, _tmp_dir, "Tri")
+	_check(bool(valid.get("ok", false)), "a .gltf with its .bin imports")
+	var rel_path := str(valid.get("rel_path", ""))
+	_check(rel_path == "models/mesh/mesh.gltf", "the .gltf keeps a per-model folder: %s" % rel_path)
+	_check(FileAccess.file_exists(_tmp_dir.path_join(rel_path)), "the copied .gltf exists in the project")
+	_check(FileAccess.file_exists(_tmp_dir.path_join("models/mesh/mesh.bin")), "the sibling .bin is copied next to the .gltf")
+	var copied: Array = _list_files(_tmp_dir.path_join("models/mesh"))
+	_check(copied.size() == 2, "a data: URI is skipped and creates no file: %s" % str(copied))
+
+	var doc := _new_doc("glTF Import")
+	var object_id: String = doc.add_imported(rel_path, "Tri")
+	var generated := _find_mesh_instance(doc.nodes.get(object_id))
+	_check(generated != null and generated.mesh != null, "the imported .gltf spawns a node with a real mesh")
+	doc.queue_free()
+
+	var missing_path := source_dir.path_join("missing.gltf")
+	_write_bytes(missing_path, _gltf_json("missing.bin", false).to_utf8_buffer())
+	var missing: Dictionary = Store.import_model(missing_path, _tmp_dir, "Missing")
+	_check(not bool(missing.get("ok", true)), "a .gltf with a missing sibling is rejected")
+	_check(str(missing.get("error", "")) == GLTF_MISSING, "the missing-sibling refusal is exact")
+	_check(not DirAccess.dir_exists_absolute(_tmp_dir.path_join("models/missing")), "a rejected import leaves no partial model folder")
+
+	var escape_path := source_dir.path_join("escape.gltf")
+	_write_bytes(escape_path, _gltf_json("../escape.bin", false).to_utf8_buffer())
+	_write_bytes(_tmp_dir.path_join("escape.bin"), bin_bytes)
+	var escaped: Dictionary = Store.import_model(escape_path, _tmp_dir, "Escape")
+	_check(not bool(escaped.get("ok", true)), "a path that escapes the source folder is rejected")
+	_check(str(escaped.get("error", "")) == GLTF_ESCAPE, "the escaping-path refusal is exact")
+	_check(not DirAccess.dir_exists_absolute(_tmp_dir.path_join("models/escape")), "an escaping import writes nothing")
+
+	var glb_path := source_dir.path_join("cube.glb")
+	_write_bytes(glb_path, _glb_bytes(_gltf_glb_json()))
+	var glb: Dictionary = Store.import_model(glb_path, _tmp_dir, "Cube")
+	_check(bool(glb.get("ok", false)) and str(glb.get("extension", "")) == "glb", "a .glb still imports unchanged")
+
+	var obj_path := source_dir.path_join("triangle.obj")
+	_write_bytes(obj_path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n".to_utf8_buffer())
+	var obj: Dictionary = Store.import_model(obj_path, _tmp_dir, "Triangle")
+	_check(bool(obj.get("ok", false)) and str(obj.get("extension", "")) == "obj", "an .obj still imports unchanged")
+	_rmrf(source_dir)
+
+
+func _gltf_json(buffer_uri: String, include_data_image: bool = false) -> String:
+	var data := {
+		"asset": {"version": "2.0"},
+		"scene": 0,
+		"scenes": [{"nodes": [0]}],
+		"nodes": [{"mesh": 0}],
+		"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "mode": 4}]}],
+		"buffers": [{"uri": buffer_uri, "byteLength": 42}],
+		"bufferViews": [
+			{"buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962},
+			{"buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963},
+		],
+		"accessors": [
+			{
+				"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+				"min": [0, 0, 0], "max": [1, 1, 0],
+			},
+			{"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"},
+		],
+	}
+	if include_data_image:
+		data["images"] = [{
+			"uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+		}]
+	return JSON.stringify(data)
+
+
+func _gltf_glb_json() -> Dictionary:
+	var data: Dictionary = JSON.parse_string(_gltf_json("", false))
+	var buffer: Dictionary = (data["buffers"] as Array)[0]
+	buffer.erase("uri")
+	buffer["byteLength"] = 42
+	return data
+
+
+func _gltf_bin_bytes() -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(42)
+	var positions := [
+		Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0),
+	]
+	for i in range(positions.size()):
+		var p: Vector3 = positions[i]
+		bytes.encode_float(i * 12, p.x)
+		bytes.encode_float(i * 12 + 4, p.y)
+		bytes.encode_float(i * 12 + 8, p.z)
+	bytes.encode_u16(36, 0)
+	bytes.encode_u16(38, 1)
+	bytes.encode_u16(40, 2)
+	return bytes
+
+
+func _glb_bytes(json_data: Dictionary) -> PackedByteArray:
+	var json_bytes := JSON.stringify(json_data).to_utf8_buffer()
+	while json_bytes.size() % 4 != 0:
+		json_bytes.append(0x20)
+	var bin_bytes := _gltf_bin_bytes()
+	while bin_bytes.size() % 4 != 0:
+		bin_bytes.append(0)
+	var stream := StreamPeerBuffer.new()
+	stream.big_endian = false
+	stream.put_data("glTF".to_utf8_buffer())
+	stream.put_u32(2)
+	stream.put_u32(12 + 8 + json_bytes.size() + 8 + bin_bytes.size())
+	stream.put_u32(json_bytes.size())
+	stream.put_u32(0x4E4F534A)
+	stream.put_data(json_bytes)
+	stream.put_u32(bin_bytes.size())
+	stream.put_u32(0x004E4942)
+	stream.put_data(bin_bytes)
+	return stream.data_array
+
+
+func _write_bytes(path: String, bytes: PackedByteArray) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_buffer(bytes)
+	file.close()
+
+
+func _list_files(path: String) -> Array:
+	var out: Array = []
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return out
+	for name in dir.get_files():
+		out.append(name)
+	return out
+
+
+func _find_mesh_instance(node: Node) -> MeshInstance3D:
+	if node == null:
+		return null
+	if node is MeshInstance3D:
+		return node as MeshInstance3D
+	for child in node.get_children():
+		var found := _find_mesh_instance(child)
+		if found != null:
+			return found
+	return null
+
+
+# -------------------------------------------------------------------------
+# C2d — FBX guidance and skeleton adoption notice
+# -------------------------------------------------------------------------
+
+func _test_fbx_and_adoption() -> void:
+	print("RIG STEP: FBX and adoption notice")
+	var copy: Dictionary = EditorAppScript.fbx_conversion_copy()
+	_check(str(copy.get("title", "")) == "FBX needs a conversion", "the FBX sheet title is exact")
+	_check(str(copy.get("body", "")) == "Godot's FBX importer only exists in the editor, so it cannot run on Android. Convert the model to glTF 2.0 first.", "the FBX sheet body is exact")
+	var steps: Array = copy.get("steps", [])
+	_check(steps == [
+		"Open the model in Blender.",
+		"File → Export → glTF 2.0.",
+		"Choose glTF Binary (.glb).",
+		"Import the .glb in Kinema.",
+	], "the FBX sheet lists the four conversion steps")
+	var actions: Array = copy.get("actions", [])
+	_check(actions.size() == 2, "the FBX sheet has two actions")
+	if actions.size() == 2:
+		_check(str((actions[0] as Dictionary).get("text", "")) == "Choose another file" and bool((actions[0] as Dictionary).get("primary", false)), "Choose another file is the primary FBX action")
+		_check(str((actions[1] as Dictionary).get("text", "")) == "Cancel" and not bool((actions[1] as Dictionary).get("primary", true)), "Cancel closes the FBX sheet")
+
+	var filters: PackedStringArray = EditorAppScript.model_picker_filters()
+	var joined := " ".join(filters)
+	_check(joined.contains("*.fbx"), "the model picker offers .fbx for the conversion sheet")
+	_check(joined.contains("*.glb") and joined.contains("*.gltf") and joined.contains("*.obj"), "the model picker keeps glTF and OBJ")
+
+	var fbx_path := _tmp_dir.path_join("x.fbx")
+	_write_bytes(fbx_path, "Kaydara FBX Binary  \n".to_utf8_buffer())
+	var fbx: Dictionary = Store.import_model(fbx_path, _tmp_dir, "Fbx")
+	_check(not bool(fbx.get("ok", true)), "Store.import_model still refuses FBX")
+	_check(str(fbx.get("error", "")) == "FBX needs an editor-side importer that Godot only ships in the editor. Export the model as GLB or OBJ instead.", "the FBX refusal keeps its existing reason")
+
+	_check(EditorAppScript.rig_adopted_toast(7) == "Skeleton detected · 7 bones · Pose mode is ready.", "the adoption toast copy is exact")
+
+	# Fixtures are exported with the engine's own writer so the test exercises
+	# a real imported skeleton, not a hand-built scene.
+	var fixture_dir := _tmp_dir.path_join("fixtures")
+	_rmrf(fixture_dir)
+	DirAccess.make_dir_recursive_absolute(fixture_dir)
+
+	var skinned_scene := _skinned_fixture_scene()
+	var skinned_path := fixture_dir.path_join("skinned.glb")
+	_check(_write_scene_fixture(skinned_path, skinned_scene), "the skinned GLB fixture is written")
+	var skinned: Dictionary = Store.import_model(skinned_path, _tmp_dir, "Skinned")
+	_check(bool(skinned.get("ok", false)), "the skinned GLB fixture imports")
+
+	var doc := _new_doc("Adoption Notice")
+	var emissions: Array = []
+	doc.rig_adopted.connect(func(object_id: String, bone_count: int) -> void:
+		emissions.append({"id": object_id, "bones": bone_count}))
+	var skinned_id: String = doc.add_imported(str(skinned.get("rel_path", "")), "Skinned")
+	_check(emissions.size() == 1, "importing a skinned GLB emits rig_adopted once")
+	if emissions.size() == 1:
+		_check(str((emissions[0] as Dictionary).get("id", "")) == skinned_id, "the adoption signal names the imported object")
+		_check(int((emissions[0] as Dictionary).get("bones", 0)) == 2, "the adoption signal reports the real bone count")
+
+	var data: Dictionary = doc.to_data()
+	var loaded := _new_doc("Adoption Reload")
+	var reload_emissions := [0]
+	loaded.rig_adopted.connect(func(_object_id: String, _bone_count: int) -> void:
+		reload_emissions[0] += 1)
+	loaded.load_project(data, _tmp_dir)
+	_check(int(reload_emissions[0]) == 0, "loading a saved project does not emit rig_adopted")
+	_check(not loaded.rig_system.get_rig(skinned_id).is_empty(), "the loaded project keeps the adopted rig")
+
+	var armature_scene := _skinned_fixture_scene()
+	var armature_path := fixture_dir.path_join("armature.gltf")
+	_check(_write_scene_fixture(armature_path, armature_scene), "the armature-only glTF fixture is written")
+	_strip_mesh_from_gltf(armature_path)
+	var armature: Dictionary = Store.import_model(armature_path, _tmp_dir, "Armature")
+	_check(bool(armature.get("ok", false)), "the armature-only glTF fixture imports")
+	var armature_emissions: Array = []
+	doc.rig_adopted.connect(func(_object_id: String, bone_count: int) -> void:
+		armature_emissions.append(bone_count))
+	doc.add_imported(str(armature.get("rel_path", "")), "Armature")
+	_check(armature_emissions == [2], "an armature-only glTF emits rig_adopted once with its bone count")
+
+	var mesh_only_path := fixture_dir.path_join("plain.glb")
+	_write_bytes(mesh_only_path, _glb_bytes(_gltf_glb_json()))
+	var plain: Dictionary = Store.import_model(mesh_only_path, _tmp_dir, "Plain")
+	_check(bool(plain.get("ok", false)), "the mesh-only fixture imports")
+	var plain_emissions := [0]
+	doc.rig_adopted.connect(func(_object_id: String, _bone_count: int) -> void:
+		plain_emissions[0] += 1)
+	doc.add_imported(str(plain.get("rel_path", "")), "Plain")
+	_check(int(plain_emissions[0]) == 0, "an import with no skeleton emits nothing")
+
+	doc.queue_free()
+	loaded.queue_free()
+
+
+func _skinned_fixture_scene() -> Node3D:
+	var root := Node3D.new()
+	root.name = "SkinnedFixture"
+	var skeleton := _fixture_skeleton()
+	root.add_child(skeleton)
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Body"
+	mesh.mesh = BoxMesh.new()
+	root.add_child(mesh)
+	mesh.skin = skeleton.create_skin_from_rest_transforms()
+	mesh.skeleton = mesh.get_path_to(skeleton)
+	return root
+
+
+func _strip_mesh_from_gltf(path: String) -> void:
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not parsed is Dictionary:
+		return
+	var data: Dictionary = parsed
+	for key in ["meshes", "materials", "textures", "images", "samplers"]:
+		data.erase(key)
+	for node in data.get("nodes", []):
+		if node is Dictionary:
+			(node as Dictionary).erase("mesh")
+	_write_bytes(path, JSON.stringify(data).to_utf8_buffer())
+
+
+func _fixture_skeleton() -> Skeleton3D:
+	var skeleton := Skeleton3D.new()
+	skeleton.name = "Skeleton3D"
+	skeleton.add_bone("Hip")
+	skeleton.set_bone_rest(0, Transform3D(Basis.IDENTITY, Vector3.ZERO))
+	skeleton.add_bone("Knee")
+	skeleton.set_bone_parent(1, 0)
+	skeleton.set_bone_rest(1, Transform3D(Basis.IDENTITY, Vector3(0, 0.8, 0)))
+	skeleton.reset_bone_poses()
+	return skeleton
+
+
+func _write_scene_fixture(path: String, scene: Node) -> bool:
+	var gltf := GLTFDocument.new()
+	var state := GLTFState.new()
+	var err := gltf.append_from_scene(scene, state)
+	if err == OK:
+		err = gltf.write_to_filesystem(state, path)
+	scene.free()
+	return err == OK
 
 
 # -------------------------------------------------------------------------
