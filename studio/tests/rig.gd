@@ -68,6 +68,7 @@ func _ready() -> void:
 	await _test_pose_and_bone_keys()
 	await _test_pose_v2()
 	await _test_pose_transactions()
+	await _test_touch_pose_editing()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
 	await _test_fbx_and_adoption()
@@ -1103,6 +1104,193 @@ func _test_pose_transactions() -> void:
 	view.queue_free()
 	key_doc.queue_free()
 	drag_doc.queue_free()
+	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C4d — touch transform/axis editing and the Rest/Pose panel
+# -------------------------------------------------------------------------
+
+func _test_touch_pose_editing() -> void:
+	print("RIG STEP: touch pose editing")
+	var script = load("res://src/ui/rig_toolbar.gd")
+	var toolbar = script.new()
+	toolbar.name = "TouchToolbar"
+	add_child(toolbar)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(toolbar.transform_mode() == "rotate", "the toolbar defaults to Rotate")
+	_check(toolbar.axis_mode() == "free", "the toolbar defaults to the Free axis")
+	var rotate_button: Button = toolbar.find_child("TransformRotateButton", true, false)
+	var move_button: Button = toolbar.find_child("TransformMoveButton", true, false)
+	var free_button: Button = toolbar.find_child("AxisFreeButton", true, false)
+	var x_button: Button = toolbar.find_child("AxisXButton", true, false)
+	var y_button: Button = toolbar.find_child("AxisYButton", true, false)
+	var z_button: Button = toolbar.find_child("AxisZButton", true, false)
+	_check(rotate_button != null and move_button != null, "the toolbar has Rotate and Move segments")
+	_check(free_button != null and x_button != null and y_button != null and z_button != null, "the toolbar has Free/X/Y/Z axis segments")
+	for button in [rotate_button, move_button, free_button, x_button, y_button, z_button]:
+		_check(button != null and button.custom_minimum_size == Vector2(44, 44), "each Transform/Axis segment is a 44x44 target")
+	var transforms: Array[String] = []
+	var axes: Array[String] = []
+	toolbar.transform_mode_changed.connect(func(mode: String) -> void: transforms.append(mode))
+	toolbar.axis_mode_changed.connect(func(axis: String) -> void: axes.append(axis))
+	if move_button != null:
+		move_button.pressed.emit()
+		_check(toolbar.transform_mode() == "move" and transforms == ["move"], "Move emits one transform change")
+	if rotate_button != null:
+		rotate_button.pressed.emit()
+		_check(toolbar.transform_mode() == "rotate" and transforms == ["move", "rotate"], "Rotate emits one transform change")
+	if x_button != null:
+		x_button.pressed.emit()
+		_check(toolbar.axis_mode() == "x" and axes == ["x"], "X emits one axis change")
+	if free_button != null:
+		free_button.pressed.emit()
+		_check(toolbar.axis_mode() == "free" and axes == ["x", "free"], "Free emits one axis change")
+	toolbar.set_mode("edit")
+	if move_button != null and x_button != null:
+		_check(move_button.disabled and x_button.disabled, "Edit mode disables Transform and Axis")
+	toolbar.set_mode("pose")
+	toolbar.set_imported(true)
+	var edit_button: Button = toolbar.find_child("EditModeButton", true, false)
+	var add_button: Button = toolbar.find_child("ToolbarAddBoneButton", true, false)
+	if move_button != null and x_button != null and free_button != null:
+		_check(not move_button.disabled and not x_button.disabled and not free_button.disabled, "an imported rig keeps Transform and Axis enabled in Pose")
+	if edit_button != null and add_button != null:
+		_check(edit_button.disabled and add_button.disabled, "an imported rig keeps Edit and Add disabled")
+	toolbar.queue_free()
+
+	var doc := _new_doc("Touch Pose")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Root")
+	var skel := _skeleton(doc, rig_id)
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	doc.set_autokey(false)
+	await get_tree().process_frame
+
+	# Axis-locked rotation: local X only, 0.012 rad per pixel, clamped.
+	overlay.set_transform_mode("rotate")
+	overlay.set_axis_mode("x")
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	var screen: Vector2 = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	var undo_before: int = (doc._undo_stack as Array).size()
+	overlay.press_at(screen)
+	overlay.drag_at(screen + Vector2(60, 0))
+	_check(overlay.readout_visible(), "a rotation drag shows the live readout")
+	_check(overlay.readout_text().ends_with("°"), "the rotation readout is in degrees")
+	overlay.release_drag()
+	_check(not overlay.readout_visible(), "the rotation readout hides on release")
+	var rotated := skel.get_bone_pose_rotation(0)
+	var delta := Quaternion.IDENTITY.inverse() * rotated
+	var axis := delta.get_axis()
+	var angle := delta.get_angle()
+	_check(absf(absf(axis.x) - 1.0) < 0.001 and absf(axis.y) < 0.001 and absf(axis.z) < 0.001, "axis-locked rotation uses the local X axis")
+	_check(absf(angle - 60.0 * 0.012) < 0.001, "axis rotation uses 0.012 rad per pixel")
+	_check(absf(delta.get_euler().y) < 0.001 and absf(delta.get_euler().z) < 0.001, "axis-locked rotation leaves the other local axes at the start")
+	_check((doc._undo_stack as Array).size() == undo_before + 1, "one rotation gesture is one undo entry")
+
+	# Axis-locked move: world X only, never rotates.
+	overlay.set_transform_mode("move")
+	overlay.set_axis_mode("x")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	undo_before = (doc._undo_stack as Array).size()
+	overlay.press_at(screen)
+	overlay.drag_at(screen + Vector2(50, 40))
+	_check(overlay.readout_visible(), "a move drag shows the live readout")
+	_check(overlay.readout_text().ends_with(" u"), "the move readout is in units")
+	overlay.release_drag()
+	_check(not overlay.readout_visible(), "the move readout hides on release")
+	var moved := skel.get_bone_pose_position(0)
+	_check(moved.x > 0.01, "axis-locked move changes world X")
+	_check(absf(moved.y) < 0.001 and absf(moved.z) < 0.001, "axis-locked move ignores the other world axes")
+	_check(skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001, "axis-locked move does not rotate")
+	_check((doc._undo_stack as Array).size() == undo_before + 1, "one move gesture is one undo entry")
+
+	# Free move translates in the camera plane and never rotates.
+	overlay.set_axis_mode("free")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	overlay.press_at(screen)
+	overlay.drag_at(screen + Vector2(30, -20))
+	overlay.release_drag()
+	var free_move := skel.get_bone_pose_position(0)
+	_check(free_move.length() > 0.01, "free move translates the active bone")
+	_check(absf(free_move.y) > 0.001, "free move follows the vertical drag")
+	_check(skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001, "free move does not rotate the bone")
+	overlay.queue_free()
+	view.queue_free()
+
+	# Rest/Pose panel sections, pose commits and the per-bone reset.
+	var panel_doc := _new_doc("Rest Pose Panel")
+	var panel_rs = panel_doc.rig_system
+	var panel_rig := _make_chain_rig(panel_doc)
+	panel_rs.get_rig(panel_rig)["imported"] = true
+	panel_rs.set_active_rig(panel_rig)
+	panel_rs.set_active_bone(panel_rig, "Root")
+	var panel = RigPanelScript.new()
+	panel.name = "RestPosePanel"
+	add_child(panel)
+	panel.setup(panel_doc)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var rest_section = panel.find_child("RestSection", true, false)
+	var pose_section = panel.find_child("PoseSection", true, false)
+	_check(rest_section != null and pose_section != null, "the bone inspector has Rest and Pose sections")
+	var rest_label = panel.find_child("RestSectionLabel", true, false)
+	var pose_label = panel.find_child("PoseSectionLabel", true, false)
+	_check(rest_label != null and rest_label.text == "REST", "the Rest section is labelled")
+	_check(pose_label != null and pose_label.text == "POSE", "the Pose section is labelled")
+	var note = panel.find_child("ImportedRigNote", true, false)
+	_check(note != null and note.visible and note.text.contains("Pose and IK still work."), "the imported note says Pose and IK still work")
+	_check(note != null and rest_section != null and note.get_index() < rest_section.get_index(), "the imported note sits directly above Rest")
+
+	var rest_px = panel.find_child("RestPX", true, false)
+	var rest_len = panel.find_child("BoneLengthField", true, false)
+	var pose_px = panel.find_child("PosePX", true, false)
+	var pose_rx = panel.find_child("PoseRX", true, false)
+	var pose_sz = panel.find_child("PoseSZ", true, false)
+	_check(rest_px != null and rest_px.mouse_filter == Control.MOUSE_FILTER_IGNORE, "an imported rig disables the Rest position fields")
+	_check(rest_len != null and rest_len.mouse_filter == Control.MOUSE_FILTER_IGNORE, "an imported rig disables the Rest length field")
+	_check(pose_px != null and pose_px.mouse_filter == Control.MOUSE_FILTER_STOP, "an imported rig keeps the Pose position fields editable")
+	_check(pose_rx != null and pose_rx.mouse_filter == Control.MOUSE_FILTER_STOP, "an imported rig keeps the Pose rotation fields editable")
+	_check(pose_sz != null and pose_sz.mouse_filter == Control.MOUSE_FILTER_STOP, "an imported rig keeps the Pose scale fields editable")
+	var pose_fields := ["PosePX", "PosePY", "PosePZ", "PoseRX", "PoseRY", "PoseRZ", "PoseSX", "PoseSY", "PoseSZ"]
+	for field_name in pose_fields:
+		var field = panel.find_child(field_name, true, false)
+		_check(field != null and field.custom_minimum_size.y >= 43.5, "%s is a 44 dp row" % field_name)
+
+	# A Pose commit goes through set_bone_pose in one transaction and autokeys.
+	var panel_skel := _skeleton(panel_doc, panel_rig)
+	panel_skel.set_bone_pose_position(0, Vector3.ZERO)
+	panel_doc.set_autokey(true)
+	panel_doc.current_time = 1.0
+	var panel_undo: int = (panel_doc._undo_stack as Array).size()
+	if pose_px != null:
+		pose_px.set_value(0.5)
+		pose_px.value_changed.emit(0.5)
+		await get_tree().process_frame
+	_check(panel_skel.get_bone_pose_position(0).distance_to(Vector3(0.5, 0.0, 0.0)) < 0.001, "a Pose field commit moves the bone")
+	_check(_bone_key_at(panel_doc, panel_rig, "Root", Animation.TYPE_POSITION_3D, 1.0) >= 0, "a Pose field commit applies autokey")
+	_check((panel_doc._undo_stack as Array).size() == panel_undo + 1, "a Pose field commit is one undo entry")
+
+	var reset_button: Button = panel.find_child("ResetPoseButton", true, false)
+	_check(reset_button != null and reset_button.custom_minimum_size == Vector2(96, 44), "Reset pose is a 96x44 target")
+	_check(panel.find_child("ResetAllPoseButton", true, false) != null, "reset-all remains")
+	var caption = panel.find_child("KeyChannelsCaption", true, false)
+	_check(caption != null and caption.text == "Rotation, position and scale", "the key buttons state their three channels")
+	_check(panel.find_child("KeyBoneButton", true, false) != null and panel.find_child("KeyPoseButton", true, false) != null, "the rig tab keeps its key buttons")
+
+	panel.queue_free()
+	panel_doc.queue_free()
 	doc.queue_free()
 
 
