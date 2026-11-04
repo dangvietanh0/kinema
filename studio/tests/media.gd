@@ -59,6 +59,7 @@ func _ready() -> void:
 	await _test_video_cache()
 	await _test_gif()
 	await _test_render_and_camera()
+	await _test_android_platform_gate()
 	await _test_android_backend()
 	await _test_mp4_quality()
 	await _test_ui()
@@ -660,6 +661,27 @@ class TransportSpyDoc:
 # -------------------------------------------------------------------------
 # Android MP4 backend
 # -------------------------------------------------------------------------
+
+func _test_android_platform_gate() -> void:
+	print("MEDIA STEP: Android platform gate")
+	_check(AndroidVideo.is_android("Android"), "Android platform name is recognised")
+	_check(not AndroidVideo.is_android("android"), "lowercase android is not a platform name")
+	_check(not AndroidVideo.is_android("Linux"), "Linux is not Android")
+	_check(not AndroidVideo.is_android("Windows"), "Windows is not Android")
+	_check(not AndroidVideo.is_android(""), "an empty platform is not Android")
+	_check(AndroidVideo.video_reference_supported("Android"), "video references are supported on Android")
+	_check(not AndroidVideo.video_reference_supported("Linux"), "video references are refused on Linux")
+	var backend = AndroidVideo.new()
+	_check(not backend.available(), "the Android backend is unavailable on Linux")
+	_check(backend.reason().contains("Android MediaCodec backend"), "the refusal names the Android MediaCodec backend")
+	var fixture := FIXTURE_DIR.path_join("gate_reference.mp4")
+	var file := FileAccess.open(fixture, FileAccess.WRITE)
+	file.store_buffer(PackedByteArray([0, 0, 0, 0]))
+	file.close()
+	var imported: Dictionary = await _doc.media_system.import_video_reference(fixture)
+	_check(not bool(imported.get("ok", true)), "MP4 reference import is refused on Linux")
+	_check(str(imported.get("error", "")) == "Video frame extraction uses the Android MediaCodec backend. Build the Android APK to import MP4/MOV references.", "MP4 reference refusal uses the exact backend reason")
+
 
 func _test_android_backend() -> void:
 	print("MEDIA STEP: Android MP4 backend")
