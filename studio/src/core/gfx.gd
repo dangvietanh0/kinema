@@ -86,6 +86,12 @@ var renderer_attempts := 0
 ## launch; Android Forward+ falls back after one failure instead of retrying.
 var renderer_ready := false
 var last_renderer_error := ""
+## Explicit opt-in to the full Forward+ feature set on Android/iOS. Enabling
+## it writes a probe before the high-end profile applies; a launch that never
+## reaches the editor reverts to the mobile-safe clamps on the next start.
+var risk_enabled := false
+var risk_boot := "idle"
+var risk_last_error := ""
 ## Legacy mirror for callers written before the preference split.
 var renderer_choice := ""
 var _restart_request := PackedStringArray()
@@ -126,6 +132,17 @@ func _ready() -> void:
 		renderer_choice = renderer_preference
 		save_preferences()
 	renderer_choice = renderer_preference
+	# Resolve the risk probe before any profile is applied. A stored "probing"
+	# means the previous launch never reached the editor and must never apply
+	# the high-end profile again.
+	var risk_decision := begin_risk_boot(OS.get_name(), actual_method())
+	risk_enabled = bool(risk_decision.get("risk_enabled", risk_enabled))
+	risk_boot = str(risk_decision.get("boot", risk_boot))
+	var risk_reason := str(risk_decision.get("reason", ""))
+	if risk_reason != "":
+		risk_last_error = risk_reason
+	if str(risk_decision.get("action", "none")) != "none":
+		save_preferences()
 	apply_globals()
 
 # -------------------------------------------------------------------------
@@ -209,6 +226,78 @@ func renderer_entries(platform: String) -> Array:
 
 func actual_method() -> String:
 	return renderer_name()
+
+
+# -------------------------------------------------------------------------
+# Renderer risk
+# -------------------------------------------------------------------------
+## High-end Forward+ effects are an explicit, persisted opt-in on Android/iOS.
+## The probe only arms when the running backend is Forward+; enabling the
+## switch under Mobile is allowed and takes effect the next time Forward+ runs.
+
+func risk_supported(platform: String = OS.get_name()) -> bool:
+	var resolved := platform if platform != "" else OS.get_name()
+	return resolved == "Android" or resolved == "iOS"
+
+
+func risk_active(platform: String = OS.get_name(), method: String = actual_method()) -> bool:
+	return risk_enabled and risk_supported(platform) and method == "forward_plus"
+
+
+## Pure boot decision. The caller applies the returned fields and saves only
+## when the action is not "none". `preference` is the stored renderer request,
+## unchanged by the risk decision.
+func begin_risk_boot(platform: String, method: String) -> Dictionary:
+	var resolved := platform if platform != "" else OS.get_name()
+	var boot := "idle"
+	var enabled := risk_enabled
+	var action := "none"
+	var reason := ""
+	if risk_boot == "probing":
+		if risk_enabled:
+			action = "revert"
+			enabled = false
+			reason = "High-end Forward+ effects were reverted because the previous launch did not reach the editor."
+		else:
+			action = "clear"
+	elif risk_enabled and risk_supported(resolved) and method == "forward_plus":
+		action = "probe"
+		boot = "probing"
+	return {
+		"action": action,
+		"preference": renderer_preference,
+		"boot": boot,
+		"risk_enabled": enabled,
+		"reason": reason,
+	}
+
+
+## Turn the high-end profile on. The probe is written before apply_all() so a
+## crash during the first high-end frame is caught by the next launch.
+func enable_risk(platform: String = OS.get_name(), method: String = actual_method()) -> bool:
+	if not risk_supported(platform):
+		return false
+	risk_enabled = true
+	risk_last_error = ""
+	risk_boot = "probing" if risk_supported(platform) and method == "forward_plus" else "idle"
+	save_preferences()
+	if platform == OS.get_name() and method == actual_method():
+		apply_all()
+	return true
+
+
+func disable_risk() -> void:
+	risk_enabled = false
+	risk_boot = "idle"
+	save_preferences()
+	apply_all()
+
+
+func confirm_risk_probe() -> void:
+	if risk_boot == "probing":
+		risk_boot = "proven"
+		save_preferences()
+
 
 func renderer_default_for_platform(platform: String) -> String:
 	return "mobile" if platform == "Android" or platform == "iOS" else "forward_plus"
@@ -461,6 +550,8 @@ func ensure_renderer() -> Dictionary:
 ## the editor. Never called before resolution and never on the restart path.
 func mark_renderer_ready() -> void:
 	renderer_ready = true
+	if risk_boot == "probing":
+		risk_boot = "proven"
 	if renderer_pending != "" and renderer_pending == actual_method():
 		renderer_pending = ""
 		renderer_attempts = 0
@@ -580,6 +671,9 @@ func to_dict() -> Dictionary:
 		"renderer_attempts": renderer_attempts,
 		"renderer_ready": renderer_ready,
 		"renderer_choice": renderer_preference,
+		"risk_enabled": risk_enabled,
+		"risk_boot": risk_boot,
+		"risk_last_error": risk_last_error,
 	}
 
 func load_preferences() -> void:
@@ -602,6 +696,13 @@ func load_preferences() -> void:
 	elif raw.has("renderer_choice"):
 		renderer_preference = str(raw["renderer_choice"])
 	renderer_choice = renderer_preference
+	# Missing keys keep the safe defaults; a value written by a future build
+	# that this build does not understand cannot leave the probe stuck.
+	risk_enabled = bool(raw.get("risk_enabled", false))
+	risk_boot = str(raw.get("risk_boot", "idle"))
+	if not risk_boot in ["idle", "probing", "proven"]:
+		risk_boot = "idle"
+	risk_last_error = str(raw.get("risk_last_error", ""))
 
 func save_preferences() -> void:
 	var file := FileAccess.open(PATH, FileAccess.WRITE)
