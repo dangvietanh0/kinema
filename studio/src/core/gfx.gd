@@ -314,12 +314,13 @@ func build_restart_args(preference: String, platform: String = OS.get_name()) ->
 ## actually provide with that backend. Forward+ on Android/iOS keeps its look
 ## but runs a mobile-safe profile: high-end effects are clamped instead of
 ## pretending the phone can sustain them.
-func capabilities_for(method: String, platform: String = OS.get_name()) -> Dictionary:
+func capabilities_for(method: String, platform: String = OS.get_name(), risk: bool = false) -> Dictionary:
 	var resolved := platform if platform != "" else OS.get_name()
 	var mobile := resolved == "Android" or resolved == "iOS"
 	var forward := method == "forward_plus"
 	var compatibility := method == "gl_compatibility"
-	return {
+	var unlocked := forward and mobile and risk
+	var caps := {
 		"ssao": not compatibility,
 		"ssao_quality": not compatibility,
 		"ssil": forward and not mobile,
@@ -333,11 +334,23 @@ func capabilities_for(method: String, platform: String = OS.get_name()) -> Dicti
 		"shadow_quality_cap": 2 if mobile else 3,
 		"max_fps_cap": 60 if mobile else 0,
 	}
+	if unlocked:
+		caps["ssil"] = true
+		caps["ssr"] = true
+		caps["taa"] = true
+		caps["volumetric_fog"] = true
+		caps["msaa_cap"] = 3
+		caps["scale_3d_cap"] = 1.0
+		caps["shadow_quality_cap"] = 3
+		caps["max_fps_cap"] = 120
+	caps["risk_unlocked"] = unlocked
+	caps["risk_reason"] = "High-end effects are on. Stability is not guaranteed." if unlocked else ""
+	return caps
 
-## The effective values for the running backend. On Android/iOS Forward+ the
-## stored preference may stay high, but every applied value is clamped so a
-## desktop-quality preset cannot disable the phone in one launch.
-func safe_forward_plus_profile(platform: String = OS.get_name(), actual_method: String = renderer_name()) -> Dictionary:
+## Pure effective profile. Desktop and the Mobile backend keep the stored
+## values. Android/iOS Forward+ runs the wave-2 clamps unless the explicit risk
+## switch is on, in which case only the engine's hard maxima apply.
+func risk_profile(platform: String, method: String, enabled: bool) -> Dictionary:
 	var resolved := platform if platform != "" else OS.get_name()
 	var profile := {
 		"msaa": msaa,
@@ -353,7 +366,9 @@ func safe_forward_plus_profile(platform: String = OS.get_name(), actual_method: 
 		"scale_3d": scale_3d,
 		"max_fps": max_fps,
 	}
-	if actual_method == "forward_plus" and (resolved == "Android" or resolved == "iOS"):
+	if method != "forward_plus" or (resolved != "Android" and resolved != "iOS"):
+		return profile
+	if not enabled:
 		profile["taa"] = false
 		profile["ssil"] = false
 		profile["ssr"] = false
@@ -364,7 +379,24 @@ func safe_forward_plus_profile(platform: String = OS.get_name(), actual_method: 
 		profile["shadow_distance"] = minf(float(profile["shadow_distance"]), 40.0)
 		profile["shadow_splits"] = mini(int(profile["shadow_splits"]), 2)
 		profile["max_fps"] = clampi(int(profile["max_fps"]), 1, 60)
+		return profile
+	# Risk on: the same hard maxima a desktop build can serve. The switch
+	# removes the mobile clamp; it never invents values the engine cannot run.
+	profile["msaa"] = mini(int(profile["msaa"]), 3)
+	profile["scale_3d"] = minf(float(profile["scale_3d"]), 1.0)
+	profile["shadow_quality"] = mini(int(profile["shadow_quality"]), 3)
+	profile["shadow_distance"] = minf(float(profile["shadow_distance"]), 100.0)
+	profile["shadow_splits"] = mini(int(profile["shadow_splits"]), 4)
+	profile["max_fps"] = clampi(int(profile["max_fps"]), 1, 120)
 	return profile
+
+
+## The effective values for the running backend, including the live risk
+## switch. On Android/iOS Forward+ with risk off the stored preference may stay
+## high, but every applied value is clamped so a desktop-quality preset cannot
+## disable the phone in one launch.
+func safe_forward_plus_profile(platform: String = OS.get_name(), actual_method: String = renderer_name(), risk: bool = risk_enabled) -> Dictionary:
+	return risk_profile(platform, actual_method, risk)
 
 func sanitize_renderer_state(preference: String, pending: String, platform: String) -> Dictionary:
 	var resolved := platform if platform != "" else OS.get_name()

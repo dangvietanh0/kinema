@@ -33,6 +33,8 @@ func _ready() -> void:
 	_test_defaults_and_persistence()
 	_test_begin_risk_boot()
 	_test_enable_and_disable()
+	_test_risk_profile()
+	_test_capabilities()
 
 	_restore_preferences()
 	var status := "PASS" if _failures.is_empty() else "FAIL"
@@ -189,3 +191,125 @@ func _test_enable_and_disable() -> void:
 	_reset_risk(true, "probing", "")
 	Gfx.mark_renderer_ready()
 	_check(str(Gfx.risk_boot) == "proven", "reaching the editor proves a probing boot")
+
+
+# -------------------------------------------------------------------------
+# Risk-aware profiles and capabilities
+# -------------------------------------------------------------------------
+
+const PROFILE_KEYS := ["msaa", "taa", "ssao", "ssil", "ssr", "glow", "volumetric_fog",
+	"shadow_quality", "shadow_distance", "shadow_splits", "scale_3d", "max_fps"]
+
+
+func _snapshot_quality() -> Dictionary:
+	return {
+		"msaa": Gfx.msaa,
+		"taa": Gfx.taa,
+		"ssao": Gfx.ssao,
+		"ssil": Gfx.ssil,
+		"ssr": Gfx.ssr,
+		"glow": Gfx.glow,
+		"volumetric_fog": Gfx.volumetric_fog,
+		"shadow_quality": Gfx.shadow_quality,
+		"shadow_distance": Gfx.shadow_distance,
+		"shadow_splits": Gfx.shadow_splits,
+		"scale_3d": Gfx.scale_3d,
+		"max_fps": Gfx.max_fps,
+	}
+
+
+func _restore_quality(state: Dictionary) -> void:
+	for key in state.keys():
+		Gfx.set(key, state[key])
+
+
+func _apply_stored_maximum() -> void:
+	Gfx.msaa = 3
+	Gfx.taa = true
+	Gfx.ssil = true
+	Gfx.ssr = true
+	Gfx.volumetric_fog = true
+	Gfx.shadow_quality = 3
+	Gfx.shadow_distance = 100.0
+	Gfx.shadow_splits = 4
+	Gfx.scale_3d = 1.0
+	Gfx.max_fps = 120
+
+
+func _same_profile(a: Dictionary, b: Dictionary) -> bool:
+	for key in PROFILE_KEYS:
+		if a.get(key) != b.get(key):
+			return false
+	return true
+
+
+func _test_risk_profile() -> void:
+	print("GRAPHICS STEP: risk-aware profile")
+	var saved := _snapshot_quality()
+	_apply_stored_maximum()
+
+	var clamped: Dictionary = Gfx.risk_profile("Android", "forward_plus", false)
+	_check(not bool(clamped["taa"]), "the clamped profile keeps TAA off")
+	_check(not bool(clamped["ssil"]), "the clamped profile keeps SSIL off")
+	_check(not bool(clamped["ssr"]), "the clamped profile keeps SSR off")
+	_check(not bool(clamped["volumetric_fog"]), "the clamped profile keeps fog off")
+	_check(int(clamped["msaa"]) <= 1, "the clamped profile caps MSAA at 2x")
+	_check(float(clamped["scale_3d"]) <= 0.85, "the clamped profile caps 3D scale at 85%")
+	_check(int(clamped["shadow_quality"]) <= 2, "the clamped profile caps shadows at High")
+	_check(float(clamped["shadow_distance"]) <= 40.0, "the clamped profile caps shadow distance at 40 m")
+	_check(int(clamped["shadow_splits"]) <= 2, "the clamped profile caps cascades at 2")
+	_check(int(clamped["max_fps"]) <= 60, "the clamped profile caps FPS at 60")
+
+	var unlocked: Dictionary = Gfx.risk_profile("Android", "forward_plus", true)
+	_check(_same_profile(unlocked, _snapshot_quality()), "the risk-on profile returns the stored maximum values")
+	_check(bool(unlocked["taa"]) and bool(unlocked["ssil"]) and bool(unlocked["ssr"]) and bool(unlocked["volumetric_fog"]), "the risk-on profile keeps high-end effects on")
+	_check(int(unlocked["msaa"]) == 3, "the risk-on profile allows 8x MSAA")
+	_check(float(unlocked["scale_3d"]) == 1.0, "the risk-on profile allows a full 3D scale")
+	_check(int(unlocked["shadow_quality"]) == 3, "the risk-on profile allows Ultra shadows")
+	_check(float(unlocked["shadow_distance"]) == 100.0, "the risk-on profile allows 100 m shadows")
+	_check(int(unlocked["shadow_splits"]) == 4, "the risk-on profile allows 4 cascades")
+	_check(int(unlocked["max_fps"]) == 120, "the risk-on profile allows 120 fps")
+
+	var desktop_on: Dictionary = Gfx.risk_profile("Linux", "forward_plus", true)
+	var desktop_off: Dictionary = Gfx.risk_profile("Linux", "forward_plus", false)
+	_check(_same_profile(desktop_on, desktop_off), "desktop Forward+ is identical in both risk states")
+	_check(_same_profile(desktop_on, _snapshot_quality()), "desktop Forward+ keeps the stored values")
+
+	var mobile: Dictionary = Gfx.risk_profile("Android", "mobile", true)
+	_check(_same_profile(mobile, _snapshot_quality()), "the Mobile backend keeps the stored values")
+
+	_check(_same_profile(Gfx.safe_forward_plus_profile("Android", "forward_plus", false), clamped), "safe_forward_plus_profile delegates the risk-off profile")
+	_check(_same_profile(Gfx.safe_forward_plus_profile("Android", "forward_plus", true), unlocked), "safe_forward_plus_profile delegates the risk-on profile")
+
+	_restore_quality(saved)
+
+
+func _test_capabilities() -> void:
+	print("GRAPHICS STEP: risk-aware capabilities")
+	var clamped: Dictionary = Gfx.capabilities_for("forward_plus", "Android", false)
+	_check(not bool(clamped.get("taa", true)), "clamped mobile caps keep TAA off")
+	_check(not bool(clamped.get("ssil", true)), "clamped mobile caps keep SSIL off")
+	_check(not bool(clamped.get("ssr", true)), "clamped mobile caps keep SSR off")
+	_check(not bool(clamped.get("volumetric_fog", true)), "clamped mobile caps keep fog off")
+	_check(int(clamped.get("msaa_cap", 0)) == 1, "clamped mobile caps keep 2x MSAA")
+	_check(float(clamped.get("scale_3d_cap", 1.0)) == 0.85, "clamped mobile caps keep the 85% scale")
+	_check(int(clamped.get("shadow_quality_cap", 0)) == 2, "clamped mobile caps keep High shadows")
+	_check(int(clamped.get("max_fps_cap", 0)) == 60, "clamped mobile caps keep the 60 fps cap")
+	_check(bool(clamped.get("mobile_safe", false)), "clamped mobile caps stay mobile-safe")
+	_check(not bool(clamped.get("risk_unlocked", true)), "clamped mobile caps report no risk unlock")
+
+	var unlocked: Dictionary = Gfx.capabilities_for("forward_plus", "Android", true)
+	_check(bool(unlocked.get("taa", false)) and bool(unlocked.get("ssil", false)) and bool(unlocked.get("ssr", false)) and bool(unlocked.get("volumetric_fog", false)), "risk unlocks every Forward+ effect")
+	_check(int(unlocked.get("msaa_cap", 0)) == 3, "risk unlocks 8x MSAA")
+	_check(float(unlocked.get("scale_3d_cap", 0.0)) == 1.0, "risk unlocks the full 3D scale")
+	_check(int(unlocked.get("shadow_quality_cap", 0)) == 3, "risk unlocks Ultra shadows")
+	_check(int(unlocked.get("max_fps_cap", 0)) == 120, "risk unlocks 120 fps")
+	_check(bool(unlocked.get("mobile_safe", false)), "risk still reports the mobile hardware")
+	_check(bool(unlocked.get("risk_unlocked", false)), "risk reports the unlock")
+	_check(str(unlocked.get("risk_reason", "")) == "High-end effects are on. Stability is not guaranteed.", "risk reports the exact stability reason")
+
+	var desktop_on: Dictionary = Gfx.capabilities_for("forward_plus", "Linux", true)
+	var desktop_off: Dictionary = Gfx.capabilities_for("forward_plus", "Linux", false)
+	_check(desktop_on == desktop_off, "desktop capabilities are identical in both risk states")
+	var mobile_backend: Dictionary = Gfx.capabilities_for("mobile", "Android", true)
+	_check(not bool(mobile_backend.get("risk_unlocked", true)), "the Mobile backend reports no Forward+ unlock")
