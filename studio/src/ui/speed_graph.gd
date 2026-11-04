@@ -521,10 +521,10 @@ func _build_header() -> void:
 	_header.add_child(row)
 
 	_channel_label = Kit.label("Position", Kit.TYPE_CAPTION, Kit.TEXT, 600)
-	_channel_label.custom_minimum_size.x = 64
+	_channel_label.custom_minimum_size.x = 56
 	row.add_child(_channel_label)
 	_count_label = Kit.mono_label("0", 10, Kit.TEXT_DIM)
-	_count_label.custom_minimum_size.x = 30
+	_count_label.custom_minimum_size.x = 24
 	row.add_child(_count_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -533,12 +533,12 @@ func _build_header() -> void:
 
 	_value_button = Kit.text_button("Value", "", false, true)
 	_value_button.toggle_mode = true
-	_value_button.custom_minimum_size = Vector2(56, 44)
+	_value_button.custom_minimum_size = Vector2(44, 44)
 	_value_button.pressed.connect(func() -> void: set_view("value"))
 	row.add_child(_value_button)
 	_speed_button = Kit.text_button("Speed", "", false, true)
 	_speed_button.toggle_mode = true
-	_speed_button.custom_minimum_size = Vector2(56, 44)
+	_speed_button.custom_minimum_size = Vector2(44, 44)
 	_speed_button.pressed.connect(func() -> void: set_view("speed"))
 	row.add_child(_speed_button)
 

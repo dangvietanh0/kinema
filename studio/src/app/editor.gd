@@ -21,6 +21,7 @@ const EditorViewScript = preload("res://src/viewport/editor_view.gd")
 const OutlinerScript = preload("res://src/ui/outliner.gd")
 const InspectorScript = preload("res://src/ui/inspector.gd")
 const TimelineScript = preload("res://src/ui/timeline.gd")
+const SpeedGraphScript = preload("res://src/ui/speed_graph.gd")
 const OverlayScript = preload("res://src/ui/overlay.gd")
 const TopBarScript = preload("res://src/ui/components/top_bar.gd")
 const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
@@ -59,6 +60,16 @@ const PANEL_RAIL_MIN_WIDTH := 480.0
 ## 44 dp transport plus its 1 px rules and vertical padding. Leaving the
 ## folded strip at 52 clipped the ruler baseline on landscape phones.
 const FOLDED_TIMELINE := 56.0
+## The landscape workspace needs enough room for a 56 dp header, a 56 dp
+## footer and a real speed graph. Below this it closes instead of shrinking
+## the plot into a sliver.
+const WORKSPACE_MIN := Vector2(720.0, 360.0)
+const WORKSPACE_HEADER_H := 56.0
+const WORKSPACE_FOOTER_H := 56.0
+const WORKSPACE_GUTTER := 8.0
+const WORKSPACE_LEFT_RATIO := 0.52
+const WORKSPACE_RESIZE_REASON := "The timeline workspace needs at least 720 × 360 dp."
+const WORKSPACE_DISABLED_REASON := "Landscape workspace needs at least 720 × 360 dp"
 ## The scene panel is persistent on Studio and Desktop once the shell can hold
 ## the 44 dp rail without starving the stage.
 const SCENE_PANEL_MIN_WIDTH := 480.0
@@ -110,6 +121,21 @@ var _lane_body: VBoxContainer
 var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
 var _media_lanes: VBoxContainer
+## The landscape workspace is a separate surface over the whole editor. It
+## temporarily adopts the live dope sheet, lane scroll and transport, then
+## restores their exact original parents and indices on close.
+var _timeline_workspace: PanelContainer
+var _workspace_header: PanelContainer
+var _workspace_title: Label
+var _workspace_close_button: Button
+var _workspace_body: HBoxContainer
+var _workspace_left: VBoxContainer
+var _workspace_right: VBoxContainer
+var _workspace_graph: Control
+var _workspace_footer: PanelContainer
+var _workspace_open := false
+var _workspace_saved: Dictionary = {}
+var _workspace_previous_mode := "dope"
 var _panel_rail: PanelContainer
 var _dock: PanelContainer
 var _dock_box: VBoxContainer
@@ -483,6 +509,8 @@ func _build_timeline() -> void:
 	_timeline.more_requested.connect(_on_timeline_more_requested)
 	_timeline.duration_row_changed.connect(_on_timeline_duration_row_changed)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
+	_timeline.channel_selected.connect(_on_timeline_channel_selected)
+	_timeline.workspace_requested.connect(_on_timeline_workspace_requested)
 	_timeline_stack.add_child(_timeline)
 
 	_lane_scroll = ScrollContainer.new()
@@ -521,6 +549,222 @@ func _build_timeline() -> void:
 	# The transport is one instance owned by the timeline; mount it below the
 	# stack instead of building a second row.
 	_timeline.mount_transport(_timeline_frame)
+	_build_timeline_workspace()
+
+## The landscape workspace temporarily adopts the live timeline nodes instead
+## of building a second dope sheet or transport. It is a full-editor surface so
+## the 56 dp header and footer still leave the graph a real plot; the stage
+## host itself is only 322 dp tall on a 915x412 landscape phone.
+func _build_timeline_workspace() -> void:
+	_timeline_workspace = PanelContainer.new()
+	_timeline_workspace.name = "TimelineWorkspace"
+	_timeline_workspace.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_timeline_workspace.z_index = 50
+	_timeline_workspace.visible = false
+	_timeline_workspace.mouse_filter = Control.MOUSE_FILTER_STOP
+	var panel_style := Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0)
+	panel_style.content_margin_left = 0
+	panel_style.content_margin_right = 0
+	panel_style.content_margin_top = 0
+	panel_style.content_margin_bottom = 0
+	_timeline_workspace.add_theme_stylebox_override("panel", panel_style)
+	add_child(_timeline_workspace)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 0)
+	_timeline_workspace.add_child(column)
+
+	# 56 dp header: the clip name on the left, one 96x44 Close on the right.
+	_workspace_header = PanelContainer.new()
+	_workspace_header.custom_minimum_size.y = WORKSPACE_HEADER_H
+	var head_style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	head_style.border_width_bottom = 1
+	head_style.content_margin_left = 12
+	head_style.content_margin_right = 12
+	head_style.content_margin_top = 6
+	head_style.content_margin_bottom = 6
+	_workspace_header.add_theme_stylebox_override("panel", head_style)
+	column.add_child(_workspace_header)
+	var head_row := HBoxContainer.new()
+	head_row.add_theme_constant_override("separation", 8)
+	_workspace_header.add_child(head_row)
+	_workspace_title = Kit.section_label("Timeline")
+	_workspace_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	head_row.add_child(_workspace_title)
+	_workspace_close_button = Kit.text_button("Close", "x", false, true)
+	_workspace_close_button.custom_minimum_size = Vector2(96, 44)
+	_workspace_close_button.pressed.connect(func() -> void: close_timeline_workspace())
+	head_row.add_child(_workspace_close_button)
+
+	# 52/48 body: the live dope sheet owns the left column, the real speed
+	# graph owns the right.
+	_workspace_body = HBoxContainer.new()
+	_workspace_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_body.add_theme_constant_override("separation", int(WORKSPACE_GUTTER))
+	column.add_child(_workspace_body)
+	_workspace_left = VBoxContainer.new()
+	_workspace_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_left.size_flags_stretch_ratio = WORKSPACE_LEFT_RATIO
+	_workspace_left.add_theme_constant_override("separation", 4)
+	_workspace_body.add_child(_workspace_left)
+	_workspace_right = VBoxContainer.new()
+	_workspace_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_right.size_flags_stretch_ratio = 1.0 - WORKSPACE_LEFT_RATIO
+	_workspace_right.add_theme_constant_override("separation", 0)
+	_workspace_body.add_child(_workspace_right)
+	_workspace_graph = SpeedGraphScript.new()
+	_workspace_graph.name = "SpeedGraph"
+	_workspace_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_right.add_child(_workspace_graph)
+
+	# 56 dp footer: the one existing transport instance mounts here.
+	_workspace_footer = PanelContainer.new()
+	_workspace_footer.custom_minimum_size.y = WORKSPACE_FOOTER_H
+	var foot_style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	foot_style.border_width_top = 1
+	foot_style.content_margin_left = 0
+	foot_style.content_margin_right = 0
+	foot_style.content_margin_top = 0
+	foot_style.content_margin_bottom = 0
+	_workspace_footer.add_theme_stylebox_override("panel", foot_style)
+	column.add_child(_workspace_footer)
+
+
+func _layout_timeline_workspace() -> void:
+	if _workspace_body == null or _workspace_left == null or _workspace_right == null:
+		return
+	var width: float = _workspace_body.size.x
+	if width <= 1.0 and _timeline_workspace != null:
+		width = _timeline_workspace.size.x
+	if width <= 1.0:
+		return
+	var available := maxf(0.0, width - WORKSPACE_GUTTER)
+	_workspace_left.custom_minimum_size.x = floorf(available * WORKSPACE_LEFT_RATIO)
+	_workspace_right.custom_minimum_size.x = floorf(available * (1.0 - WORKSPACE_LEFT_RATIO))
+
+
+func _active_clip_name() -> String:
+	if doc == null or doc.animation_system == null:
+		return "Timeline"
+	var clip_id: String = doc.animation_system.active_clip_id()
+	if clip_id == "":
+		return "Timeline"
+	var clip: Dictionary = doc.animation_system.get_clip(clip_id)
+	var title := str(clip.get("name", "")).strip_edges()
+	return title if title != "" else "Timeline"
+
+
+func timeline_workspace_open() -> bool:
+	return _workspace_open and _timeline_workspace != null and _timeline_workspace.visible
+
+
+func open_timeline_workspace() -> bool:
+	if _timeline_workspace == null or _timeline == null:
+		return false
+	if _workspace_open:
+		return true
+	if not _timeline.sheet_visible():
+		return false
+	if size.x < WORKSPACE_MIN.x or size.y < WORKSPACE_MIN.y:
+		return false
+	_workspace_previous_mode = _timeline.mode()
+	_workspace_saved = {
+		"timeline": _capture_child(_timeline),
+		"lane": _capture_child(_lane_scroll),
+		"transport": _capture_child(_timeline.transport_panel()),
+		"panel_visible": _timeline_panel.visible if _timeline_panel != null else true,
+	}
+	_workspace_open = true
+	var transport: Control = _timeline.transport_panel()
+	if transport != null:
+		transport.reparent(_workspace_footer, false)
+	_timeline.reparent(_workspace_left, false)
+	_lane_scroll.reparent(_workspace_left, false)
+	_workspace_left.move_child(_lane_scroll, 0)
+	_workspace_left.move_child(_timeline, 1)
+	# The workspace is the dope sheet and the graph, not a second clip/media
+	# lane stack. The lane scroll is still adopted so the restore is exact.
+	_lane_scroll.visible = false
+	_timeline.set_workspace_mode(true)
+	if _timeline_panel != null:
+		_timeline_panel.visible = false
+	_workspace_title.text = _active_clip_name()
+	_workspace_graph.setup(doc)
+	_workspace_graph.set_context(doc.selected_id if doc != null else "")
+	_workspace_graph.set_channel(_timeline.channel())
+	_timeline_workspace.visible = true
+	_layout_timeline_workspace()
+	return true
+
+
+func close_timeline_workspace(restore_focus: bool = true) -> void:
+	if not _workspace_open:
+		return
+	_workspace_open = false
+	_restore_workspace_child("transport")
+	_restore_workspace_child("timeline")
+	_restore_workspace_child("lane")
+	_timeline.set_workspace_mode(false)
+	_timeline.set_mode(_workspace_previous_mode)
+	if _timeline_panel != null:
+		_timeline_panel.visible = bool(_workspace_saved.get("panel_visible", true))
+	_timeline_workspace.visible = false
+	_sync_timeline_visibility()
+	if restore_focus:
+		var expand: Button = _timeline.expand_button()
+		if expand != null and expand.is_visible_in_tree():
+			expand.grab_focus()
+
+
+func _capture_child(node: Node) -> Dictionary:
+	if node == null or node.get_parent() == null:
+		return {"node": node, "parent": null, "index": -1}
+	return {"node": node, "parent": node.get_parent(), "index": node.get_index()}
+
+
+func _restore_workspace_child(key: String) -> void:
+	var saved: Dictionary = _workspace_saved.get(key, {})
+	var node: Node = saved.get("node") as Node
+	var parent: Node = saved.get("parent") as Node
+	if node == null or parent == null or not is_instance_valid(node) or not is_instance_valid(parent):
+		return
+	if node.get_parent() != parent:
+		node.reparent(parent, false)
+	var index: int = int(saved.get("index", -1))
+	if index >= 0 and index < parent.get_child_count():
+		parent.move_child(node, index)
+
+
+func _on_timeline_workspace_requested() -> void:
+	open_timeline_workspace()
+
+
+func _on_timeline_channel_selected(channel: String) -> void:
+	if _workspace_graph != null:
+		_workspace_graph.set_channel(channel)
+
+
+func _on_timeline_workspace_selection(object_id: String) -> void:
+	if _workspace_open and _workspace_graph != null:
+		_workspace_graph.set_context(object_id)
+
+
+## Close the workspace when its window falls below the 720x360 minimum. The
+## toast is emitted once because the close flips `_workspace_open` first.
+func _on_timeline_workspace_bounds() -> void:
+	if not _workspace_open:
+		return
+	if size.x >= WORKSPACE_MIN.x and size.y >= WORKSPACE_MIN.y:
+		_layout_timeline_workspace()
+		return
+	close_timeline_workspace(false)
+	if _overlay != null:
+		_overlay.toast(WORKSPACE_RESIZE_REASON, "triangle-alert", Kit.WARNING)
+
 
 func _on_lane_sheet_requested(body: Control, title: String, subtitle: String) -> void:
 	_overlay.show_sheet(title, subtitle, body, [
@@ -878,6 +1122,8 @@ func _adopt_document(document: Node3D) -> void:
 	_clip_lane.setup(doc)
 	_media_lanes.setup(doc)
 	_rig_panel.setup(doc)
+	if not doc.selection_changed.is_connected(_on_timeline_workspace_selection):
+		doc.selection_changed.connect(_on_timeline_workspace_selection)
 	if _video_overlay != null:
 		_video_overlay.setup(doc, _view)
 	if _rig_overlay != null:
@@ -1244,6 +1490,10 @@ func request_close() -> void:
 	if _drawer_open:
 		_close_drawer()
 		return
+	# Every project close path leaves the landscape workspace before the close
+	# sheet so the sheet never mounts over a reparented timeline.
+	if _workspace_open:
+		close_timeline_workspace(false)
 	if doc == null or not doc.is_dirty():
 		_leave(false)
 		return
@@ -1277,6 +1527,7 @@ func _save_and_leave() -> void:
 func _leave(save_first: bool = false) -> void:
 	if _closing:
 		return
+	close_timeline_workspace(false)
 	if _render_busy:
 		if _overlay != null:
 			_overlay.toast("Wait for the render to finish", "film", Kit.WARNING)
@@ -1300,6 +1551,9 @@ func handle_back() -> bool:
 	if _drawer_open:
 		_close_drawer()
 		return true
+	if _workspace_open:
+		close_timeline_workspace()
+		return true
 	request_close()
 	return true
 
@@ -1313,12 +1567,14 @@ func _notification(what: int) -> void:
 # -------------------------------------------------------------------------
 
 func _on_resized() -> void:
+	_on_timeline_workspace_bounds()
 	_apply_shell()
 
 
 func _on_viewport_resized() -> void:
 	# The stage host finishes its container pass after the shell has applied,
 	# so recompute the overlay against the real stage height.
+	_on_timeline_workspace_bounds()
 	if _timeline_panel != null and not _render_mode:
 		_sync_timeline_visibility()
 
@@ -1719,6 +1975,8 @@ func _sync_nav_gizmo_inset(timeline_height: float) -> void:
 
 
 func _sync_timeline_visibility() -> void:
+	if _workspace_open:
+		return
 	if _timeline_panel == null or _timeline == null:
 		return
 	# The transport row is always present; only the sheet folds away, so the

@@ -521,6 +521,37 @@ func _ready() -> void:
 	short_timeline.queue_free()
 	short_transport_host.queue_free()
 	await get_tree().process_frame
+	# The landscape workspace adopts the same dope sheet and transport on a
+	# full-editor surface, so its 56 dp header and footer still leave a real
+	# plot at both supported sizes. The gates check overflow and 44 dp targets
+	# inside the workspace itself.
+	print("LAYOUT STEP: landscape timeline workspace")
+	for worksize in [Vector2i(915, 412), Vector2i(1280, 800)]:
+		var workspace_label := "%dx%d workspace" % [worksize.x, worksize.y]
+		await _resize(main, worksize)
+		editor._timeline_visible = true
+		editor._sync_timeline_visibility()
+		await get_tree().process_frame
+		editor._timeline.set_mode("dope")
+		await get_tree().process_frame
+		_check(editor.open_timeline_workspace(), workspace_label + ": the workspace opens")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(editor.timeline_workspace_open(), workspace_label + ": the workspace reports open")
+		var plot_floor := 120.0 if worksize.x < 1000 else 480.0
+		_check(editor._workspace_graph.plot_rect().size.y >= plot_floor,
+			workspace_label + ": the graph plot reaches its floor")
+		_check_no_overflow(editor._timeline_workspace, workspace_label)
+		_check_hit_targets(editor._timeline_workspace, "studio", workspace_label)
+		editor.close_timeline_workspace(false)
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check(not editor.timeline_workspace_open(), workspace_label + ": the workspace closes")
+	# Restore the 915x412 open dope sheet the following checks assume.
+	await _resize(main, Vector2i(915, 412))
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
 	# Closing and reopening resets the session state for later layout checks.
 	editor._toggle_timeline()
 	await get_tree().process_frame
@@ -933,6 +964,8 @@ func _inside_window(node: Control, root: Control) -> bool:
 func _finish() -> void:
 	if _failures.is_empty():
 		print("LAYOUT RESULT: PASS")
+		print("SUITE RESULT: PASS")
 	else:
 		printerr("LAYOUT RESULT: %d FAILURE(S)" % _failures.size())
+		printerr("SUITE RESULT: FAIL (%d failures)" % _failures.size())
 	get_tree().quit(0 if _failures.is_empty() else 1)

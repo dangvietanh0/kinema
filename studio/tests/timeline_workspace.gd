@@ -32,6 +32,7 @@ func _ready() -> void:
 	await _test_bake_curve_segment()
 	await _test_speed_graph()
 	await _test_timeline_channel_signal()
+	await _test_timeline_workspace()
 	_finish()
 
 
@@ -534,3 +535,292 @@ func _test_timeline_channel_signal() -> void:
 	transport_host.queue_free()
 	doc.queue_free()
 	await get_tree().process_frame
+
+
+# -------------------------------------------------------------------------
+# Task 13 — Landscape timeline workspace and back precedence
+# -------------------------------------------------------------------------
+
+func _check_workspace_hit_targets(editor, label: String) -> void:
+	var buttons: Array = editor._timeline_workspace.find_children("*", "BaseButton", true, false)
+	for node in buttons:
+		var button := node as BaseButton
+		if button == null or not button.is_visible_in_tree():
+			continue
+		_check(button.size.x >= 43.5 and button.size.y >= 43.5,
+			"%s: %s keeps a 44 dp target" % [label, str(button.name)])
+
+
+func _test_timeline_workspace() -> void:
+	var original_window := get_window().size
+	var packed: PackedScene = load("res://src/app/main.tscn")
+	var main: Control = packed.instantiate()
+	add_child(main)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	get_window().size = Vector2i(915, 412)
+	for _i in 3:
+		await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	main._on_new_project_requested("Timeline workspace suite", "study")
+	for _i in 5:
+		await get_tree().process_frame
+	var editor = main._editor
+	_check(editor != null, "the editor opens for the workspace suite")
+	if editor == null:
+		main.queue_free()
+		get_window().size = original_window
+		await get_tree().process_frame
+		return
+	editor._overlay.clear_toast()
+	editor.set_workspace_mode("studio")
+	await get_tree().process_frame
+
+	var doc = editor.doc
+	if doc.selected_id == "":
+		doc.add_primitive("cube")
+	var object_id: String = doc.selected_id
+	_check(object_id != "", "the workspace suite has a selected object")
+	doc.apply_key_edits(object_id, "position", [
+		{"index": -1, "time": 0.0, "value": Vector3(0, 0, 0)},
+		{"index": -1, "time": 1.0, "value": Vector3(1, 0, 0)},
+		{"index": -1, "time": 2.0, "value": Vector3(2, 0, 0)},
+	], "Seed workspace keys")
+	editor._timeline.set_mode("dope")
+	editor._timeline.set_channel("position")
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._timeline.sheet_visible(), "the sheet is open before the workspace opens")
+
+	# Capture the exact original homes.
+	var timeline_parent: Node = editor._timeline.get_parent()
+	var timeline_index: int = editor._timeline.get_index()
+	var lane_parent: Node = editor._lane_scroll.get_parent()
+	var lane_index: int = editor._lane_scroll.get_index()
+	var transport: Control = editor._timeline.transport_panel()
+	var transport_parent: Node = transport.get_parent()
+	var transport_index: int = transport.get_index()
+
+	_check(editor.open_timeline_workspace(), "the workspace opens at 915x412")
+	await get_tree().process_frame
+	_check(editor.timeline_workspace_open(), "timeline_workspace_open reports the workspace")
+	_check(editor._workspace_left.get_child_count() == 2,
+		"the left column holds the lane stack and the dope sheet")
+	_check(editor._timeline.get_parent() == editor._workspace_left,
+		"the dope sheet is reparented into the left column")
+	_check(editor._lane_scroll.get_parent() == editor._workspace_left,
+		"the lane scroll is reparented into the left column")
+	_check(transport.get_parent() == editor._workspace_footer,
+		"the single transport is reparented into the footer")
+	_check(not editor._timeline_panel.visible,
+		"the compact timeline panel is hidden while the workspace is open")
+
+	var body_width: float = editor._workspace_body.size.x
+	var left_ratio: float = editor._workspace_left.size.x / body_width
+	_check(left_ratio >= 0.45 and left_ratio <= 0.55,
+		"the left column is 45-55 percent of the body")
+	_check(editor._workspace_graph.plot_rect().size.y >= 120.0,
+		"the workspace graph plot reaches 120 dp at 915x412")
+	_check(absf(editor._workspace_header.size.y - 56.0) <= 0.5,
+		"the workspace header is 56 dp")
+	_check(absf(editor._workspace_footer.size.y - 56.0) <= 0.5,
+		"the workspace footer is 56 dp")
+	_check(absf(editor._workspace_close_button.size.x - 96.0) <= 0.5
+		and absf(editor._workspace_close_button.size.y - 44.0) <= 0.5,
+		"the header Close is 96x44")
+	_check_workspace_hit_targets(editor, "915x412")
+
+	# Dope-only workspace: no mode tabs and no More.
+	_check(not editor._timeline._mode_button.visible,
+		"the workspace hides the mode tabs")
+	_check(not editor._timeline._more_button.visible,
+		"the workspace hides the More control")
+	_check(not editor._timeline._compact_header.visible,
+		"the workspace hides the compact header")
+
+	# Opening twice is idempotent.
+	var timeline_index_open: int = editor._timeline.get_index()
+	_check(editor.open_timeline_workspace(), "opening an open workspace returns true")
+	_check(editor._workspace_left.get_child_count() == 2
+		and editor._timeline.get_index() == timeline_index_open,
+		"opening twice does not duplicate the reparent")
+
+	# Channel selection drives the graph.
+	editor._timeline.set_channel("scale")
+	await get_tree().process_frame
+	_check(editor._workspace_graph.get_channel() == "scale",
+		"Timeline.channel_selected drives SpeedGraph.set_channel")
+	editor._timeline.set_channel("position")
+
+	# Selection changes clear the graph context and its indices.
+	editor._workspace_graph.select_indices(PackedInt32Array([0]))
+	_check(editor._workspace_graph.selected_indices().size() == 1,
+		"the workspace graph selects a key before the selection change")
+	var other_id: String = doc.add_primitive("sphere")
+	doc.set_selection(other_id)
+	await get_tree().process_frame
+	_check(editor._workspace_graph.selected_indices().is_empty(),
+		"changing doc.selected_id clears the graph selection")
+	doc.set_selection(object_id)
+	await get_tree().process_frame
+
+	# Close restores the exact homes and the compact sheet.
+	editor.close_timeline_workspace()
+	await get_tree().process_frame
+	_check(not editor.timeline_workspace_open(), "closing hides the workspace")
+	_check(editor._timeline.get_parent() == timeline_parent
+		and editor._timeline.get_index() == timeline_index,
+		"closing restores the dope sheet's exact parent and index")
+	_check(editor._lane_scroll.get_parent() == lane_parent
+		and editor._lane_scroll.get_index() == lane_index,
+		"closing restores the lane scroll's exact parent and index")
+	_check(transport.get_parent() == transport_parent
+		and transport.get_index() == transport_index,
+		"closing restores the transport's exact parent and index")
+	_check(editor._timeline_panel.visible,
+		"closing restores the compact timeline panel")
+	_check(editor._timeline.sheet_visible(),
+		"the compact sheet remains usable after close")
+	_check(editor._timeline.mode() == "dope",
+		"closing returns the sheet to dope")
+
+	# The wide size gets a much taller plot.
+	get_window().size = Vector2i(1280, 800)
+	for _i in 3:
+		await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	_check(editor.open_timeline_workspace(), "the workspace opens at 1280x800")
+	await get_tree().process_frame
+	_check(editor._workspace_graph.plot_rect().size.y >= 480.0,
+		"the workspace graph plot reaches 480 dp at 1280x800")
+	var wide_body: float = editor._workspace_body.size.x
+	var wide_ratio: float = editor._workspace_left.size.x / wide_body
+	_check(wide_ratio >= 0.45 and wide_ratio <= 0.55,
+		"the wide left column stays at 45-55 percent")
+	_check(absf(editor._workspace_header.size.y - 56.0) <= 0.5
+		and absf(editor._workspace_footer.size.y - 56.0) <= 0.5,
+		"the wide header and footer are 56 dp")
+	_check_workspace_hit_targets(editor, "1280x800")
+	editor.close_timeline_workspace()
+	await get_tree().process_frame
+
+	# Below the bounds the Expand control refuses with the exact reason.
+	get_window().size = Vector2i(700, 359)
+	for _i in 3:
+		await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	_check(not editor.open_timeline_workspace(),
+		"the workspace refuses below 720x360")
+	_check(editor._timeline.expand_button() != null
+		and editor._timeline.expand_button().disabled,
+		"the Expand control is disabled below the bounds")
+	_check(editor._timeline.expand_button().tooltip_text == "Landscape workspace needs at least 720 × 360 dp",
+		"the disabled Expand control carries the exact reason")
+
+	# Dropping below the bounds while open closes once with one toast.
+	get_window().size = Vector2i(915, 412)
+	for _i in 3:
+		await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	_check(editor.open_timeline_workspace(), "the workspace reopens at 915x412")
+	await get_tree().process_frame
+	var toast_serial: int = editor._overlay._toast_serial
+	get_window().size = Vector2i(700, 359)
+	for _i in 3:
+		await get_tree().process_frame
+	_check(not editor.timeline_workspace_open(),
+		"resizing below the bounds closes the workspace")
+	_check(editor._overlay._toast_serial == toast_serial + 1,
+		"the resize close shows exactly one toast")
+	_check(editor._overlay._toast_label.text == "The timeline workspace needs at least 720 × 360 dp.",
+		"the resize toast carries the exact copy")
+
+	# The 720x360 boundary is supported and survives a resize upward.
+	get_window().size = Vector2i(720, 360)
+	for _i in 3:
+		await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	_check(editor.open_timeline_workspace(), "exactly 720x360 opens the workspace")
+	get_window().size = Vector2i(800, 700)
+	for _i in 3:
+		await get_tree().process_frame
+	_check(editor.timeline_workspace_open(),
+		"resizing from 720x360 to 800x700 keeps the workspace open")
+
+	# Back precedence: modal, then drawer, then workspace, then project close.
+	editor._overlay.show_modal("Test modal", "", null, [{"text": "Close", "compact": true}])
+	await get_tree().process_frame
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(not editor._overlay.has_modal() and editor.timeline_workspace_open(),
+		"Back closes an open modal before the workspace")
+	editor._open_drawer()
+	await get_tree().process_frame
+	_check(editor._drawer_open, "the drawer opened for the precedence check")
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(not editor._drawer_open and editor.timeline_workspace_open(),
+		"Back closes the drawer before the workspace")
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(not editor.timeline_workspace_open(),
+		"Back closes the workspace when nothing else is open")
+	doc._dirty = true
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(),
+		"Back requests project close when the workspace is closed")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	# A project close path closes the workspace before the close sheet.
+	get_window().size = Vector2i(915, 412)
+	for _i in 3:
+		await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	editor._timeline_visible = true
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	_check(editor.open_timeline_workspace(), "the workspace reopens for the close check")
+	await get_tree().process_frame
+	editor.request_close()
+	await get_tree().process_frame
+	_check(not editor.timeline_workspace_open(),
+		"a project close closes the workspace first")
+	_check(editor._overlay.has_modal(),
+		"the project close sheet opens after the workspace closes")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
+
+	# Clean up.
+	var project_id: String = doc.project_id
+	editor._leave(false)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if project_id != "":
+		Store.delete_project(project_id)
+	main.queue_free()
+	await get_tree().process_frame
+	get_window().size = original_window
+	for _i in 3:
+		await get_tree().process_frame
