@@ -2014,8 +2014,13 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_geometry(canvas)
 	# The scrollbar band owns its thumb drag and its track tap while there is
 	# something to pan. Keys keep a chance to win first so a diamond at the
-	# bottom row stays grabbable.
-	if _view_pannable() and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
+	# bottom row stays grabbable. The ruler and the graph tab strip always win:
+	# on a 48 dp sheet the 44 dp hit band overlaps them, and a touch on the
+	# ruler must scrub (and pause) rather than silently pan the window.
+	var chrome_top := _ruler_h
+	if _mode == "graph":
+		chrome_top += GRAPH_TAB_HEIGHT
+	if _view_pannable() and pos.y > chrome_top and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
 		var thumb: Rect2 = scrollbar_thumb_rect()
 		if pos.x >= thumb.position.x - 8.0 and pos.x <= thumb.end.x + 8.0:
 			_scroll_dragging = true
