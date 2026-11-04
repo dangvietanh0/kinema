@@ -50,6 +50,7 @@ func _ready() -> void:
 	await _test_persistence()
 	await _test_document_contract()
 	await _test_construction()
+	await _test_assignment()
 	_finish()
 
 
@@ -398,5 +399,146 @@ func _test_construction() -> void:
 	ms.update_material(pbr_id, {"albedo_texture": "textures/test/emission.png"})
 	var replaced: BaseMaterial3D = ms.resource_for(pbr_id)
 	_check(replaced != cache_after, "a texture replacement rebuilds that material")
+
+	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 16: assignment resolution and strict part targeting
+# -------------------------------------------------------------------------
+
+func _two_surface_mesh() -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
+		Vector3(-0.5, 0.0, 0.0), Vector3(0.5, 0.0, 0.0), Vector3(0.0, 0.5, 0.0),
+	])
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _assignment_doc() -> Dictionary:
+	var doc = _new_document()
+	var object_id: String = doc.add_primitive("box")
+	var root: Node3D = doc.nodes[object_id]
+	var multi := MeshInstance3D.new()
+	multi.name = "Multi"
+	multi.mesh = _two_surface_mesh()
+	root.add_child(multi)
+	var pivot := Node3D.new()
+	pivot.name = "Pivot"
+	root.add_child(pivot)
+	return {"doc": doc, "id": object_id, "multi": multi, "pivot": pivot}
+
+
+func _test_assignment() -> void:
+	var ctx := _assignment_doc()
+	var doc = ctx["doc"]
+	var id: String = ctx["id"]
+	var multi: MeshInstance3D = ctx["multi"]
+	var ms = doc.material_system
+
+	var object_mat: String = ms.create_material("Object", "matte")
+	var part_mat: String = ms.create_material("Part", "satin")
+	var surface_mat: String = ms.create_material("Surface", "metal")
+
+	_check(ms.can_assign_part(id, ""), "the object root is always a valid target")
+	_check(ms.can_assign_part(id, "Multi"), "a real MeshInstance3D part is assignable")
+	_check(not ms.can_assign_part(id, "Pivot"), "a non-mesh part is not assignable")
+	_check(not ms.can_assign_part(id, "Missing"), "a missing part is not assignable")
+
+	_check(ms.assign_material(id, object_mat), "an object material assigns")
+	_check(ms.resolve_assignment(id, "", -1) == object_mat, "the object slot resolves")
+	_check(ms.resolve_assignment(id, "Multi", -1) == object_mat, "a part falls back to the object")
+	_check(ms.resolve_assignment(id, "Multi", 1) == object_mat, "a surface falls back to the object")
+
+	_check(ms.assign_material(id, part_mat, "Multi"), "a part material assigns")
+	_check(ms.resolve_assignment(id, "Multi", -1) == part_mat, "the part slot resolves")
+	_check(ms.resolve_assignment(id, "Multi", 0) == part_mat, "a surface falls back to the part")
+	_check(ms.resolve_assignment(id, "Mesh", -1) == object_mat, "other parts keep the object material")
+
+	_check(ms.assign_material(id, surface_mat, "Multi", 1), "a surface material assigns")
+	_check(ms.resolve_assignment(id, "Multi", 1) == surface_mat, "the surface slot wins")
+	_check(ms.resolve_assignment(id, "Multi", 0) == part_mat, "other surfaces keep the part material")
+	_check(ms.clear_material(id, "Multi", 1), "clearing a surface slot succeeds")
+	_check(ms.resolve_assignment(id, "Multi", 1) == part_mat, "a cleared surface falls back to the part")
+	_check(ms.clear_material(id, "Multi"), "clearing a part slot succeeds")
+	_check(ms.resolve_assignment(id, "Multi", -1) == object_mat, "a cleared part falls back to the object")
+	_check(ms.clear_material(id), "clearing the object slot succeeds")
+	_check(ms.resolve_assignment(id, "Multi", 0) == "", "a cleared object falls back to legacy")
+
+	# A non-mesh refusal writes nothing and opens no undo entry.
+	ms.assign_material(id, object_mat)
+	var before := JSON.stringify(doc.to_data())
+	var undo_before: int = doc._undo_stack.size()
+	_check(not ms.assign_material(id, part_mat, "Pivot"), "a non-mesh part refuses an assignment")
+	_check(ms.last_error == "This part has no mesh to shade.", "the non-mesh refusal is exact")
+	_check(JSON.stringify(doc.to_data()) == before, "the non-mesh refusal writes nothing")
+	_check(doc._undo_stack.size() == undo_before, "the non-mesh refusal opens no undo entry")
+	_check(not ms.clear_material(id, "Pivot"), "a non-mesh part refuses a clear")
+	_check(ms.last_error == "This part has no mesh to shade.", "the non-mesh clear refusal is exact")
+
+	# An out-of-range surface is refused with its index.
+	_check(not ms.assign_material(id, part_mat, "Multi", 5), "an out-of-range surface is refused")
+	_check(ms.last_error == "Surface 5 is out of range.", "the surface refusal is exact")
+	_check(not ms.clear_material(id, "Multi", 2), "an out-of-range clear is refused")
+	_check(ms.last_error == "Surface 2 is out of range.", "the clear refusal is exact")
+
+	# Rendering: overrides follow the resolved id, and clearing restores legacy.
+	ms.assign_material(id, object_mat)
+	var object_resource: BaseMaterial3D = ms.resource_for(object_mat)
+	_check(multi.get_surface_override_material(0) == object_resource,
+		"apply_object sets a surface override from the object material")
+	_check(multi.get_surface_override_material(1) == object_resource,
+		"apply_object covers every surface")
+	var primitive: MeshInstance3D = doc.nodes[id].get_node("Mesh") as MeshInstance3D
+	_check(primitive.get_surface_override_material(0) == object_resource,
+		"apply_object covers a primitive surface")
+	_check(primitive.material_override == null,
+		"a library assignment suppresses the legacy material override")
+
+	ms.clear_material(id)
+	_check(multi.get_surface_override_material(0) == null,
+		"clearing an assignment removes the surface override")
+	_check(primitive.get_surface_override_material(0) == null,
+		"clearing a primitive assignment clears its surface override")
+	_check(primitive.material_override is StandardMaterial3D,
+		"clearing restores the legacy primitive material")
+
+	# Deleting a material clears every reference and restores legacy visuals.
+	ms.assign_material(id, object_mat)
+	ms.assign_material(id, part_mat, "Multi")
+	ms.assign_material(id, surface_mat, "Multi", 0)
+	doc.begin_edit("Delete material")
+	_check(ms.delete_material(part_mat), "deleting a referenced material succeeds")
+	doc.end_edit()
+	var obj: Dictionary = doc.get_object(id)
+	_check(not (obj.get("part_materials", {}) as Dictionary).has("Multi"),
+		"delete_material clears a part assignment")
+	_check(str((obj.get("part_materials", {}) as Dictionary).get("Multi", "")) == "",
+		"the cleared part assignment is gone")
+	_check(ms.resolve_assignment(id, "Multi", 0) == surface_mat,
+		"a surviving surface assignment keeps priority")
+	_check(doc.can_undo(), "the delete is one undoable edit")
+	doc.undo()
+	var restored: Dictionary = doc.get_object(id)
+	_check(str((restored.get("part_materials", {}) as Dictionary).get("Multi", "")) == part_mat,
+		"undo restores the deleted material assignment")
+	var restored_mesh: MeshInstance3D = doc.nodes[id].get_node("Mesh") as MeshInstance3D
+	_check(restored_mesh.get_surface_override_material(0) == ms.resource_for(object_mat),
+		"undo restores the rendered object override")
+
+	# Duplicating an object shares material ids.
+	doc.duplicate_selected()
+	var copies: Array = doc.objects.filter(func(o: Dictionary) -> bool:
+		return str(o.get("name", "")).ends_with("Copy"))
+	_check(copies.size() == 1, "the duplicating test has one copy")
+	if copies.size() == 1:
+		_check(str(copies[0].get("material_id", "")) == object_mat,
+			"a duplicate shares the object material id")
+		_check(str((copies[0].get("part_surface_materials", {}) as Dictionary).get("Multi#0", "")) == surface_mat,
+			"a duplicate shares the surface material id")
 
 	doc.queue_free()

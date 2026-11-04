@@ -455,13 +455,187 @@ func _track_missing(rel_path: String) -> void:
 
 
 # -------------------------------------------------------------------------
-# Assignment and rendering (filled in by the assignment task)
+# Assignment and rendering
 # -------------------------------------------------------------------------
 
-func apply_object(_object_id: String) -> void:
-	# Task 16 owns the real walk; before assignments exist there is nothing to
-	# apply and legacy visuals stay untouched.
-	pass
+func can_assign_part(object_id: String, part_path: String) -> bool:
+	last_error = ""
+	if _document == null:
+		return false
+	var root: Node3D = _document.nodes.get(object_id)
+	if root == null:
+		return false
+	if part_path == "":
+		return true
+	var node := root.get_node_or_null(NodePath(part_path))
+	return node is MeshInstance3D and (node as MeshInstance3D).mesh != null
+
+
+func assign_material(object_id: String, material_id: String, part_path := "", surface := -1) -> bool:
+	last_error = ""
+	if _document == null:
+		return false
+	if not has_material(material_id):
+		last_error = "Choose a material first."
+		return false
+	var target := _validated_target(object_id, part_path, surface)
+	if target.is_empty():
+		return false
+	var obj: Dictionary = target["obj"]
+	if surface < 0:
+		if part_path == "":
+			obj["material_id"] = material_id
+		else:
+			var part_map: Dictionary = obj.get("part_materials", {})
+			part_map[part_path] = material_id
+			obj["part_materials"] = part_map
+	else:
+		var key := "%s#%d" % [part_path, surface]
+		var surface_map: Dictionary = obj.get("part_surface_materials", {})
+		surface_map[key] = material_id
+		obj["part_surface_materials"] = surface_map
+	apply_object(object_id)
+	return true
+
+
+func clear_material(object_id: String, part_path := "", surface := -1) -> bool:
+	last_error = ""
+	if _document == null:
+		return false
+	var target := _validated_target(object_id, part_path, surface)
+	if target.is_empty():
+		return false
+	var obj: Dictionary = target["obj"]
+	if surface < 0:
+		if part_path == "":
+			obj["material_id"] = ""
+		else:
+			var part_map: Dictionary = obj.get("part_materials", {})
+			part_map.erase(part_path)
+			obj["part_materials"] = part_map
+	else:
+		var key := "%s#%d" % [part_path, surface]
+		var surface_map: Dictionary = obj.get("part_surface_materials", {})
+		surface_map.erase(key)
+		obj["part_surface_materials"] = surface_map
+	apply_object(object_id)
+	return true
+
+
+func resolve_assignment(object_id: String, part_path := "", surface := -1) -> String:
+	if _document == null:
+		return ""
+	var obj: Dictionary = _document.get_object(object_id)
+	if obj.is_empty():
+		return ""
+	if surface >= 0:
+		var surface_map: Dictionary = obj.get("part_surface_materials", {})
+		var surface_id := str(surface_map.get("%s#%d" % [part_path, surface], ""))
+		if surface_id != "" and has_material(surface_id):
+			return surface_id
+	if part_path != "":
+		var part_map: Dictionary = obj.get("part_materials", {})
+		var part_id := str(part_map.get(part_path, ""))
+		if part_id != "" and has_material(part_id):
+			return part_id
+		var object_surface: Dictionary = obj.get("part_surface_materials", {})
+		var object_surface_id := str(object_surface.get("#%d" % surface, "")) if surface >= 0 else ""
+		if object_surface_id != "" and has_material(object_surface_id):
+			return object_surface_id
+	var object_id_value := str(obj.get("material_id", ""))
+	if object_id_value != "" and has_material(object_id_value):
+		return object_id_value
+	return ""
+
+
+func _validated_target(object_id: String, part_path: String, surface: int) -> Dictionary:
+	if _document == null:
+		last_error = "Choose an object first."
+		return {}
+	var obj: Dictionary = _document.get_object(object_id)
+	var root: Node3D = _document.nodes.get(object_id)
+	if obj.is_empty() or root == null:
+		last_error = "Choose an object first."
+		return {}
+	var mesh: Mesh = null
+	if part_path != "":
+		var node := root.get_node_or_null(NodePath(part_path))
+		if node == null or not (node is MeshInstance3D) or (node as MeshInstance3D).mesh == null:
+			last_error = "This part has no mesh to shade."
+			return {}
+		mesh = (node as MeshInstance3D).mesh
+	elif surface >= 0:
+		var first := _first_mesh(root)
+		if first != null:
+			mesh = first.mesh
+	if surface >= 0:
+		if mesh == null or surface >= mesh.get_surface_count():
+			last_error = "Surface %d is out of range." % surface
+			return {}
+	return {"obj": obj}
+
+
+func _first_mesh(root: Node) -> MeshInstance3D:
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+			return node as MeshInstance3D
+	return null
+
+
+func apply_object(object_id: String) -> void:
+	if _document == null:
+		return
+	var obj: Dictionary = _document.get_object(object_id)
+	if obj.is_empty():
+		return
+	var root: Node3D = _document.nodes.get(object_id)
+	if root == null:
+		return
+	var kind := str(obj.get("kind", "mesh"))
+	var meshes: Array[MeshInstance3D] = []
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+			meshes.append(node as MeshInstance3D)
+	for mesh_instance in meshes:
+		var part_path := str(root.get_path_to(mesh_instance))
+		var surface_count := mesh_instance.mesh.get_surface_count()
+		var assigned: Array = []
+		for surface in range(surface_count):
+			var material_id := resolve_assignment(object_id, part_path, surface)
+			if material_id != "":
+				mesh_instance.set_surface_override_material(surface, resource_for(material_id))
+				assigned.append(surface)
+			else:
+				mesh_instance.set_surface_override_material(surface, null)
+		if kind == "mesh" and part_path == "Mesh":
+			if assigned.is_empty():
+				if mesh_instance.material_override == null:
+					mesh_instance.material_override = _legacy_material(obj)
+			else:
+				mesh_instance.material_override = null
+				# A partially assigned primitive keeps its legacy look on the
+				# surfaces that have no library material.
+				if assigned.size() < surface_count:
+					var legacy := _legacy_material(obj)
+					for surface in range(surface_count):
+						if not assigned.has(surface):
+							mesh_instance.set_surface_override_material(surface, legacy)
+
+
+func _legacy_material(obj: Dictionary) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color.from_string(str(obj.get("color", "#AAB2BF")), Color(0.66, 0.66, 0.66))
+	material.roughness = clampf(float(obj.get("roughness", 0.48)), 0.0, 1.0)
+	material.metallic = clampf(float(obj.get("metallic", 0.0)), 0.0, 1.0)
+	material.metallic_specular = 0.5
+	material.rim_enabled = false
+	return material
 
 
 func apply_all() -> void:

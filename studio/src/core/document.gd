@@ -573,6 +573,8 @@ func _spawn_object(obj: Dictionary) -> void:
 		_sync_sun_sky_mode()
 	if rig_system != null:
 		rig_system.on_object_spawned(obj, node)
+	if material_system != null:
+		material_system.apply_object(id)
 	object_spawned.emit(id, node)
 
 func _spawn_refresh(id: String) -> void:
