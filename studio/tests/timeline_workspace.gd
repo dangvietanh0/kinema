@@ -5,6 +5,8 @@ extends Control
 
 const DocumentScript = preload("res://src/core/document.gd")
 const SpeedCurveScript = preload("res://src/core/speed_curve.gd")
+const SpeedGraphScript = preload("res://src/ui/speed_graph.gd")
+const TimelineScript = preload("res://src/ui/timeline.gd")
 
 var _failures: Array[String] = []
 var _checks := 0
@@ -28,6 +30,8 @@ func _ready() -> void:
 	await _test_speed_curves()
 	await _test_apply_key_edits()
 	await _test_bake_curve_segment()
+	await _test_speed_graph()
+	await _test_timeline_channel_signal()
 	_finish()
 
 
@@ -263,3 +267,270 @@ func _test_bake_curve_segment() -> void:
 		"the short segment inserts exactly one midpoint")
 	_check(str(short_bake["message"]) == "Segment is shorter than two frames; baked one midpoint.",
 		"the short-segment message is exact")
+
+
+# -------------------------------------------------------------------------
+# Task 12 — SpeedGraph control and the channel signal
+# -------------------------------------------------------------------------
+
+func _test_speed_graph() -> void:
+	var doc := _new_doc()
+	doc.apply_key_edits(doc.selected_id, "position", [
+		{"index": -1, "time": 0.0, "value": Vector3(0, 0, 0)},
+		{"index": -1, "time": 1.0, "value": Vector3(1, 0, 0)},
+		{"index": -1, "time": 2.0, "value": Vector3(2, 0, 0)},
+	], "Graph position")
+	doc.apply_key_edits(doc.selected_id, "rotation", [
+		{"index": -1, "time": 0.0, "value": Quaternion.IDENTITY},
+		{"index": -1, "time": 1.0, "value": Quaternion(Vector3.UP, deg_to_rad(45.0))},
+		{"index": -1, "time": 2.0, "value": Quaternion(Vector3.UP, deg_to_rad(90.0))},
+	], "Graph rotation")
+
+	var graph = SpeedGraphScript.new()
+	add_child(graph)
+	await get_tree().process_frame
+	graph.size = Vector2(600.0, 400.0)
+	graph.setup(doc)
+	graph.set_context(doc.selected_id)
+	await get_tree().process_frame
+
+	# Channel validation.
+	_check(graph.set_channel("scale") and graph.get_channel() == "scale",
+		"set_channel accepts a valid channel")
+	_check(not graph.set_channel("bogus") and graph.get_channel() == "scale",
+		"an invalid channel is refused and the old channel stays")
+
+	# No object selected.
+	graph.set_context("")
+	_check(graph.empty_state() == "Select an object",
+		"an empty context shows the exact select-an-object state")
+	_check(graph.selected_indices().is_empty(),
+		"an empty context clears the selection")
+	graph.set_context(doc.selected_id)
+
+	# A channel with no keys is honest about it.
+	graph.set_channel("scale")
+	_check(graph.empty_state() == "No keys on this channel. Add a key at the playhead.",
+		"an empty channel shows the exact no-keys state")
+
+	# selected_segment refusals and the real segment record.
+	graph.set_channel("position")
+	graph.clear_selection()
+	var none: Dictionary = graph.selected_segment()
+	_check(not bool(none["ok"]) and str(none["reason"]) == "Select one key.",
+		"no selection refuses the segment with the exact reason")
+	graph.select_indices(PackedInt32Array([0, 1]))
+	var several: Dictionary = graph.selected_segment()
+	_check(not bool(several["ok"]) and str(several["reason"]) == "Select one key.",
+		"multiple selection refuses the segment with the exact reason")
+	graph.select_indices(PackedInt32Array([2]))
+	var last: Dictionary = graph.selected_segment()
+	_check(not bool(last["ok"]) and str(last["reason"]) == "The last key has no following segment.",
+		"the last key refuses the segment with the exact reason")
+	graph.select_indices(PackedInt32Array([0]))
+	var segment: Dictionary = graph.selected_segment()
+	var pos_keys := _keys(doc, "position")
+	_check(bool(segment["ok"]) and int(segment["start_index"]) == 0 and int(segment["end_index"]) == 1,
+		"a non-last key exposes its segment indices")
+	_check(_approx(float(segment["t0"]), float(pos_keys[0]["time"])) and
+		_approx(float(segment["t1"]), float(pos_keys[1]["time"])),
+		"the segment times match the document keys")
+
+	# Selection mutations and the signal payloads.
+	var seen: Array = []
+	var on_selection: Callable = func(indices: PackedInt32Array) -> void:
+		seen.append(indices.duplicate())
+	graph.selection_changed.connect(on_selection)
+	graph.select_indices(PackedInt32Array([0]))
+	_check(seen.size() == 1 and seen[0] == PackedInt32Array([0]),
+		"select_indices selects one key and reports it")
+	graph.select_indices(PackedInt32Array([1]), true)
+	_check(seen.size() == 2 and seen[1] == PackedInt32Array([0, 1]),
+		"an additive selection adds without clearing")
+	graph.clear_selection()
+	_check(seen.size() == 3 and (seen[2] as PackedInt32Array).is_empty(),
+		"clear_selection empties the selection and reports it")
+	graph.selection_changed.disconnect(on_selection)
+
+	# Stale indices never survive a channel switch.
+	graph.select_indices(PackedInt32Array([0]))
+	graph.set_channel("rotation")
+	_check(graph.selected_indices().is_empty(),
+		"changing the channel clears stale indices")
+
+	# A retime plus value edit is one undo entry.
+	graph.set_channel("position")
+	graph.select_indices(PackedInt32Array([0]))
+	var stack_before: int = doc._undo_stack.size()
+	_check(graph.commit_key_edit(0, 0.5, Vector3(0.5, 0.25, 0)),
+		"commit_key_edit retimes and writes one value")
+	var edited := _keys(doc, "position")
+	_check(_approx(float(edited[0]["time"]), 0.5) and
+		_vec_close(edited[0]["value"], Vector3(0.5, 0.25, 0)),
+		"the committed key lands at its new time and value")
+	_check(doc._undo_stack.size() == stack_before + 1,
+		"a committed key edit opens exactly one undo entry")
+
+	# Quaternion values are read-only; time editing still works.
+	graph.set_channel("rotation")
+	graph.select_indices(PackedInt32Array([0]))
+	var refused_stack: int = doc._undo_stack.size()
+	_check(not graph.commit_key_edit(0, 0.5, Quaternion.IDENTITY),
+		"a rotation value edit is refused")
+	_check(graph.last_error() == "Rotation values are quaternion; drag rotates with the rig or gizmo.",
+		"the rotation refusal uses the exact copy")
+	_check(doc._undo_stack.size() == refused_stack and not doc.has_open_edit(),
+		"a refused rotation edit writes nothing")
+	_check(graph.commit_key_edit(0, 0.25),
+		"a rotation key can still be retimed")
+
+	# Easing writes the scalar transition of the selected start key.
+	graph.set_channel("position")
+	graph.select_indices(PackedInt32Array([0]))
+	_check(graph.apply_easing(0.5), "apply_easing accepts a selected segment")
+	_check(_approx(doc.get_key_transition(doc.selected_id, "position", 0), 0.5),
+		"apply_easing writes the start key transition")
+
+	# Curve family baking reports the exact notice.
+	graph.select_indices(PackedInt32Array([1]))
+	var notices: Array = []
+	var on_notice: Callable = func(text: String) -> void:
+		notices.append(text)
+	graph.notice.connect(on_notice)
+	var bake: Dictionary = graph.apply_curve_family("bounce_out")
+	var expected_inserted := clampi(int(round((2.0 - 1.0) * float(doc.fps))), 8, 48) - 1
+	var expected_notice := "Bounce out baked · %d keys" % expected_inserted
+	_check(bool(bake["ok"]) and int(bake["inserted"]) == expected_inserted,
+		"apply_curve_family bakes the selected segment")
+	_check(str(bake["message"]) == expected_notice,
+		"the bake result carries the exact notice")
+	_check(notices.size() == 1 and str(notices[0]) == expected_notice,
+		"the bake emits the exact notice")
+	graph.notice.disconnect(on_notice)
+
+	# Copy stores relative times; paste places them at the playhead.
+	graph.select_indices(PackedInt32Array([0, 1]))
+	graph.copy_selection()
+	var count_before_paste := _keys(doc, "position").size()
+	var paste_stack: int = doc._undo_stack.size()
+	_check(graph.paste_at(3.0), "paste_at places a copied key set")
+	var pasted := _keys(doc, "position")
+	_check(pasted.size() == count_before_paste + 2,
+		"paste adds the whole copied set")
+	_check(doc._undo_stack.size() == paste_stack + 1,
+		"paste is exactly one undo entry")
+	var has_three := false
+	var has_three_half := false
+	for key in pasted:
+		if _approx(float(key["time"]), 3.0):
+			has_three = true
+		if _approx(float(key["time"]), 3.5):
+			has_three_half = true
+	_check(has_three and has_three_half,
+		"paste keeps the relative offsets at the playhead")
+
+	# Add samples the channel at the playhead; delete removes all selected.
+	graph.set_channel("scale")
+	doc.seek(3.0)
+	var scale_before := _keys(doc, "scale").size()
+	_check(graph.add_key_at_playhead(), "add_key_at_playhead inserts a key")
+	var added := _keys(doc, "scale")
+	_check(added.size() == scale_before + 1,
+		"the sampled key lands on the scale track")
+	_check(_approx(doc.get_key_transition(doc.selected_id, "scale", int(graph.selected_indices()[0])), 1.0),
+		"the added key uses transition 1.0")
+	var delete_before := _keys(doc, "scale").size()
+	var delete_stack: int = doc._undo_stack.size()
+	graph.delete_selection()
+	_check(_keys(doc, "scale").size() == delete_before - 1,
+		"delete_selection removes every selected key")
+	_check(doc._undo_stack.size() == delete_stack + 1,
+		"delete_selection is exactly one undo entry")
+
+	# Fit resets the window and pads the value range.
+	graph.set_channel("position")
+	graph.fit()
+	_check(_approx(graph._time_start, 0.0) and _approx(graph._time_end, float(doc.duration)),
+		"fit resets the time window to the whole duration")
+	_check(graph._value_min < graph._value_max,
+		"fit leaves a padded value range")
+	_check(graph.plot_rect().size.y >= 0.0,
+		"plot_rect reports a non-negative height after layout")
+
+	# Empty and hint copy for the remaining states.
+	graph.set_channel("rotation")
+	graph.set_view("value")
+	graph._component = "x"
+	_check(graph.empty_state() == "This channel has no editable value component.",
+		"a rotation value component shows the exact no-component state")
+	graph.select_component("all")
+	_check(not graph.set_view("bogus") and graph.view() == "value",
+		"an invalid view is refused and the old view stays")
+	graph.set_channel("position")
+	graph.set_view("speed")
+	_check(graph.drag_hint() == "Switch to Value to edit values.",
+		"speed view explains the exact way back to value editing")
+	graph.set_channel("rotation")
+	graph.set_view("value")
+	_check(graph.drag_hint() == "Rotation values are quaternion; drag rotates with the rig or gizmo.",
+		"the rotation hint uses the exact quaternion copy")
+
+	# The component menu is disabled for rotation and still reads All.
+	_check(not graph.component_enabled() and graph.component_label() == "All",
+		"rotation disables the component menu and shows All")
+	graph.select_component("x")
+	_check(graph.component_label() == "All",
+		"a component tap cannot leave All while rotation is active")
+
+	graph.queue_free()
+	doc.queue_free()
+	await get_tree().process_frame
+
+
+func _test_timeline_channel_signal() -> void:
+	var doc := _new_doc()
+	var timeline = TimelineScript.new()
+	add_child(timeline)
+	await get_tree().process_frame
+	var transport_host := Control.new()
+	add_child(transport_host)
+	timeline.mount_transport(transport_host)
+	timeline.setup(doc)
+	timeline.size = Vector2(600.0, 260.0)
+	await get_tree().process_frame
+
+	var emitted: Array = []
+	var on_channel: Callable = func(channel: String) -> void:
+		emitted.append(channel)
+	timeline.channel_selected.connect(on_channel)
+
+	timeline.set_channel("scale")
+	_check(timeline.channel() == "scale",
+		"Timeline.channel reports the active channel")
+	_check(emitted.size() == 1 and str(emitted[0]) == "scale",
+		"Timeline.set_channel emits channel_selected")
+
+	# A tap anywhere on the 44 dp channel row switches the channel too.
+	timeline._geometry(timeline._sheet)
+	var row_y: float = timeline._ruler_h + timeline._row_h * 1.5
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = Vector2(20.0, row_y)
+	timeline._sheet_input(press, timeline._sheet)
+	_check(emitted.size() == 2 and str(emitted[1]) == "rotation",
+		"a dope channel-row tap emits channel_selected")
+
+	var press_grid := InputEventMouseButton.new()
+	press_grid.button_index = MOUSE_BUTTON_LEFT
+	press_grid.pressed = true
+	press_grid.position = Vector2(timeline._label_width + 30.0, timeline._ruler_h + timeline._row_h * 2.5)
+	timeline._sheet_input(press_grid, timeline._sheet)
+	_check(emitted.size() == 3 and str(emitted[2]) == "scale",
+		"the full row, not just the label column, selects the channel")
+
+	timeline.channel_selected.disconnect(on_channel)
+	timeline.queue_free()
+	transport_host.queue_free()
+	doc.queue_free()
+	await get_tree().process_frame

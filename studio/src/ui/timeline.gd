@@ -16,6 +16,8 @@ signal duration_row_changed(open: bool)
 signal duration_confirmation_requested(value: float, message: String)
 ## The compact More control asks the editor for the session-only full state.
 signal more_requested
+## The active channel changed, whether by the graph tab strip or a dope row.
+signal channel_selected(channel: String)
 
 class DopeSheet:
 	extends Control
@@ -1578,6 +1580,7 @@ func graph_height_hint() -> float:
 func set_channel(channel: String) -> void:
 	if doc == null or not (channel in doc.CHANNELS):
 		return
+	var changed := channel != _selected_channel
 	_selected_channel = channel
 	_selected_index = -1
 	_selected_data_id = ""
@@ -1591,6 +1594,12 @@ func set_channel(channel: String) -> void:
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
+	if changed:
+		channel_selected.emit(channel)
+
+
+func channel() -> String:
+	return _selected_channel
 
 func select_segment_at_time(time: float) -> bool:
 	if doc == null or doc.selected_id == "":
@@ -2024,10 +2033,8 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		if pos.y > _ruler_h and pos.x < _label_width:
 			var ci := int(floor((pos.y - _ruler_h) / maxf(1.0, _row_h)))
 			if ci >= 0 and ci < doc.CHANNELS.size():
-				_selected_channel = str(doc.CHANNELS[ci])
-				_selected_index = -1
-				_refresh_transport(doc.current_time, doc.is_playing)
-				canvas.queue_redraw()
+				# The full 44 dp channel row is the target, not just the label.
+				set_channel(str(doc.CHANNELS[ci]))
 			return
 		_scrubbing = true
 		if doc.is_playing:
@@ -2049,7 +2056,7 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		return
 	var ci := int(floor((pos.y - _ruler_h) / maxf(1.0, _row_h)))
 	if ci >= 0 and ci < doc.CHANNELS.size():
-		_selected_channel = str(doc.CHANNELS[ci])
+		set_channel(str(doc.CHANNELS[ci]))
 	_selected_index = -1
 	_refresh_transport(doc.current_time, doc.is_playing)
 	_scrubbing = true

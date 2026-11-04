@@ -1511,7 +1511,7 @@ func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit k
 		for ki in range(animation.track_get_key_count(track) - 1, -1, -1):
 			animation.track_remove_key(track, ki)
 		if live.is_empty():
-			animation.track_remove_track(track)
+			animation.remove_track(track)
 		else:
 			for entry in live:
 				var new_index := _insert_track_value(track, channel, float(entry["time"]), entry["value"])
