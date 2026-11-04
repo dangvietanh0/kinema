@@ -8,6 +8,7 @@ extends Control
 
 const GfxScript = preload("res://src/core/gfx.gd")
 const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
+const EditorAppScript = preload("res://src/app/editor.gd")
 
 var _failures: Array[String] = []
 var _oks := 0
@@ -35,6 +36,7 @@ func _ready() -> void:
 	_test_enable_and_disable()
 	_test_risk_profile()
 	_test_capabilities()
+	_test_settings_risk_ui()
 
 	_restore_preferences()
 	var status := "PASS" if _failures.is_empty() else "FAIL"
@@ -313,3 +315,70 @@ func _test_capabilities() -> void:
 	_check(desktop_on == desktop_off, "desktop capabilities are identical in both risk states")
 	var mobile_backend: Dictionary = Gfx.capabilities_for("mobile", "Android", true)
 	_check(not bool(mobile_backend.get("risk_unlocked", true)), "the Mobile backend reports no Forward+ unlock")
+
+
+# -------------------------------------------------------------------------
+# Settings risk controls
+# -------------------------------------------------------------------------
+
+func _test_settings_risk_ui() -> void:
+	print("GRAPHICS STEP: settings risk controls")
+	var panel = SettingsPanelScript.new()
+	_reset_risk(false, "idle", "")
+	var forward_off: Dictionary = panel.risk_card_state("Android", "forward_plus")
+	_check(bool(forward_off.get("visible", false)), "the risk card is visible on Android")
+	_check(not bool(forward_off.get("toggle_on", true)), "the toggle is off when risk is off")
+	_check(not bool(forward_off.get("restore_visible", true)), "restore is hidden when risk is off")
+	_check(str(forward_off.get("hint", "")) == "Clamped on Android Forward+ for stability.", "the clamped hint is exact")
+	_check(str(forward_off.get("warning", "missing")) == "", "risk off shows no warning")
+	_check(str(forward_off.get("renderer_note", "")) == "Experimental on Android: high-end Forward+ effects are clamped for stability.", "risk off keeps the renderer note")
+
+	_reset_risk(true, "proven", "")
+	var forward_on: Dictionary = panel.risk_card_state("Android", "forward_plus")
+	_check(bool(forward_on.get("toggle_on", false)), "the toggle follows risk_enabled")
+	_check(bool(forward_on.get("restore_visible", false)), "restore is visible when risk is on")
+	_check(str(forward_on.get("hint", "")) == "High-end · risk accepted", "the unlocked hint is exact")
+	_check(str(forward_on.get("warning", "")).contains("High-end effects are on. Stability is not guaranteed."), "the active warning is exact")
+
+	var mobile_on: Dictionary = panel.risk_card_state("Android", "mobile")
+	_check(str(mobile_on.get("warning", "")) == "High-end effects apply when Forward+ is running.", "Mobile explains when the high-end profile applies")
+	_check(str(mobile_on.get("renderer_note", "")) == "Experimental on Android: high-end effects follow your risk setting.", "risk on changes the renderer note")
+
+	var error_text := "High-end Forward+ effects were reverted because the previous launch did not reach the editor."
+	_reset_risk(true, "proven", error_text)
+	var with_error: Dictionary = panel.risk_card_state("Android", "forward_plus")
+	_check(str(with_error.get("warning", "")).contains(error_text), "a previous revert is shown in the card")
+
+	_reset_risk(false, "idle", "")
+	var desktop: Dictionary = panel.risk_card_state("Linux", "forward_plus")
+	_check(not bool(desktop.get("visible", true)), "the risk card is hidden on desktop")
+	_check(str(desktop.get("warning", "missing")) == "", "desktop has no warning")
+
+	var toggle: Button = panel.risk_toggle_button(forward_off)
+	_check(toggle.name == "RiskToggle", "the toggle row is named RiskToggle")
+	_check(toggle.custom_minimum_size.y >= 44.0, "the toggle row meets the 44 dp touch floor")
+	_check(toggle.text == "High-end Forward+ effects", "the toggle title is exact")
+	var emitted: Array = []
+	panel.risk_change_requested.connect(func(on: bool) -> void: emitted.append(on))
+	toggle.set_pressed_no_signal(true)
+	toggle.emit_signal("toggled", true)
+	_check(emitted == [true], "toggling on requests the confirmation instead of flipping")
+	var restore: Button = panel.risk_restore_button()
+	_check(restore.text == "Restore mobile-safe", "the restore label is exact")
+	_check(restore.custom_minimum_size.x >= 96.0 and restore.custom_minimum_size.y >= 44.0, "restore is a 96x44 target")
+	_check(restore.theme_type_variation != "PrimaryButton", "restore is a neutral action")
+	emitted.clear()
+	restore.emit_signal("pressed")
+	_check(emitted == [false], "restore requests the mobile-safe profile")
+
+	_check(EditorAppScript.RISK_CONFIRM_TITLE == "Enable high-end Forward+ effects?", "the confirmation title is exact")
+	_check(EditorAppScript.RISK_CONFIRM_BODY == "Kinema will run the real Forward+ feature set. Some Android GPUs crash or overheat with these effects. If the next launch fails to reach the editor, Kinema returns to the mobile-safe profile automatically.", "the confirmation body is exact")
+	var actions: Array = EditorAppScript.RISK_CONFIRM_ACTIONS
+	_check(actions.size() == 2, "the confirmation has two actions")
+	_check(str(actions[0].get("text", "")) == "Cancel", "the confirmation can be cancelled")
+	_check(str(actions[1].get("text", "")) == "Enable risk", "the confirm action is Enable risk")
+	_check(bool(actions[1].get("primary", false)), "Enable risk is the primary action")
+	_check(not bool(actions[1].get("destructive", true)), "Enable risk is not styled destructive")
+
+	_reset_risk(false, "idle", "")
+	panel.free()

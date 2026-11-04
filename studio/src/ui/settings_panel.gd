@@ -9,6 +9,7 @@ extends VBoxContainer
 
 signal renderer_restart_requested(preference: String)
 signal orientation_requested(value: String)
+signal risk_change_requested(enabled: bool)
 signal open_render_requested
 signal open_import_requested
 
@@ -40,6 +41,18 @@ const ICONS := {
 const PACKAGE_NAME := "studio.kinema.app"
 const APP_VERSION := "0.1.0"
 const ScaleSliderScript = preload("res://src/ui/components/scale_slider.gd")
+
+# Graphics risk copy. The panel emits the request; the editor owns the
+# confirmation sheet and the actual enable/disable calls.
+const RISK_TOGGLE_TITLE := "High-end Forward+ effects"
+const RISK_TOGGLE_CAPTION := "Accept the risk of disabling the mobile-safe clamp"
+const RISK_CLAMP_HINT := "Clamped on Android Forward+ for stability."
+const RISK_ACCEPTED_HINT := "High-end · risk accepted"
+const RISK_ACTIVE_WARNING := "High-end effects are on. Stability is not guaranteed."
+const RISK_MOBILE_WARNING := "High-end effects apply when Forward+ is running."
+const RISK_RENDERER_NOTE := "Experimental on %s: high-end effects follow your risk setting."
+const RISK_CLAMPED_RENDERER_NOTE := "Experimental on %s: high-end Forward+ effects are clamped for stability."
+const RISK_RESTORE_LABEL := "Restore mobile-safe"
 
 var editor: Node = null
 var active := "general"
@@ -443,7 +456,72 @@ func _resolved_mode() -> String:
 # Graphics
 # -------------------------------------------------------------------------
 
+## Single source for the risk card copy and visibility. Tests and `_graphics()`
+## both read this, so the panel cannot drift from the stated behavior.
+func risk_card_state(platform: String = OS.get_name(), method: String = Gfx.actual_method()) -> Dictionary:
+	var resolved := platform if platform != "" else OS.get_name()
+	var supported := Gfx.risk_supported(resolved)
+	var enabled := Gfx.risk_enabled
+	var forward := method == "forward_plus"
+	var unlocked := supported and enabled and forward
+	var warning := ""
+	if supported and enabled:
+		if Gfx.risk_last_error != "":
+			warning = Gfx.risk_last_error
+		elif forward:
+			warning = RISK_ACTIVE_WARNING
+		else:
+			warning = RISK_MOBILE_WARNING
+	var hint := "Requires Forward+"
+	if unlocked:
+		hint = RISK_ACCEPTED_HINT
+	elif supported and forward:
+		hint = RISK_CLAMP_HINT
+	var renderer_note := ""
+	if supported:
+		if enabled:
+			renderer_note = RISK_RENDERER_NOTE % resolved
+		else:
+			renderer_note = RISK_CLAMPED_RENDERER_NOTE % resolved
+	return {
+		"visible": supported,
+		"toggle_on": enabled,
+		"warning": warning,
+		"restore_visible": supported and enabled,
+		"hint": hint,
+		"renderer_note": renderer_note,
+	}
+
+
+## A full-width 44 dp row. Toggling on only requests the editor's confirmation;
+## the visual state stays put until the editor confirms the change.
+func risk_toggle_button(state: Dictionary) -> Button:
+	var button := Kit.text_toggle(RISK_TOGGLE_TITLE, "", true)
+	button.name = "RiskToggle"
+	button.custom_minimum_size.y = 44.0
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.button_pressed = bool(state.get("toggle_on", false))
+	button.toggled.connect(func(on: bool) -> void:
+		if on:
+			risk_change_requested.emit(true)
+		button.set_pressed_no_signal(bool(risk_card_state().get("toggle_on", false)))
+	)
+	return button
+
+
+## A neutral 96x44 action: restoring the safe profile is not destructive.
+func risk_restore_button() -> Button:
+	var button := Kit.text_button(RISK_RESTORE_LABEL, "", false, false)
+	button.custom_minimum_size = Vector2(96.0, 44.0)
+	button.pressed.connect(func() -> void:
+		risk_change_requested.emit(false)
+	)
+	return button
+
+
 func _graphics(parent: Control) -> void:
+	var risk_state := risk_card_state()
 	parent.add_child(Kit.section_label("Renderer"))
 	_info_line(parent, "In use", Gfx.display_name())
 	_info_line(parent, "Project request", Gfx.renderer_label(Gfx.project_renderer_request()))
@@ -480,6 +558,13 @@ func _graphics(parent: Control) -> void:
 	)
 	parent.add_child(_renderer_restart)
 	_update_renderer_restart()
+	if bool(risk_state.get("visible", false)):
+		# The renderer entry note is the risk-aware mobile note, not the static
+		# clamped note built by Gfx.renderer_entries().
+		entry_notes.clear()
+		var risk_note := str(risk_state.get("renderer_note", ""))
+		if risk_note != "":
+			entry_notes.append(risk_note)
 	for note in entry_notes:
 		var entry_note_label := Kit.label(note, Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
 		entry_note_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -496,6 +581,29 @@ func _graphics(parent: Control) -> void:
 		reason_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		parent.add_child(reason_label)
 
+	if bool(risk_state.get("visible", false)):
+		parent.add_child(Kit.vsep())
+		parent.add_child(Kit.section_label("Forward+ risk"))
+		parent.add_child(risk_toggle_button(risk_state))
+		var risk_caption := Kit.label(RISK_TOGGLE_CAPTION, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+		risk_caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(risk_caption)
+		if bool(risk_state.get("restore_visible", false)):
+			var card := PanelContainer.new()
+			card.name = "RiskCard"
+			card.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.BORDER_SOFT))
+			var card_body := VBoxContainer.new()
+			card_body.add_theme_constant_override("separation", 6)
+			card.add_child(card_body)
+			var warning_text := str(risk_state.get("warning", ""))
+			if warning_text != "":
+				var warning := Kit.label(warning_text, Kit.TYPE_CAPTION, Kit.WARNING)
+				warning.name = "RiskWarning"
+				warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				card_body.add_child(warning)
+			card_body.add_child(risk_restore_button())
+			parent.add_child(card)
+
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Quality preset"))
 	if editor != null and editor.has_method("graphics_preset_row"):
@@ -503,12 +611,13 @@ func _graphics(parent: Control) -> void:
 	else:
 		parent.add_child(Kit.label("Preset controls are unavailable in this host.", Kit.TYPE_CAPTION, Kit.TEXT_DIM))
 
-	# Capability gating uses the running platform. On Android/iOS Forward+ the
-	# stored preference may stay high, but the controls report what is actually
-	# applied: high-end effects are clamped for stability.
-	var running_caps := Gfx.capabilities_for(Gfx.actual_method(), OS.get_name())
-	var forward_clamped := Gfx.actual_method() == "forward_plus" and bool(running_caps.get("mobile_safe", false))
-	var clamp_reason := "Clamped on Android Forward+ for stability."
+	# Capability gating uses the running platform and the persisted risk
+	# switch. On Android/iOS Forward+ without risk the stored preference may
+	# stay high, but the controls report the clamped values actually applied.
+	var running_caps := Gfx.capabilities_for(Gfx.actual_method(), OS.get_name(), Gfx.risk_enabled)
+	var risk_unlocked := bool(running_caps.get("risk_unlocked", false))
+	var forward_clamped := Gfx.actual_method() == "forward_plus" and bool(running_caps.get("mobile_safe", false)) and not risk_unlocked
+	var clamp_reason := RISK_CLAMP_HINT
 	var msaa_cap := int(running_caps.get("msaa_cap", 3))
 	var scale_cap := float(running_caps.get("scale_3d_cap", 1.0))
 	var shadow_quality_cap := int(running_caps.get("shadow_quality_cap", 3))
@@ -518,17 +627,17 @@ func _graphics(parent: Control) -> void:
 	var ssil_available := bool(running_caps.get("ssil", false))
 	var ssr_available := bool(running_caps.get("ssr", false))
 	var fog_available := bool(running_caps.get("volumetric_fog", false))
-	var effects_hint := clamp_reason if forward_clamped else "Requires Forward+"
+	var effects_hint := RISK_ACCEPTED_HINT if risk_unlocked else (clamp_reason if forward_clamped else "Requires Forward+")
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Anti-aliasing"))
-	_choice_row(parent, "Samples", clamp_reason if msaa_cap < 2 else "MSAA", [
+	_choice_row(parent, "Samples", RISK_ACCEPTED_HINT if risk_unlocked else (clamp_reason if msaa_cap < 2 else "MSAA"), [
 		{"label": "Off", "value": 0},
 		{"label": "2×", "value": 1},
 		{"label": "4×", "value": 2, "disabled": msaa_cap < 2},
 		{"label": "8×", "value": 3, "disabled": msaa_cap < 3},
 	], Gfx.msaa, func(value: Variant) -> void: Gfx.set_option("msaa", value))
-	_gfx_choice(parent, "Temporal", effects_hint if forward_clamped else "Requires Forward+", [
+	_gfx_choice(parent, "Temporal", effects_hint, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.taa, func(value: Variant) -> void: Gfx.set_option("taa", value), not taa_available)
@@ -564,18 +673,18 @@ func _graphics(parent: Control) -> void:
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Shadows"))
-	_choice_row(parent, "Filter quality", clamp_reason if shadow_quality_cap < 3 else "", [
+	_choice_row(parent, "Filter quality", RISK_ACCEPTED_HINT if risk_unlocked else (clamp_reason if shadow_quality_cap < 3 else ""), [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
 		{"label": "Ultra", "value": 3, "disabled": shadow_quality_cap < 3},
 	], Gfx.shadow_quality, func(value: Variant) -> void: Gfx.set_option("shadow_quality", value))
-	_choice_row(parent, "Cascades", "%s · max %d" % ["sun", shadow_splits_cap], [
+	_choice_row(parent, "Cascades", RISK_ACCEPTED_HINT if risk_unlocked else "%s · max %d" % ["sun", shadow_splits_cap], [
 		{"label": "1", "value": 1},
 		{"label": "2", "value": 2},
 		{"label": "4", "value": 4, "disabled": shadow_splits_cap < 4},
 	], Gfx.shadow_splits, func(value: Variant) -> void: Gfx.set_option("shadow_splits", value))
-	_choice_row(parent, "Range", "meters · max %d" % int(round(shadow_distance_cap)), [
+	_choice_row(parent, "Range", RISK_ACCEPTED_HINT if risk_unlocked else "meters · max %d" % int(round(shadow_distance_cap)), [
 		{"label": "25", "value": 25.0},
 		{"label": "40", "value": 40.0},
 		{"label": "60", "value": 60.0, "disabled": forward_clamped},
@@ -584,7 +693,7 @@ func _graphics(parent: Control) -> void:
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Performance"))
-	_choice_row(parent, "3D resolution", "% · max %d%%" % int(round(scale_cap * 100.0)), [
+	_choice_row(parent, "3D resolution", RISK_ACCEPTED_HINT if risk_unlocked else "% · max %d%%" % int(round(scale_cap * 100.0)), [
 		{"label": "60", "value": 0.6},
 		{"label": "80", "value": 0.8},
 		{"label": "100", "value": 1.0, "disabled": scale_cap < 1.0},

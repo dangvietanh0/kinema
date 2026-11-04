@@ -49,6 +49,17 @@ const CameraExportScript = preload("res://src/core/camera_export.gd")
 const AndroidVideo = preload("res://src/core/android_video.gd")
 const GifEncoder = preload("res://src/core/gif_encoder.gd")
 
+## The Forward+ risk confirmation is owned here so every surface uses the same
+## copy. `Enable risk` is a primary action, not a destructive one.
+const RISK_CONFIRM_TITLE := "Enable high-end Forward+ effects?"
+const RISK_CONFIRM_BODY := "Kinema will run the real Forward+ feature set. Some Android GPUs crash or overheat with these effects. If the next launch fails to reach the editor, Kinema returns to the mobile-safe profile automatically."
+const RISK_CONFIRM_ACTIONS := [
+	{"text": "Cancel", "compact": true},
+	{"text": "Enable risk", "primary": true, "destructive": false},
+]
+const RISK_ENABLED_TOAST := "High-end Forward+ effects enabled"
+const RISK_RESTORED_TOAST := "Mobile-safe graphics restored"
+
 const AUTOSAVE_SECONDS := 30.0
 const SHORT_MAX_HEIGHT := 520.0
 ## The rail is a column only once the shell reaches Studio's minimum logical
@@ -3441,6 +3452,7 @@ func _open_settings(category: String = "general") -> void:
 	panel.setup(self)
 	panel.renderer_restart_requested.connect(_on_settings_renderer_restart)
 	panel.orientation_requested.connect(_on_settings_orientation)
+	panel.risk_change_requested.connect(_on_settings_risk_change)
 	panel.open_render_requested.connect(_open_render_sheet)
 	panel.open_import_requested.connect(_open_import_sheet)
 	_settings_panel = panel
@@ -3496,6 +3508,40 @@ func _on_settings_orientation(value: String) -> void:
 	if host == null or not bool(host.call("apply_orientation", value)):
 		if _overlay != null:
 			_overlay.toast("This device does not allow apps to lock orientation", "triangle-alert", Kit.WARNING)
+
+
+func _on_settings_risk_change(enabled: bool) -> void:
+	if not Gfx.risk_supported():
+		return
+	if not enabled:
+		Gfx.disable_risk()
+		if _overlay != null:
+			_overlay.toast(RISK_RESTORED_TOAST, "check", Kit.SUCCESS)
+		_open_graphics_settings()
+		return
+	if _overlay == null:
+		return
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+	var message := Kit.label(RISK_CONFIRM_BODY, Kit.TYPE_BODY, Kit.TEXT_MUTED)
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(message)
+	var actions: Array = RISK_CONFIRM_ACTIONS.duplicate(true)
+	actions[0]["callback"] = func() -> void: _open_graphics_settings()
+	actions[1]["callback"] = _confirm_risk_enable
+	_overlay.show_modal(RISK_CONFIRM_TITLE, "", body, actions)
+
+
+func _confirm_risk_enable() -> void:
+	if not Gfx.risk_supported():
+		return
+	# The probe is persisted inside enable_risk() before the profile applies.
+	Gfx.enable_risk()
+	await RenderingServer.frame_post_draw
+	Gfx.confirm_risk_probe()
+	if _overlay != null:
+		_overlay.toast(RISK_ENABLED_TOAST, "check", Kit.SUCCESS)
+	_open_graphics_settings()
 
 
 func _on_settings_pref_changed(key: String) -> void:
