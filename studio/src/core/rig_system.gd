@@ -76,6 +76,12 @@ func _rig_to_json(rig: Dictionary) -> Dictionary:
 			"bones": (pose.get("bones", {}) as Dictionary).duplicate(true),
 			"root_position": PoseLibrary.vec3_to_array(PoseLibrary.array_to_vec3(pose.get("root_position", [0, 0, 0]))),
 		})
+	var current_pose: Dictionary = rig.get("pose", {})
+	var node: Node3D = _document.nodes.get(str(rig.get("object_id", ""))) if _document != null else null
+	if node != null:
+		var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
+		if skeleton != null:
+			current_pose = PoseLibrary.capture(skeleton, node)
 	return {
 		"id": str(rig.get("id", "")),
 		"object_id": str(rig.get("object_id", "")),
@@ -84,6 +90,7 @@ func _rig_to_json(rig: Dictionary) -> Dictionary:
 		"skins": skins,
 		"ik": (rig.get("ik", []) as Array).duplicate(true),
 		"poses": poses,
+		"pose": current_pose.duplicate(true),
 		"active_bone": str(rig.get("active_bone", "")),
 		"imported": bool(rig.get("imported", false)),
 	}
@@ -117,6 +124,13 @@ func load_data(data: Dictionary, nodes: Dictionary) -> void:
 		else:
 			_remove_fallback_visual(node)
 			_build_skeleton(rig, node)
+		var pose: Dictionary = rig.get("pose", {})
+		if not pose.is_empty():
+			var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
+			if skeleton != null:
+				# Bone channels only: the document object's transform stays
+				# authoritative on load. This runs inside the loading guard.
+				PoseLibrary.apply_bones(skeleton, pose)
 	if not _rigs.is_empty():
 		_active_rig = str(_rigs[0]["object_id"])
 
@@ -163,7 +177,13 @@ func _rig_from_json(raw: Dictionary) -> Dictionary:
 		var pose_bones: Dictionary = {}
 		var source_bones: Dictionary = raw_pose.get("bones", {})
 		for bone_name in source_bones.keys():
-			pose_bones[str(bone_name)] = PoseLibrary.quat_to_array(PoseLibrary.array_to_quat(source_bones[bone_name]))
+			var value: Variant = source_bones[bone_name]
+			if value is Dictionary:
+				pose_bones[str(bone_name)] = (value as Dictionary).duplicate(true)
+			else:
+				pose_bones[str(bone_name)] = {
+					"r": PoseLibrary.quat_to_array(PoseLibrary.array_to_quat(value)),
+				}
 		poses.append({
 			"id": str(raw_pose.get("id", "pose_%d" % (_next_pose + poses.size()))),
 			"name": str(raw_pose.get("name", "Pose")),
@@ -179,6 +199,7 @@ func _rig_from_json(raw: Dictionary) -> Dictionary:
 		"skins": (raw.get("skins", []) as Array).duplicate(true),
 		"ik": ik,
 		"poses": poses,
+		"pose": (raw.get("pose", {}) as Dictionary).duplicate(true),
 		"active_bone": active_bone,
 		"imported": bool(raw.get("imported", false)),
 	}
@@ -262,6 +283,7 @@ func _new_rig_record(object_id: String, name: String) -> Dictionary:
 		"skins": [],
 		"ik": [],
 		"poses": [],
+		"pose": {},
 		"active_bone": "Root",
 		"imported": false,
 	}
@@ -1425,8 +1447,12 @@ func key_pose(rig_id: String) -> bool:
 	if skeleton == null:
 		return false
 	var captured := PoseLibrary.capture(skeleton, node)
+	var rotations: Dictionary = {}
+	for bone_name in captured.get("bones", {}).keys():
+		var value: Variant = captured["bones"][bone_name]
+		rotations[bone_name] = value.get("r", [0, 0, 0, 1]) if value is Dictionary else value
 	_begin("Key pose")
-	_document.insert_pose_keys(rig_id, captured["bones"])
+	_document.insert_pose_keys(rig_id, rotations)
 	_end()
 	return true
 
@@ -1525,6 +1551,7 @@ func adopt_imported_skeleton(object_id: String, node: Node) -> bool:
 		"skins": [],
 		"ik": [],
 		"poses": [],
+		"pose": {},
 		"active_bone": str(bones[0].get("name", "")),
 		"imported": true,
 	}

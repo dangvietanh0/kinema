@@ -66,6 +66,7 @@ func _ready() -> void:
 	await _test_undo()
 	await _test_ik()
 	await _test_pose_and_bone_keys()
+	await _test_pose_v2()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
 	await _test_fbx_and_adoption()
@@ -755,6 +756,121 @@ func _test_pose_and_bone_keys() -> void:
 	_check(skel2.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "a loaded pose can be applied")
 	doc.queue_free()
 	doc2.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C4b — pose v2 and persistence
+# -------------------------------------------------------------------------
+
+func _test_pose_v2() -> void:
+	print("RIG STEP: pose v2")
+	var doc := _new_doc("Pose V2")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var skel := _skeleton(doc, rig_id)
+	var node: Node3D = doc.nodes[rig_id]
+	var p_root := Vector3(0.2, 0.3, 0.4)
+	var q_root := Quaternion(Vector3.UP, 0.5)
+	var s_root := Vector3(1.2, 1.3, 1.4)
+	skel.set_bone_pose_position(0, p_root)
+	skel.set_bone_pose_rotation(0, q_root)
+	skel.set_bone_pose_scale(0, s_root)
+	skel.set_bone_pose_position(1, Vector3(0.1, 0.5, 0.0))
+	skel.set_bone_pose_rotation(1, Quaternion(Vector3.RIGHT, -0.2))
+	skel.set_bone_pose_scale(1, Vector3(0.9, 1.1, 1.0))
+	node.position = Vector3(0.4, -0.2, 0.7)
+	doc.get_object(rig_id)["position"] = Vector3(0.4, -0.2, 0.7)
+
+	var pose: Dictionary = PoseLibraryScript.capture(skel, node)
+	var bones: Dictionary = pose.get("bones", {})
+	_check(bones.size() == 2, "pose capture writes every bone")
+	var root_pose: Dictionary = bones.get("Root", {})
+	_check(root_pose.get("p", []) is Array and (root_pose["p"] as Array).size() == 3, "pose capture writes a p array")
+	_check(root_pose.get("r", []) is Array and (root_pose["r"] as Array).size() == 4, "pose capture writes an r array")
+	_check(root_pose.get("s", []) is Array and (root_pose["s"] as Array).size() == 3, "pose capture writes an s array")
+	_check(PoseLibraryScript.array_to_vec3(root_pose.get("p", [])) == p_root, "pose capture stores the real position")
+	_check(PoseLibraryScript.array_to_quat(root_pose.get("r", [])).angle_to(q_root) < 0.001, "pose capture stores the real rotation")
+	_check(PoseLibraryScript.array_to_vec3(root_pose.get("s", [])) == s_root, "pose capture stores the real scale")
+	_check(pose.get("root_position", []) is Array, "pose capture keeps a JSON root position")
+
+	# apply_bones never moves the root node.
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	node.position = Vector3(9, 9, 9)
+	PoseLibraryScript.apply_bones(skel, pose)
+	_check(node.position == Vector3(9, 9, 9), "apply_bones leaves the root node untouched")
+	_check(skel.get_bone_pose_position(0).distance_to(p_root) < 0.0001, "apply_bones restores the bone position")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "apply_bones restores the bone rotation")
+	_check(skel.get_bone_pose_scale(0).distance_to(s_root) < 0.0001, "apply_bones restores the bone scale")
+
+	PoseLibraryScript.apply(skel, node, pose)
+	_check(node.position.distance_to(Vector3(0.4, -0.2, 0.7)) < 0.0001, "apply restores the root position explicitly")
+
+	# A legacy quaternion pose stays readable and changes rotation only.
+	skel.set_bone_pose_position(0, Vector3(0.25, 0.1, -0.1))
+	skel.set_bone_pose_scale(0, Vector3(1.5, 1.6, 1.7))
+	var legacy_q := Quaternion(Vector3.RIGHT, 0.35)
+	var legacy := {"bones": {"Root": [legacy_q.x, legacy_q.y, legacy_q.z, legacy_q.w]}}
+	PoseLibraryScript.apply_bones(skel, legacy)
+	_check(skel.get_bone_pose_rotation(0).angle_to(legacy_q) < 0.001, "a legacy quaternion pose applies rotation")
+	_check(skel.get_bone_pose_position(0).distance_to(Vector3(0.25, 0.1, -0.1)) < 0.0001, "a legacy pose leaves the position untouched")
+	_check(skel.get_bone_pose_scale(0).distance_to(Vector3(1.5, 1.6, 1.7)) < 0.0001, "a legacy pose leaves the scale untouched")
+	var legacy_serialized: Dictionary = PoseLibraryScript.deserialize(legacy)
+	_check(legacy_serialized.get("bones", {}).has("Root"), "deserialize keeps a legacy pose bone")
+	var serialized: Dictionary = PoseLibraryScript.serialize(pose)
+	_check((serialized.get("bones", {}).get("Root", {}) as Dictionary).has("s"), "serialize preserves the v2 shape")
+
+	skel.set_bone_pose_position(0, p_root)
+	skel.set_bone_pose_rotation(0, q_root)
+	skel.set_bone_pose_scale(0, s_root)
+
+	# Rig JSON carries the live pose.
+	var data: Dictionary = doc.to_data()
+	var rigs: Array = data.get("rigs", [])
+	_check(rigs.size() == 1 and (rigs[0] as Dictionary).has("pose"), "to_data writes a top-level rig pose")
+	var json_pose: Dictionary = (rigs[0] as Dictionary).get("pose", {})
+	_check((json_pose.get("bones", {}) as Dictionary).has("Root"), "the rig pose holds every bone")
+
+	# Save, rebuild and load restores p/r/s without a history entry.
+	var doc2 := _new_doc("Pose V2 Load")
+	doc2.load_project(data, _tmp_dir)
+	var skel2 := _skeleton(doc2, rig_id)
+	_check(skel2 != null, "the pose roundtrip rebuilds the skeleton")
+	if skel2 != null:
+		_check(skel2.get_bone_pose_position(0).distance_to(p_root) < 0.001 and skel2.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "load restores the bone position and rotation")
+		_check(skel2.get_bone_pose_scale(0).distance_to(s_root) < 0.001, "load restores the bone scale")
+	_check(not doc2.has_open_edit(), "loading a pose opens no edit")
+	_check(not doc2.can_undo(), "loading a pose creates no undo entry")
+
+	# The object transform stays authoritative: a stale root_position in the
+	# saved pose cannot move the loaded object.
+	(data["rigs"][0] as Dictionary)["pose"]["root_position"] = [9, 9, 9]
+	var doc3 := _new_doc("Pose V2 Root")
+	doc3.load_project(data, _tmp_dir)
+	var node3: Node3D = doc3.nodes[rig_id]
+	_check(node3.position.distance_to(Vector3(0.4, -0.2, 0.7)) < 0.001, "load ignores the saved pose root_position")
+	_check(node3.position.distance_to(Vector3(9, 9, 9)) > 1.0, "the saved pose cannot move the object root")
+
+	# save_pose stores the v2 bone map and apply_pose restores all channels.
+	node.position = Vector3(0.4, -0.2, 0.7)
+	var pose_id: String = rs.save_pose(rig_id, "V2 Pose")
+	var stored_poses: Array = rs.get_rig(rig_id).get("poses", [])
+	_check(pose_id != "" and not stored_poses.is_empty(), "save_pose stores a v2 pose")
+	if not stored_poses.is_empty():
+		var stored_bones: Dictionary = (stored_poses[0] as Dictionary).get("bones", {})
+		var stored_root: Dictionary = stored_bones.get("Root", {})
+		_check(stored_root.has("p") and stored_root.has("r") and stored_root.has("s"), "save_pose stores p, r and s")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	doc.get_object(rig_id)["position"] = Vector3(0.4, -0.2, 0.7)
+	rs.apply_pose(rig_id, pose_id)
+	_check(skel.get_bone_pose_position(0).distance_to(p_root) < 0.001, "apply_pose restores the position")
+	_check(skel.get_bone_pose_scale(0).distance_to(s_root) < 0.001, "apply_pose restores the scale")
+	doc.queue_free()
+	doc2.queue_free()
+	doc3.queue_free()
 
 
 # -------------------------------------------------------------------------
