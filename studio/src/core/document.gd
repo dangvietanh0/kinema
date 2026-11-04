@@ -1947,32 +1947,65 @@ func _bone_track_path(rig_object_id: String, bone: String) -> NodePath:
 	var node_name := str(node.name) if node != null else "Object_" + rig_object_id
 	return NodePath("%s/Skeleton3D:%s" % [node_name, bone])
 
-func _bone_track(rig_object_id: String, bone: String, create: bool) -> int:
+func _bone_track_typed(rig_object_id: String, bone: String, type: int, create: bool) -> int:
 	if animation == null:
 		return -1
 	var path := _bone_track_path(rig_object_id, bone)
 	for ti in range(animation.get_track_count()):
-		if animation.track_get_type(ti) == Animation.TYPE_ROTATION_3D \
+		if animation.track_get_type(ti) == type \
 				and animation.track_get_path(ti) == path:
 			return ti
 	if not create:
 		return -1
-	var track := animation.add_track(Animation.TYPE_ROTATION_3D)
+	var track := animation.add_track(type)
 	animation.track_set_path(track, path)
 	animation.track_set_interpolation_type(track, _interpolation_value())
 	return track
 
-func insert_bone_key(rig_object_id: String, bone: String, rotation: Quaternion) -> int:
-	var track := _bone_track(rig_object_id, bone, true)
+func _bone_track(rig_object_id: String, bone: String, create: bool) -> int:
+	return _bone_track_typed(rig_object_id, bone, Animation.TYPE_ROTATION_3D, create)
+
+func insert_pose_channel(rig_object_id: String, bone: String, channel: String, value: Variant) -> int:
+	var type := -1
+	match channel:
+		"position":
+			type = Animation.TYPE_POSITION_3D
+		"rotation":
+			type = Animation.TYPE_ROTATION_3D
+		"scale":
+			type = Animation.TYPE_SCALE_3D
+		_:
+			return -1
+	var track := _bone_track_typed(rig_object_id, bone, type, true)
 	if track < 0:
 		return -1
-	var q := rotation if rotation.length_squared() > 0.000001 else Quaternion.IDENTITY
-	var index := animation.rotation_track_insert_key(track, current_time, q.normalized())
+	var stored: Variant = value
+	if channel == "rotation":
+		var q: Quaternion = value if value is Quaternion else _json_to_quat(value)
+		stored = q.normalized() if (q as Quaternion).length_squared() > 0.000001 else Quaternion.IDENTITY
+	else:
+		stored = _json_to_vec3(value)
+	# An existing key at the same time is updated in place; otherwise the
+	# channel gets a new key.
+	var index := animation.track_find_key(track, current_time, Animation.FIND_MODE_EXACT)
+	if index >= 0:
+		animation.track_set_key_value(track, index, stored)
+	else:
+		match channel:
+			"position":
+				index = animation.position_track_insert_key(track, current_time, stored)
+			"rotation":
+				index = animation.rotation_track_insert_key(track, current_time, stored)
+			"scale":
+				index = animation.scale_track_insert_key(track, current_time, stored)
 	if index >= 0:
 		_dirty = true
 		dirty_changed.emit(true)
 		keyframes_changed.emit(rig_object_id)
 	return index
+
+func insert_bone_key(rig_object_id: String, bone: String, rotation: Quaternion) -> int:
+	return insert_pose_channel(rig_object_id, bone, "rotation", rotation)
 
 func get_bone_keys(rig_object_id: String, bone: String) -> Array:
 	var result: Array = []
@@ -2004,16 +2037,22 @@ func sample_bone(rig_object_id: String, bone: String, time: float) -> Quaternion
 	return value.normalized()
 
 func insert_pose_keys(rig_object_id: String, pose: Dictionary) -> void:
-	for bone in pose.keys():
-		var value: Variant = pose[bone]
-		var rotation := Quaternion.IDENTITY
-		if value is Quaternion:
-			rotation = value
-		elif value is Array:
-			rotation = _json_to_quat(value)
-		else:
-			continue
-		insert_bone_key(rig_object_id, str(bone), rotation)
+	var bones: Dictionary = pose
+	if pose.get("bones", null) is Dictionary:
+		bones = pose["bones"]
+	for bone in bones.keys():
+		var value: Variant = bones[bone]
+		if value is Dictionary and ((value as Dictionary).has("p") or (value as Dictionary).has("r") or (value as Dictionary).has("s")):
+			var channels: Dictionary = value
+			if channels.has("p"):
+				insert_pose_channel(rig_object_id, str(bone), "position", channels["p"])
+			if channels.has("r"):
+				insert_pose_channel(rig_object_id, str(bone), "rotation", channels["r"])
+			if channels.has("s"):
+				insert_pose_channel(rig_object_id, str(bone), "scale", channels["s"])
+		elif value is Quaternion or value is Array:
+			# Legacy pose: a bare quaternion per bone writes rotation only.
+			insert_bone_key(rig_object_id, str(bone), _json_to_quat(value))
 
 func set_autokey(enabled: bool) -> void:
 	autokey = enabled

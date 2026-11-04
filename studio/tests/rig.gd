@@ -67,6 +67,7 @@ func _ready() -> void:
 	await _test_ik()
 	await _test_pose_and_bone_keys()
 	await _test_pose_v2()
+	await _test_pose_transactions()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
 	await _test_fbx_and_adoption()
@@ -871,6 +872,238 @@ func _test_pose_v2() -> void:
 	doc.queue_free()
 	doc2.queue_free()
 	doc3.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C4c — pose transactions, autokey and three-channel bone keys
+# -------------------------------------------------------------------------
+
+func _bone_track_index(doc: Node3D, rig_id: String, bone: String, type: int) -> int:
+	if doc.animation == null:
+		return -1
+	var path: NodePath = doc._bone_track_path(rig_id, bone)
+	for ti in range(doc.animation.get_track_count()):
+		if doc.animation.track_get_type(ti) == type and doc.animation.track_get_path(ti) == path:
+			return ti
+	return -1
+
+
+func _bone_key_at(doc: Node3D, rig_id: String, bone: String, type: int, time: float) -> int:
+	var track := _bone_track_index(doc, rig_id, bone, type)
+	if track < 0:
+		return -1
+	return doc.animation.track_find_key(track, time, Animation.FIND_MODE_EXACT)
+
+
+func _bone_key_count(doc: Node3D, rig_id: String, bone: String, type: int) -> int:
+	var track := _bone_track_index(doc, rig_id, bone, type)
+	if track < 0:
+		return 0
+	return doc.animation.track_get_key_count(track)
+
+
+func _test_pose_transactions() -> void:
+	print("RIG STEP: pose transactions")
+	var doc := _new_doc("Pose Transactions")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var skel := _skeleton(doc, rig_id)
+
+	var p_root := Vector3(0.15, 0.25, 0.35)
+	var q_root := Quaternion(Vector3.UP, 0.45)
+	var s_root := Vector3(1.1, 1.2, 1.3)
+
+	# insert_pose_channel writes one track per channel at current_time.
+	doc.current_time = 1.25
+	var rot_key: int = doc.insert_pose_channel(rig_id, "Root", "rotation", q_root)
+	var pos_key: int = doc.insert_pose_channel(rig_id, "Root", "position", p_root)
+	var scale_key: int = doc.insert_pose_channel(rig_id, "Root", "scale", s_root)
+	_check(rot_key >= 0 and pos_key >= 0 and scale_key >= 0, "insert_pose_channel returns a key index")
+	_check(_bone_track_index(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D) >= 0, "insert_pose_channel creates a rotation track")
+	_check(_bone_track_index(doc, rig_id, "Root", Animation.TYPE_POSITION_3D) >= 0, "insert_pose_channel creates a position track")
+	_check(_bone_track_index(doc, rig_id, "Root", Animation.TYPE_SCALE_3D) >= 0, "insert_pose_channel creates a scale track")
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D) == 1, "the rotation track holds one key")
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_POSITION_3D) == 1, "the position track holds one key")
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_SCALE_3D) == 1, "the scale track holds one key")
+
+	# A second call at the same time updates instead of duplicating.
+	var updated_q := Quaternion(Vector3.RIGHT, 0.2)
+	doc.insert_pose_channel(rig_id, "Root", "rotation", updated_q)
+	var rot_track := _bone_track_index(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D)
+	_check(_bone_key_count(doc, rig_id, "Root", Animation.TYPE_ROTATION_3D) == 1, "insert_pose_channel updates an existing key")
+	if rot_track >= 0:
+		_check((doc.animation.track_get_key_value(rot_track, 0) as Quaternion).angle_to(updated_q) < 0.001, "the updated key stores the new rotation")
+
+	# insert_pose_keys writes all three channels for a v2 bone.
+	doc.current_time = 2.0
+	doc.insert_pose_keys(rig_id, {"bones": {"Spine": {
+		"p": Vector3(0.1, 0.5, 0.0),
+		"r": [0.0, 0.2, 0.0, 0.98],
+		"s": Vector3(0.9, 1.0, 1.1),
+	}}})
+	var rotation_type := Animation.TYPE_ROTATION_3D
+	var position_type := Animation.TYPE_POSITION_3D
+	var scale_type := Animation.TYPE_SCALE_3D
+	for type in [position_type, rotation_type, scale_type]:
+		_check(_bone_key_count(doc, rig_id, "Spine", type) == 1, "insert_pose_keys writes channel %d" % type)
+
+	# A legacy quaternion map still writes rotation only.
+	doc.current_time = 2.5
+	doc.insert_pose_keys(rig_id, {"bones": {"Spine": [0.0, 0.0, 0.0, 1.0]}})
+	_check(_bone_key_count(doc, rig_id, "Spine", rotation_type) == 2, "a legacy map writes a rotation key")
+	_check(_bone_key_count(doc, rig_id, "Spine", position_type) == 1, "a legacy map writes no position key")
+	_check(_bone_key_count(doc, rig_id, "Spine", scale_type) == 1, "a legacy map writes no scale key")
+
+	# set_bone_pose applies only the supplied channels and autokeys them.
+	doc.set_autokey(true)
+	doc.current_time = 3.0
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	var q_set := Quaternion(Vector3.FORWARD, 0.3)
+	_check(rs.set_bone_pose(rig_id, "Root", {"r": q_set}), "set_bone_pose applies a rotation patch")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_set) < 0.001, "set_bone_pose changes the live rotation")
+	_check(_bone_key_at(doc, rig_id, "Root", rotation_type, 3.0) >= 0, "autokey writes a rotation key")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 3.0) < 0, "a rotation patch writes no position key")
+	_check(_bone_key_at(doc, rig_id, "Root", scale_type, 3.0) < 0, "a rotation patch writes no scale key")
+
+	var p_set := Vector3(0.2, 0.3, 0.4)
+	var s_set := Vector3(1.2, 1.3, 1.4)
+	_check(rs.set_bone_pose(rig_id, "Root", {"p": p_set, "s": s_set}), "set_bone_pose applies a position and scale patch")
+	_check(skel.get_bone_pose_position(0).distance_to(p_set) < 0.0001 and skel.get_bone_pose_scale(0).distance_to(s_set) < 0.0001, "set_bone_pose changes position and scale")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_set) < 0.001, "a p/s patch leaves the rotation untouched")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 3.0) >= 0, "autokey writes a position key")
+	_check(_bone_key_at(doc, rig_id, "Root", scale_type, 3.0) >= 0, "autokey writes a scale key")
+
+	# An existing time updates the key.
+	var p_updated := Vector3(-0.2, -0.3, -0.4)
+	doc.insert_pose_channel(rig_id, "Root", "position", p_set)
+	rs.set_bone_pose(rig_id, "Root", {"p": p_updated})
+	var pos_track := _bone_track_index(doc, rig_id, "Root", position_type)
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 3.0) >= 0, "autokey keeps the existing position key")
+	if pos_track >= 0:
+		var pos_at: int = doc.animation.track_find_key(pos_track, 3.0, Animation.FIND_MODE_EXACT)
+		_check(pos_at >= 0 and (doc.animation.track_get_key_value(pos_track, pos_at) as Vector3).distance_to(p_updated) < 0.0001, "autokey updates the key value")
+
+	# Autokey off changes the skeleton and writes nothing.
+	doc.set_autokey(false)
+	doc.current_time = 4.0
+	_check(rs.set_bone_pose(rig_id, "Root", {"p": Vector3(0.9, 0.9, 0.9)}), "set_bone_pose works with autokey off")
+	_check(skel.get_bone_pose_position(0).distance_to(Vector3(0.9, 0.9, 0.9)) < 0.0001, "autokey off still moves the bone")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 4.0) < 0, "autokey off writes no key")
+	_check(not rs.set_bone_pose(rig_id, "Missing", {"r": q_set}), "set_bone_pose refuses a missing bone")
+
+	# apply_saved_pose is one transaction and applies autokey.
+	skel.set_bone_pose_position(0, p_root)
+	skel.set_bone_pose_rotation(0, q_root)
+	skel.set_bone_pose_scale(0, s_root)
+	var saved_pose: String = rs.save_pose(rig_id, "Transaction Pose")
+	skel.set_bone_pose_position(0, Vector3.ZERO)
+	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
+	skel.set_bone_pose_scale(0, Vector3.ONE)
+	doc.set_autokey(true)
+	doc.current_time = 5.0
+	_check(rs.apply_saved_pose(rig_id, saved_pose), "apply_saved_pose succeeds")
+	_check(skel.get_bone_pose_position(0).distance_to(p_root) < 0.001, "apply_saved_pose restores the position")
+	_check(skel.get_bone_pose_rotation(0).angle_to(q_root) < 0.001, "apply_saved_pose restores the rotation")
+	_check(skel.get_bone_pose_scale(0).distance_to(s_root) < 0.001, "apply_saved_pose restores the scale")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 5.0) >= 0, "apply_saved_pose autokeys the position")
+	_check(_bone_key_at(doc, rig_id, "Root", rotation_type, 5.0) >= 0, "apply_saved_pose autokeys the rotation")
+	_check(_bone_key_at(doc, rig_id, "Root", scale_type, 5.0) >= 0, "apply_saved_pose autokeys the scale")
+	_check(doc.undo_label() == "Apply pose", "apply_saved_pose is one undo entry")
+	doc.undo()
+	skel = _skeleton(doc, rig_id)
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 5.0) < 0, "one undo removes the applied pose keys")
+	_check(_bone_key_at(doc, rig_id, "Root", rotation_type, 5.0) < 0, "one undo removes the applied rotation keys")
+
+	# Reset uses the same transaction and autokey path.
+	doc.set_autokey(true)
+	doc.current_time = 6.0
+	skel.set_bone_pose_position(0, Vector3(1.0, 2.0, 3.0))
+	skel.set_bone_pose_rotation(0, Quaternion(Vector3.UP, 0.8))
+	skel.set_bone_pose_scale(0, Vector3(2.0, 2.0, 2.0))
+	rs.reset_bone_pose(rig_id, "Root")
+	_check(skel.get_bone_pose_position(0).length() < 0.0001 and skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001 and skel.get_bone_pose_scale(0).distance_to(Vector3.ONE) < 0.0001, "reset_bone_pose resets p, r and s")
+	_check(_bone_key_at(doc, rig_id, "Root", position_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Root", rotation_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Root", scale_type, 6.0) >= 0, "reset_bone_pose autokeys every channel")
+	_check(doc.undo_label() == "Reset pose", "reset_bone_pose is one undo entry")
+
+	skel.set_bone_pose_position(1, Vector3(1.0, 1.0, 1.0))
+	skel.set_bone_pose_rotation(1, Quaternion(Vector3.RIGHT, 0.5))
+	skel.set_bone_pose_scale(1, Vector3(2.0, 2.0, 2.0))
+	rs.reset_all_poses(rig_id)
+	_check(skel.get_bone_pose_position(0).length() < 0.0001 and skel.get_bone_pose_position(1).length() < 0.0001, "reset_all_poses resets every bone position")
+	_check(skel.get_bone_pose_rotation(0).angle_to(Quaternion.IDENTITY) < 0.001 and skel.get_bone_pose_rotation(1).angle_to(Quaternion.IDENTITY) < 0.001, "reset_all_poses resets every bone rotation")
+	_check(skel.get_bone_pose_scale(0).distance_to(Vector3.ONE) < 0.0001 and skel.get_bone_pose_scale(1).distance_to(Vector3.ONE) < 0.0001, "reset_all_poses resets every bone scale")
+	_check(_bone_key_at(doc, rig_id, "Spine", position_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Spine", rotation_type, 6.0) >= 0 and _bone_key_at(doc, rig_id, "Spine", scale_type, 6.0) >= 0, "reset_all_poses autokeys every channel")
+
+	# key_pose writes all three channels and one undo restores the counts.
+	var key_doc := _new_doc("Key Pose Three")
+	var key_rs = key_doc.rig_system
+	var key_rig := _make_chain_rig(key_doc)
+	var key_skel := _skeleton(key_doc, key_rig)
+	key_doc.current_time = 0.0
+	key_doc.insert_pose_channel(key_rig, "Root", "position", Vector3.ZERO)
+	key_doc.current_time = 1.0
+	key_skel.set_bone_pose_position(0, Vector3(0.1, 0.2, 0.3))
+	key_skel.set_bone_pose_rotation(0, Quaternion(Vector3.UP, 0.2))
+	key_skel.set_bone_pose_scale(0, Vector3(1.1, 1.1, 1.1))
+	key_skel.set_bone_pose_position(1, Vector3(0.0, 0.9, 0.0))
+	key_skel.set_bone_pose_rotation(1, Quaternion(Vector3.RIGHT, -0.1))
+	key_skel.set_bone_pose_scale(1, Vector3(0.95, 1.05, 1.0))
+	_check(key_rs.key_pose(key_rig), "key_pose succeeds with the full pose")
+	for type in [position_type, rotation_type, scale_type]:
+		_check(_bone_key_at(key_doc, key_rig, "Root", type, 1.0) >= 0, "key_pose writes the root channel %d" % type)
+		_check(_bone_key_at(key_doc, key_rig, "Spine", type, 1.0) >= 0, "key_pose writes the spine channel %d" % type)
+	_check(key_doc.undo_label() == "Key pose", "key_pose is one undo entry")
+	key_doc.undo()
+	for type in [position_type, rotation_type, scale_type]:
+		_check(_bone_key_at(key_doc, key_rig, "Root", type, 1.0) < 0, "one undo removes the keyed root channel %d" % type)
+	_check(_bone_key_at(key_doc, key_rig, "Root", position_type, 0.0) >= 0, "undo returns the previous key counts")
+
+	# The rotation-only Document contract is unchanged.
+	key_doc.current_time = 2.0
+	key_doc.insert_bone_key(key_rig, "Root", Quaternion(Vector3.UP, 0.3))
+	_check(_bone_key_at(key_doc, key_rig, "Root", rotation_type, 2.0) >= 0, "insert_bone_key writes a rotation key")
+	_check(_bone_key_at(key_doc, key_rig, "Root", position_type, 2.0) < 0 and _bone_key_at(key_doc, key_rig, "Root", scale_type, 2.0) < 0, "insert_bone_key stays rotation-only")
+
+	# One pose gesture is one transaction; a tap opens none.
+	var drag_doc := _new_doc("Pose Drag")
+	var drag_rig := _make_chain_rig(drag_doc)
+	var drag_skel := _skeleton(drag_doc, drag_rig)
+	drag_doc.rig_system.set_active_bone(drag_rig, "Root")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(drag_doc, view, drag_doc.rig_system)
+	overlay.set_rig(drag_rig)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var head: Vector3 = drag_skel.to_global(drag_skel.get_bone_global_pose(0).origin)
+	var screen: Vector2 = view.world_to_screen(head)
+	var undo_before: int = (drag_doc._undo_stack as Array).size()
+	overlay.press_at(screen)
+	overlay.release_drag()
+	_check(not drag_doc.has_open_edit(), "a zero-movement tap closes its transaction")
+	_check((drag_doc._undo_stack as Array).size() == undo_before, "a zero-movement tap creates no undo entry")
+
+	var before: Quaternion = drag_skel.get_bone_pose_rotation(0)
+	overlay.press_at(screen)
+	_check(drag_doc.has_open_edit(), "a pose drag opens one transaction")
+	overlay.drag_at(screen + Vector2(48, 0))
+	overlay.release_drag()
+	_check(not drag_doc.has_open_edit(), "the pose drag closes its transaction")
+	_check(drag_skel.get_bone_pose_rotation(0).angle_to(before) > 0.001, "dragging rotates the bone")
+	_check((drag_doc._undo_stack as Array).size() == undo_before + 1, "a pose drag is one undo entry")
+	drag_doc.undo()
+	drag_skel = _skeleton(drag_doc, drag_rig)
+	_check(drag_skel.get_bone_pose_rotation(0).angle_to(before) < 0.001, "undo restores the start pose")
+
+	overlay.queue_free()
+	view.queue_free()
+	key_doc.queue_free()
+	drag_doc.queue_free()
+	doc.queue_free()
 
 
 # -------------------------------------------------------------------------

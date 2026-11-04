@@ -1408,7 +1408,87 @@ func apply_pose(rig_id: String, pose_id: String) -> void:
 	_emit_rigs()
 
 
-func reset_pose(rig_id: String, bone_name: String = "") -> void:
+func apply_saved_pose(rig_id: String, pose_id: String) -> bool:
+	var rig := _rig_for_object(rig_id)
+	if rig.is_empty() or _document == null:
+		return false
+	var pose := _find_pose(rig, pose_id)
+	if pose.is_empty():
+		return false
+	var node: Node3D = _document.nodes.get(rig_id)
+	var skeleton: Skeleton3D = null
+	if node != null:
+		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	if skeleton == null:
+		return false
+	_begin("Apply pose")
+	PoseLibrary.apply(skeleton, node, pose)
+	if _document.autokey:
+		var channels := {"position": "p", "rotation": "r", "scale": "s"}
+		var bones: Dictionary = pose.get("bones", {})
+		for bone_name in bones.keys():
+			var value: Variant = bones[bone_name]
+			if not value is Dictionary:
+				continue
+			for channel in channels.keys():
+				var key: String = channels[channel]
+				if (value as Dictionary).has(key):
+					_document.insert_pose_channel(rig_id, str(bone_name), channel, (value as Dictionary)[key])
+	_end()
+	_emit_rigs()
+	return true
+
+
+func set_bone_pose(rig_id: String, bone: String, patch: Dictionary) -> bool:
+	if _document == null:
+		return false
+	var node: Node3D = _document.nodes.get(rig_id)
+	if node == null:
+		return false
+	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
+	if skeleton == null:
+		return false
+	var index := skeleton.find_bone(bone)
+	if index < 0:
+		return false
+	var current_p := skeleton.get_bone_pose_position(index)
+	var current_r := skeleton.get_bone_pose_rotation(index)
+	var current_s := skeleton.get_bone_pose_scale(index)
+	var values := {}
+	var changed: Array[String] = []
+	if patch.has("p"):
+		var p := PoseLibrary.array_to_vec3(patch["p"])
+		if current_p.distance_to(p) > 0.000001:
+			changed.append("position")
+		values["position"] = p
+		skeleton.set_bone_pose_position(index, p)
+	if patch.has("r"):
+		var r := PoseLibrary.array_to_quat(patch["r"])
+		if current_r.angle_to(r) > 0.000001:
+			changed.append("rotation")
+		values["rotation"] = r
+		skeleton.set_bone_pose_rotation(index, r)
+	if patch.has("s"):
+		var s := PoseLibrary.array_to_vec3(patch["s"])
+		if current_s.distance_to(s) > 0.000001:
+			changed.append("scale")
+		values["scale"] = s
+		skeleton.set_bone_pose_scale(index, s)
+	if _document.autokey:
+		for channel in changed:
+			_document.insert_pose_channel(rig_id, bone, channel, values[channel])
+	return true
+
+
+func reset_bone_pose(rig_id: String, bone: String) -> void:
+	_reset_pose_bones(rig_id, bone)
+
+
+func reset_all_poses(rig_id: String) -> void:
+	_reset_pose_bones(rig_id, "")
+
+
+func _reset_pose_bones(rig_id: String, bone_name: String) -> void:
 	var rig := _rig_for_object(rig_id)
 	if rig.is_empty() or _document == null:
 		return
@@ -1426,14 +1506,30 @@ func reset_pose(rig_id: String, bone_name: String = "") -> void:
 		names.append(bone_name)
 	_begin("Reset pose")
 	for name in names:
-		var index := skeleton.find_bone(str(name))
-		if index < 0:
+		if skeleton.find_bone(str(name)) < 0:
 			continue
-		skeleton.set_bone_pose_position(index, Vector3.ZERO)
-		skeleton.set_bone_pose_rotation(index, Quaternion.IDENTITY)
-		skeleton.set_bone_pose_scale(index, Vector3.ONE)
+		set_bone_pose(rig_id, str(name), {
+			"p": Vector3.ZERO,
+			"r": Quaternion.IDENTITY,
+			"s": Vector3.ONE,
+		})
 	_end()
 	_emit_rigs()
+
+
+func begin_pose_edit(label: String) -> void:
+	_begin(label)
+
+
+func end_pose_edit() -> void:
+	_end()
+
+
+func reset_pose(rig_id: String, bone_name: String = "") -> void:
+	if bone_name == "":
+		reset_all_poses(rig_id)
+	else:
+		reset_bone_pose(rig_id, bone_name)
 
 
 func key_pose(rig_id: String) -> bool:
@@ -1447,12 +1543,8 @@ func key_pose(rig_id: String) -> bool:
 	if skeleton == null:
 		return false
 	var captured := PoseLibrary.capture(skeleton, node)
-	var rotations: Dictionary = {}
-	for bone_name in captured.get("bones", {}).keys():
-		var value: Variant = captured["bones"][bone_name]
-		rotations[bone_name] = value.get("r", [0, 0, 0, 1]) if value is Dictionary else value
 	_begin("Key pose")
-	_document.insert_pose_keys(rig_id, rotations)
+	_document.insert_pose_keys(rig_id, captured)
 	_end()
 	return true
 

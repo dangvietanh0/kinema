@@ -420,6 +420,7 @@ func _begin_drag(bone: String, screen: Vector2) -> void:
 			_drag_start_rotation = skeleton.get_bone_pose_rotation(index)
 	rig_system.set_active_bone(_rig_id, bone)
 	bone_selected.emit(bone)
+	rig_system.begin_pose_edit("Pose bone")
 
 
 func _end_drag() -> void:
@@ -428,6 +429,8 @@ func _end_drag() -> void:
 			# One gesture, one undo entry: the preview only becomes a rest
 			# edit when the finger lifts.
 			rig_system.set_bone_rest(_rig_id, _drag_bone, _drag_rest_current)
+	if _dragging and _drag_bone != "":
+		rig_system.end_pose_edit()
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
@@ -438,6 +441,11 @@ func _end_drag() -> void:
 
 
 func _cancel_drag() -> void:
+	if _dragging and _drag_bone != "":
+		# Cancel restores the pose captured on press, then closes the one
+		# transaction the gesture opened.
+		rig_system.set_bone_pose(_rig_id, _drag_bone, {"r": _drag_start_rotation})
+		rig_system.end_pose_edit()
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
@@ -557,7 +565,8 @@ func _rotate_drag(screen: Vector2) -> void:
 			right = (camera as Camera3D).global_transform.basis.x.normalized()
 	var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
 	var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
-	skeleton.set_bone_pose_rotation(index, (yaw * pitch * _drag_start_rotation).normalized())
+	var next_rotation := (yaw * pitch * _drag_start_rotation).normalized()
+	rig_system.set_bone_pose(_rig_id, _drag_bone, {"r": next_rotation})
 	queue_redraw()
 
 
