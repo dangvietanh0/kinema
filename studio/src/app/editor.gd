@@ -11,6 +11,9 @@ extends Control
 ## autosave and serialization stay in one place.
 
 signal exit_requested
+## Emitted when the workbench arrangement changes, including when Main
+## resolves a different mode for the same preference.
+signal workspace_mode_changed(mode: String)
 
 const DocumentScript = preload("res://src/core/document.gd")
 const RenderExport = preload("res://src/core/render_export.gd")
@@ -18,76 +21,198 @@ const EditorViewScript = preload("res://src/viewport/editor_view.gd")
 const OutlinerScript = preload("res://src/ui/outliner.gd")
 const InspectorScript = preload("res://src/ui/inspector.gd")
 const TimelineScript = preload("res://src/ui/timeline.gd")
+const SpeedGraphScript = preload("res://src/ui/speed_graph.gd")
 const OverlayScript = preload("res://src/ui/overlay.gd")
+const TopBarScript = preload("res://src/ui/components/top_bar.gd")
+const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
+const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
+const StatusBarScript = preload("res://src/ui/components/status_bar.gd")
+const BottomBarScript = preload("res://src/ui/components/bottom_bar.gd")
+const PanelRailScript = preload("res://src/ui/components/panel_rail.gd")
+const PerfOverlayScript = preload("res://src/ui/components/perf_overlay.gd")
+const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
+const WorkspaceSheetScript = preload("res://src/ui/workspace_sheet.gd")
+const LayoutMathScript = preload("res://src/app/layout_math.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
+const ClipLaneScript = preload("res://src/ui/clip_lane.gd")
+const MediaLanesScript = preload("res://src/ui/media_lanes.gd")
+const RigPanelScript = preload("res://src/ui/rig_panel.gd")
+const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
+const RigToolbarScript = preload("res://src/ui/rig_toolbar.gd")
+const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overlay.gd")
+const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
+const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
+const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
+const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
+const MaterialEditorSheetScript = preload("res://src/ui/material_editor_sheet.gd")
+const VideoReferencePanelScript = preload("res://src/ui/video_reference_panel.gd")
+const SequenceRendererScript = preload("res://src/core/sequence_renderer.gd")
+const CameraExportScript = preload("res://src/core/camera_export.gd")
+const AndroidVideo = preload("res://src/core/android_video.gd")
+const GifEncoder = preload("res://src/core/gif_encoder.gd")
+
+## The Forward+ risk confirmation is owned here so every surface uses the same
+## copy. `Enable risk` is a primary action, not a destructive one.
+const RISK_CONFIRM_TITLE := "Enable high-end Forward+ effects?"
+const RISK_CONFIRM_BODY := "Kinema will run the real Forward+ feature set. Some Android GPUs crash or overheat with these effects. If the next launch fails to reach the editor, Kinema returns to the mobile-safe profile automatically."
+const RISK_CONFIRM_ACTIONS := [
+	{"text": "Cancel", "compact": true},
+	{"text": "Enable risk", "primary": true, "destructive": false},
+]
+const RISK_ENABLED_TOAST := "High-end Forward+ effects enabled"
+const RISK_RESTORED_TOAST := "Mobile-safe graphics restored"
 
 const AUTOSAVE_SECONDS := 30.0
-const WIDE_MIN_WIDTH := 720.0
 const SHORT_MAX_HEIGHT := 520.0
+## The rail is a column only once the shell reaches Studio's minimum logical
+## width. Below that, 48 + 44 dp of rails would push the transport and the
+## media lanes past the canvas edge; the top-bar panel button opens the same
+## flyout instead.
+const PANEL_RAIL_MIN_WIDTH := 480.0
+## 44 dp transport plus its 1 px rules and vertical padding. Leaving the
+## folded strip at 52 clipped the ruler baseline on landscape phones.
+const FOLDED_TIMELINE := 56.0
+## The landscape workspace needs enough room for a 56 dp header, a 56 dp
+## footer and a real speed graph. Below this it closes instead of shrinking
+## the plot into a sliver.
+const WORKSPACE_MIN := Vector2(720.0, 360.0)
+const WORKSPACE_HEADER_H := 56.0
+const WORKSPACE_FOOTER_H := 56.0
+const WORKSPACE_GUTTER := 8.0
+const WORKSPACE_LEFT_RATIO := 0.52
+## The narrow SpeedGraph header needs about 392 dp: Presets collapses to a
+## 44 dp curve icon below 420 dp, but the rest of the row stays 44 dp. When
+## the 52 percent split would starve that row at the 720 dp minimum, the left
+## column yields down to 45 percent instead of letting the graph overflow.
+const WORKSPACE_GRAPH_MIN := 392.0
+const WORKSPACE_RESIZE_REASON := "The timeline workspace needs at least 720 × 360 dp."
+const WORKSPACE_DISABLED_REASON := "Landscape workspace needs at least 720 × 360 dp"
+## The scene panel is persistent on Studio and Desktop once the shell can hold
+## the 44 dp rail without starving the stage.
+const SCENE_PANEL_MIN_WIDTH := 480.0
+## Above this width the stored preference decides between the expanded panel
+## and the rail. Below it the rail is the default and expansion is transient.
+const SCENE_EXPANDED_MIN_WIDTH := 760.0
+const SCENE_RAIL_WIDTH := 44.0
+const SCENE_EXPANDED_MIN := 196.0
+const SCENE_EXPANDED_MAX := 280.0
+## A transient scene expansion must not leave the stage narrower than this.
+const SCENE_STAGE_FLOOR := 320.0
 
+## Material swatches are a graphite ramp. The hex field still accepts any
+## colour, but the default palette never pulls the workbench off-message.
 const COLOR_PALETTE := [
-	"#AAB2BF", "#B3A28B", "#D9C7A7", "#C8B18A", "#D9A45B", "#C97C5D",
-	"#A96A6A", "#8C9A7A", "#6F8F86", "#6B7F9E", "#7A6F9E", "#9E7A8C",
-	"#FFFFFF", "#D9DEE6", "#8A94A3", "#4B5563", "#232A33", "#11151B",
+	"#F2F2F2", "#E0E0E0", "#C8C8C8", "#B0B0B0", "#989898", "#808080",
+	"#686868", "#505050", "#3A3A3A", "#2A2A2A", "#1B1B1B", "#101010",
+	"#D8D8D8", "#BDBDBD", "#A0A0A0", "#7A7A7A", "#4A4A4A", "#202020",
 ]
 
 var doc: DocumentScript = null
 
 var _project_meta: Dictionary = {}
 var _layout: VBoxContainer
-var _topbar: PanelContainer
-var _title_label: Label
-var _subtitle_label: Label
-var _dirty_dot: ColorRect
-var _undo_button: Button
-var _redo_button: Button
-var _save_button: Button
+var _top_bar: PanelContainer
+var _status_bar: PanelContainer
+var _bottom_bar: PanelContainer
 
 var _body: HBoxContainer
 var _rail: PanelContainer
+var _scene_column: PanelContainer
+var _scene_rail: PanelContainer
+var _scene_rail_expand: Button
+var _scene_rail_count: Label
 var _center: VBoxContainer
+var _view_header: PanelContainer
 var _viewport_host: Control
 var _view: Control
-var _compact_bar: PanelContainer
-var _add_compact: Button
-var _scene_compact: Button
-var _props_compact: Button
-var _timeline_compact: Button
+var _perf_overlay: PanelContainer
+var _rig_overlay: Control
+var _rig_toolbar: Control
+var _rig_mode := false
+var _video_overlay: Control
 var _timeline_panel: PanelContainer
+var _timeline_frame: VBoxContainer
+var _timeline_stack: VBoxContainer
+var _lane_scroll: ScrollContainer
+var _lane_body: VBoxContainer
+var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
-var _dock_slot: Control
+var _media_lanes: VBoxContainer
+## The landscape workspace is a separate surface over the whole editor. It
+## temporarily adopts the live dope sheet, lane scroll and transport, then
+## restores their exact original parents and indices on close.
+var _timeline_workspace: PanelContainer
+var _workspace_header: PanelContainer
+var _workspace_title: Label
+var _workspace_close_button: Button
+var _workspace_body: HBoxContainer
+var _workspace_left: VBoxContainer
+var _workspace_right: VBoxContainer
+var _workspace_graph: Control
+var _workspace_footer: PanelContainer
+var _workspace_open := false
+var _workspace_saved: Dictionary = {}
+var _workspace_previous_mode := "dope"
+var _panel_rail: PanelContainer
 var _dock: PanelContainer
 var _dock_box: VBoxContainer
 var _dock_close_row: MarginContainer
+var _dock_title_label: Label
+var _dock_close_button: Button
 var _drawer_scene_tab: Button
 var _drawer_props_tab: Button
 var _outliner_panel: PanelContainer
 var _inspector_panel: PanelContainer
 var _outliner: VBoxContainer
 var _inspector: VBoxContainer
+var _rig_frame: PanelContainer
+var _rig_panel: VBoxContainer
+var _drawer_rig_tab: Button
 var _drawer_scrim: ColorRect
 var _overlay: Control
 var _autosave: Timer
 
-var _rail_column: VBoxContainer
-var _rail_buttons: Array[Button] = []
-var _rail_style: StyleBoxFlat
 var _tool := "select"
-var _tool_buttons: Dictionary = {}
-var _wide := true
 var _short := false
+## True when the user has folded or opened the dope sheet themselves. A manual
+## choice survives rotation; automatic landscape folding does not override it.
+var _timeline_user_override := false
+var _fit_percent := 100.0
+var _fit_user_scale_enabled := true
+var _fit_clamped := false
 var _drawer_open := false
 var _compact_tab := "scene"
-var _timeline_visible := true
-var _short_timeline_open := false
+## A sub-760 expansion is a transient gesture: it is keyed to the current shell
+## width and never writes `editor.scene_panel_expanded`.
+var _scene_transient := false
+var _scene_transient_width := -1.0
+var layout_info: Dictionary = {}
+var workbench_mode := "studio"
+var _timeline_visible := false
+## Session-only "More" state: raises the overlay budget to the full cap until
+## the sheet is closed or reopened. It is never persisted.
+var _timeline_more := false
 var _closing := false
 var _last_save_auto := false
 
+## Two-clock rule bookkeeping: while a sequence runs, the last clip-local
+## playhead seen on `.playback_changed` is kept here so the clip transport can
+## return to it when the sequence stops.
+var _sequence_was_playing := false
+var _clip_time_before_sequence := 0.0
+var _restoring_clip := false
+
+var _media_busy := false
+var _media_cancel := false
+var _media_export: Control
+
 var _color_sheet_active := false
 var _color_id := ""
+var _color_target: Dictionary = {}
 var _color_property := ""
 var _color_value := Color(0.6, 0.6, 0.6)
+var _color_commit := Callable()
 var _color_preview: PanelContainer
 var _color_preview_label: Label
 var _color_hex: LineEdit
@@ -114,122 +239,102 @@ var _render_sequence_button: Button
 var _render_still_button: Button
 var _render_save_button: Button
 var _preset_buttons: Array[Button] = []
+var _renderer_pending := ""
+var _settings_panel: Control = null
+var _workspace_sheet: Control = null
+## The material library and editor sheets, kept for smoke/test inspection.
+var _material_sheet: Control = null
+var _material_editor_sheet: Control = null
+## Real-time render preview. The viewport plays the document at full quality
+## with editing chrome removed; this flag owns the editor-side lifecycle.
+var _render_mode := false
+var _render_hud: PanelContainer = null
+var _render_play_button: Button = null
+var _render_time_label: Label = null
+var _render_saved_time := 0.0
+var _render_was_playing := false
+var _render_ui_state: Dictionary = {}
+## Look-through is the document camera's view. The view owns the camera and
+## chrome; the editor owns header visibility and Android back precedence.
+var _look_through := false
+var _look_camera_id := ""
+var _look_header_was_visible := true
+var _look_perf_was_visible := false
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	clip_contents = true
 	_layout = VBoxContainer.new()
 	_layout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_layout.add_theme_constant_override("separation", 0)
+	_layout.add_theme_constant_override("separation", int(Kit.GUTTER))
 	add_child(_layout)
 
-	_build_topbar()
+	_build_top_bar()
 	_build_body()
-	_build_dock()
+	_build_status_bar()
+	_build_bottom_bar()
+	# The scrim is added before the dock so GUI picking gives the drawer the
+	# first chance at taps inside it; the scrim only sees taps outside.
 	_build_drawer_scrim()
+	_build_dock()
+	_build_render_hud()
+	_apply_collapsed_sections()
 
 	_overlay = OverlayScript.new()
 	add_child(_overlay)
 	_overlay.modal_closed.connect(_on_modal_closed)
+	_overlay.modal_opened.connect(_on_modal_opened)
 	_overlay.set_toast_anchor(_viewport_host)
 
 	_autosave = Timer.new()
-	_autosave.wait_time = AUTOSAVE_SECONDS
-	_autosave.autostart = true
+	_autosave.wait_time = _autosave_seconds()
+	_autosave.autostart = _autosave.wait_time > 0.0
 	_autosave.timeout.connect(_on_autosave)
 	add_child(_autosave)
 
+	Perf.sample_updated.connect(_on_perf_sample)
+	_apply_editor_preferences()
+	_apply_perf_preferences()
+
 	resized.connect(_on_resized)
-	call_deferred("_apply_responsive")
+	call_deferred("_apply_shell")
 
 # -------------------------------------------------------------------------
 # Construction
 # -------------------------------------------------------------------------
 
-func _build_topbar() -> void:
-	_topbar = PanelContainer.new()
-	_topbar.custom_minimum_size.y = 48
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_bottom = 1
-	style.content_margin_left = 8
-	style.content_margin_right = 8
-	style.content_margin_top = 5
-	style.content_margin_bottom = 5
-	_topbar.add_theme_stylebox_override("panel", style)
-	_layout.add_child(_topbar)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 5)
-	_topbar.add_child(row)
-
-	var back := Kit.icon_button("chevron-left", "Back to projects", 34, 17)
-	back.pressed.connect(request_close)
-	row.add_child(back)
-
-	var title_box := VBoxContainer.new()
-	title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	title_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	title_box.add_theme_constant_override("separation", 0)
-	row.add_child(title_box)
-
-	var title_row := HBoxContainer.new()
-	title_row.add_theme_constant_override("separation", 6)
-	title_box.add_child(title_row)
-
-	_title_label = Kit.label("Untitled", 13, Kit.TEXT, 600)
-	_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_title_label.clip_text = true
-	_title_label.custom_minimum_size.x = 40
-	title_row.add_child(_title_label)
-
-	_dirty_dot = ColorRect.new()
-	_dirty_dot.color = Color(0, 0, 0, 0)
-	_dirty_dot.custom_minimum_size = Vector2(5, 5)
-	_dirty_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_dirty_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	title_row.add_child(_dirty_dot)
-
-	_subtitle_label = Kit.mono_label("Untitled project", 8, Kit.TEXT_DIM)
-	_subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_subtitle_label.clip_text = true
-	title_box.add_child(_subtitle_label)
-
-	_undo_button = Kit.icon_button("undo-2", "Undo", 32, 15)
-	_undo_button.disabled = true
-	_undo_button.pressed.connect(_undo)
-	row.add_child(_undo_button)
-
-	_redo_button = Kit.icon_button("redo-2", "Redo", 32, 15)
-	_redo_button.disabled = true
-	_redo_button.pressed.connect(_redo)
-	row.add_child(_redo_button)
-
-	var render := Kit.icon_button("clapperboard", "Render and export", 32, 16)
-	render.pressed.connect(_open_render_sheet)
-	row.add_child(render)
-
-	_save_button = Kit.icon_button("save", "Save project", 32, 15)
-	_save_button.pressed.connect(func() -> void: _save_project(true))
-	row.add_child(_save_button)
-
-	var more := Kit.icon_button("ellipsis-vertical", "Project menu", 32, 16)
-	more.pressed.connect(_open_project_menu)
-	row.add_child(more)
+func _build_top_bar() -> void:
+	_top_bar = TopBarScript.new()
+	_top_bar.action_requested.connect(_on_chrome_action)
+	_top_bar.layout_requested.connect(_open_workspace_sheet)
+	_layout.add_child(_top_bar)
 
 func _build_body() -> void:
 	_body = HBoxContainer.new()
 	_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_body.add_theme_constant_override("separation", 0)
+	_body.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_layout.add_child(_body)
 
-	_build_rail()
+	_rail = ToolRailScript.new()
+	_rail.tool_selected.connect(_select_tool)
+	_rail.frame_requested.connect(_focus_selection)
+	_rail.add_requested.connect(_open_add_sheet)
+	_body.add_child(_rail)
 
 	_center = VBoxContainer.new()
 	_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_center.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_center.add_theme_constant_override("separation", 0)
+	# A one-pixel gutter lets the black shell show between the stage, the
+	# header and the sheet instead of stacking same-valued panels edge to edge.
+	_center.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_body.add_child(_center)
+
+	# The view header is part of the layout, not a floating plate: it owns the
+	# camera preset, Add, grid and frame without covering the image.
+	_view_header = ViewportHeaderScript.new()
+	_view_header.add_requested.connect(_open_add_sheet)
+	_view_header.frame_requested.connect(_focus_selection)
+	_center.add_child(_view_header)
 
 	_viewport_host = Control.new()
 	_viewport_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -241,133 +346,481 @@ func _build_body() -> void:
 	_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_host.add_child(_view)
 	_view.set_tool(_tool)
+	_view.quick_render_requested.connect(_enter_render_mode)
+	_view.performance_requested.connect(_toggle_performance_overlay)
+	# The header and the view share one source of truth. The view reports a
+	# free-orbit camera or a grid change; the header writes intent back.
+	_view.view_changed.connect(_on_view_changed)
+	_view.grid_changed.connect(_on_view_grid_changed)
+	_view.look_through_exited.connect(_on_view_look_through_exited)
+	_view.bind_header_controls(_view_header.grid_button(), _view_header.frame_button())
+	_view_header.view_requested.connect(_on_view_requested)
+	_view_header.grid_toggled.connect(_on_view_header_grid_toggled)
 
-	_build_compact_bar()
+	# The overlay is a sibling of the view so it floats above the 3D surface
+	# without becoming part of the viewport's own HUD layout.
+	_perf_overlay = PerfOverlayScript.new()
+	_viewport_host.add_child(_perf_overlay)
+
+	# Rig mode lives on its own overlay: it draws bones over the image and
+	# takes the pointer only while rig mode is engaged.
+	_rig_overlay = RigOverlayScript.new()
+	_viewport_host.add_child(_rig_overlay)
+	_rig_overlay.mode_changed.connect(_on_overlay_mode_changed)
+
+	# The floating Pose/Edit toolbar belongs to the stage, not the dock. It
+	# sits above the overlay so it stays reachable after the Rig dock closes.
+	_rig_toolbar = RigToolbarScript.new()
+	_rig_toolbar.name = "RigToolbar"
+	_viewport_host.add_child(_rig_toolbar)
+	_rig_toolbar.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_rig_toolbar.position = Vector2(12, 12)
+	_rig_toolbar.visible = false
+	_rig_toolbar.mode_changed.connect(_on_toolbar_mode_changed)
+	_rig_toolbar.add_bone_requested.connect(_on_rig_add_bone)
+	_rig_toolbar.done_requested.connect(_on_rig_done)
+
+	# The rotoscope layer sits on the preview surface itself: above the 3D
+	# texture (which renders behind its parent) and below the HUD layer, so
+	# buttons stay on top of the reference image.
+	_video_overlay = VideoReferenceOverlayScript.new()
+	_view.add_child(_video_overlay)
+	_video_overlay.setup(doc, _view)
+	if _view._hud_root != null:
+		_view.move_child(_video_overlay, _view._hud_root.get_index())
+
 	_build_timeline()
 
-	_dock_slot = Control.new()
-	_dock_slot.custom_minimum_size.x = 320
-	_body.add_child(_dock_slot)
+	# The persistent scene column lives between the stage and the panel rail,
+	# on the right edge of the body (user override 2026-11-01: the scene tree
+	# belongs on the right). It is hidden on Compact and on shells too narrow
+	# to host the rail; the outliner then returns to the dock, which is the
+	# only modal surface left.
+	_scene_column = PanelContainer.new()
+	_scene_column.visible = false
+	_scene_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var scene_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
+	# The inner edge faces the stage on the column's left side now that the
+	# column hangs off the right edge.
+	scene_style.border_width_left = 1
+	scene_style.content_margin_left = 0
+	scene_style.content_margin_right = 0
+	scene_style.content_margin_top = 0
+	scene_style.content_margin_bottom = 0
+	_scene_column.add_theme_stylebox_override("panel", scene_style)
+	_body.add_child(_scene_column)
+	_build_scene_rail()
 
-func _build_rail() -> void:
-	_rail = PanelContainer.new()
-	_rail.custom_minimum_size.x = 44
+	# The right rail is the only permanent panel chrome. The dock itself is an
+	# overlay, so the stage keeps every pixel the old 320 dp column reserved.
+	_panel_rail = PanelRailScript.new()
+	# The rail stays above the scrim and the flyout: pages are one tap away
+	# while a panel is open, not close-then-reopen.
+	_panel_rail.z_index = 13
+	_panel_rail.page_requested.connect(_toggle_drawer)
+	_body.add_child(_panel_rail)
+
+## The collapsed scene rail is a mount point, not a header: one 44 dp expand
+## action, the layers icon and the object count. It never pretends to own a
+## list it does not show.
+func _build_scene_rail() -> void:
+	_scene_rail = PanelContainer.new()
+	_scene_rail.custom_minimum_size = Vector2(SCENE_RAIL_WIDTH, 0.0)
+	_scene_rail.visible = false
 	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_right = 1
-	style.content_margin_left = 3
-	style.content_margin_right = 3
-	style.content_margin_top = 8
-	style.content_margin_bottom = 8
-	_rail_style = style
-	_rail.add_theme_stylebox_override("panel", style)
-	_body.add_child(_rail)
+	# The rail hangs off the right edge; its inner edge faces the stage.
+	style.border_width_left = 1
+	style.content_margin_left = 0
+	style.content_margin_right = 0
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	_scene_rail.add_theme_stylebox_override("panel", style)
+	_scene_column.add_child(_scene_rail)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_top", 4)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	_scene_rail.add_child(margin)
 
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 4)
-	_rail_column = column
-	_rail.add_child(column)
+	margin.add_child(column)
 
-	_add_tool_button(column, "select", "mouse-pointer-2", "Select  ·  tap to pick")
-	_add_tool_button(column, "move", "tool-move", "Move  ·  drag an axis")
-	_add_tool_button(column, "rotate", "tool-rotate", "Rotate  ·  drag an axis")
-	_add_tool_button(column, "scale", "tool-scale", "Scale  ·  drag an axis")
+	_scene_rail_expand = Kit.icon_button("panel-right", "Expand the scene panel", 44, 20)
+	_scene_rail_expand.pressed.connect(_on_scene_rail_expand)
+	column.add_child(_scene_rail_expand)
 
-	var mid_spacer := Control.new()
-	mid_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	mid_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_child(mid_spacer)
+	# Spec: layers icon plus the object count. The rail is 44 dp wide, so the
+	# icon and its badge stack vertically instead of hanging a word off the
+	# glyph column.
+	var layers := Kit.icon("layers", Kit.TEXT_DIM, 18)
+	layers.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	column.add_child(layers)
 
-	column.add_child(Kit.vsep())
-	var focus := Kit.icon_button("focus", "Frame selection", 34, 16)
-	focus.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	focus.pressed.connect(_focus_selection)
-	column.add_child(focus)
-	_rail_buttons.append(focus)
-
-	var add := Kit.icon_button("plus", "Add object", 34, 16)
-	add.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	add.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
-	add.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT)
-	add.pressed.connect(_open_add_sheet)
-	column.add_child(add)
-	_rail_buttons.append(add)
-
-func _add_tool_button(parent: Control, tool_id: String, icon_name: String, tooltip: String) -> void:
-	var button := Kit.icon_button(icon_name, tooltip, 34, 16)
-	button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	button.pressed.connect(_select_tool.bind(tool_id))
-	parent.add_child(button)
-	_tool_buttons[tool_id] = button
-	_rail_buttons.append(button)
-
-func _build_compact_bar() -> void:
-	_compact_bar = PanelContainer.new()
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_top = 1
-	style.border_width_bottom = 1
-	style.content_margin_left = 6
-	style.content_margin_right = 6
-	style.content_margin_top = 4
-	style.content_margin_bottom = 4
-	_compact_bar.add_theme_stylebox_override("panel", style)
-	_center.add_child(_compact_bar)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 4)
-	_compact_bar.add_child(row)
-
-	_add_compact = _compact_button("Add", "plus")
-	_add_compact.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
-	_add_compact.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
-	_add_compact.pressed.connect(_open_add_sheet)
-	row.add_child(_add_compact)
-
-	_scene_compact = _compact_button("Scene", "layers")
-	_scene_compact.pressed.connect(func() -> void: _toggle_drawer("scene"))
-	row.add_child(_scene_compact)
-
-	_props_compact = _compact_button("Properties", "sliders-horizontal")
-	_props_compact.pressed.connect(func() -> void: _toggle_drawer("inspector"))
-	row.add_child(_props_compact)
+	var badge := PanelContainer.new()
+	badge.custom_minimum_size = Vector2(24, 24)
+	badge.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	badge.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
+	column.add_child(badge)
+	_scene_rail_count = Kit.label("0", 10, Kit.TEXT_MUTED, 600)
+	_scene_rail_count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_scene_rail_count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge.add_child(_scene_rail_count)
 
 	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(spacer)
+	column.add_child(spacer)
 
-	_timeline_compact = Kit.icon_button("panel-bottom", "Show or hide timeline", 30, 15)
-	_timeline_compact.pressed.connect(_toggle_timeline)
-	row.add_child(_timeline_compact)
 
-func _compact_button(text_value: String, icon_name: String) -> Button:
-	var button := Kit.text_button(text_value, icon_name, false, true)
-	button.custom_minimum_size = Vector2(0, 30)
-	button.add_theme_stylebox_override("normal", _compact_style(Color(0, 0, 0, 0), Color(0, 0, 0, 0)))
-	button.add_theme_stylebox_override("hover", _compact_style(Kit.SURFACE_HOVER, Kit.BORDER_SOFT))
-	button.add_theme_stylebox_override("pressed", _compact_style(Kit.SURFACE_3, Kit.BORDER))
-	return button
+func _build_status_bar() -> void:
+	_status_bar = StatusBarScript.new()
+	_status_bar.action_requested.connect(_on_chrome_action)
+	_layout.add_child(_status_bar)
 
-func _compact_style(color: Color, border: Color) -> StyleBoxFlat:
-	var style := Kit.flat_style(color, 4, border, 1 if border.a > 0.0 else 0)
-	style.content_margin_left = 8
-	style.content_margin_right = 8
-	style.content_margin_top = 4
-	style.content_margin_bottom = 4
-	return style
+
+func _build_bottom_bar() -> void:
+	_bottom_bar = BottomBarScript.new()
+	_bottom_bar.action_requested.connect(_on_bottom_action)
+	_layout.add_child(_bottom_bar)
 
 func _build_timeline() -> void:
+	# The timeline is a bottom-anchored overlay inside the stage host, not a
+	# child of the center column. Opening it grows over the image instead of
+	# resizing the 3D view.
 	_timeline_panel = PanelContainer.new()
-	_timeline_panel.custom_minimum_size.y = 190
-	_timeline_panel.size_flags_vertical = Control.SIZE_FILL
+	_timeline_panel.z_index = 9
+	_timeline_panel.anchor_left = 0.0
+	_timeline_panel.anchor_right = 1.0
+	_timeline_panel.anchor_top = 1.0
+	_timeline_panel.anchor_bottom = 1.0
+	_timeline_panel.offset_left = 0.0
+	_timeline_panel.offset_right = 0.0
+	_timeline_panel.offset_top = -FOLDED_TIMELINE
+	_timeline_panel.offset_bottom = 0.0
 	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
 	style.border_width_top = 1
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.55)
+	style.shadow_size = 10
+	style.shadow_offset = Vector2(0.0, -2.0)
 	_timeline_panel.add_theme_stylebox_override("panel", style)
-	_center.add_child(_timeline_panel)
+	_viewport_host.add_child(_timeline_panel)
+	_viewport_host.resized.connect(_on_viewport_resized)
+
+	# The frame keeps the transport below the sheet stack so the clip lane,
+	# dope sheet and media lanes grow upward over the stage while the transport
+	# stays on the bottom edge.
+	_timeline_frame = VBoxContainer.new()
+	_timeline_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_timeline_frame.add_theme_constant_override("separation", 0)
+	_timeline_panel.add_child(_timeline_frame)
+
+	# The timeline area is two stacked surfaces: the dope sheet (whose transport
+	# is mounted below) and one lane stack. The lane stack holds the clip lane
+	# and the media lanes inside a scroll viewport, so More can reveal both even
+	# when the 46 percent cap cannot fit their natural heights.
+	_timeline_stack = VBoxContainer.new()
+	_timeline_stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_timeline_stack.add_theme_constant_override("separation", int(Kit.GUTTER))
+	_timeline_frame.add_child(_timeline_stack)
 
 	_timeline = TimelineScript.new()
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
-	_timeline_panel.add_child(_timeline)
+	_timeline.close_requested.connect(_on_timeline_close_requested)
+	_timeline.mode_changed.connect(_on_timeline_mode_changed)
+	_timeline.more_requested.connect(_on_timeline_more_requested)
+	_timeline.duration_row_changed.connect(_on_timeline_duration_row_changed)
+	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
+	_timeline.channel_selected.connect(_on_timeline_channel_selected)
+	_timeline.workspace_requested.connect(_on_timeline_workspace_requested)
+	_timeline_stack.add_child(_timeline)
+
+	_lane_scroll = ScrollContainer.new()
+	_lane_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_lane_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_lane_scroll.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_lane_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_timeline_stack.add_child(_lane_scroll)
+
+	_lane_body = VBoxContainer.new()
+	_lane_body.add_theme_constant_override("separation", int(Kit.GUTTER))
+	_lane_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lane_scroll.add_child(_lane_body)
+
+	_clip_lane = ClipLaneScript.new()
+	_clip_lane.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_clip_lane.notice.connect(_on_timeline_notice)
+	_clip_lane.sheet_requested.connect(_on_lane_sheet_requested)
+	_lane_body.add_child(_clip_lane)
+
+	_media_lanes = MediaLanesScript.new()
+	_media_lanes.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_media_lanes.audio_selected.connect(_open_audio_sheet)
+	_media_lanes.video_selected.connect(_open_video_reference_sheet)
+	_media_lanes.video_dragged.connect(_on_media_video_dragged)
+	_media_lanes.add_audio_requested.connect(_open_media_import_sheet)
+	_media_lanes.add_video_requested.connect(_open_media_import_sheet)
+	_media_lanes.collapsed_changed.connect(_on_media_lanes_collapsed_changed)
+	# Media stays out of the way until imported media exists; an expanded
+	# media row would eat dope-sheet height for nothing.
+	_media_lanes.set_collapsed(true)
+	if doc != null:
+		_media_lanes.setup(doc)
+	_lane_body.add_child(_media_lanes)
+
+	# The transport is one instance owned by the timeline; mount it below the
+	# stack instead of building a second row.
+	_timeline.mount_transport(_timeline_frame)
+	_build_timeline_workspace()
+
+## The landscape workspace temporarily adopts the live timeline nodes instead
+## of building a second dope sheet or transport. It is a full-editor surface so
+## the 56 dp header and footer still leave the graph a real plot; the stage
+## host itself is only 322 dp tall on a 915x412 landscape phone.
+func _build_timeline_workspace() -> void:
+	_timeline_workspace = PanelContainer.new()
+	_timeline_workspace.name = "TimelineWorkspace"
+	_timeline_workspace.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_timeline_workspace.z_index = 50
+	_timeline_workspace.visible = false
+	_timeline_workspace.mouse_filter = Control.MOUSE_FILTER_STOP
+	var panel_style := Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0)
+	panel_style.content_margin_left = 0
+	panel_style.content_margin_right = 0
+	panel_style.content_margin_top = 0
+	panel_style.content_margin_bottom = 0
+	_timeline_workspace.add_theme_stylebox_override("panel", panel_style)
+	add_child(_timeline_workspace)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 0)
+	_timeline_workspace.add_child(column)
+
+	# 56 dp header: the clip name on the left, one 96x44 Close on the right.
+	_workspace_header = PanelContainer.new()
+	_workspace_header.custom_minimum_size.y = WORKSPACE_HEADER_H
+	var head_style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	head_style.border_width_bottom = 1
+	head_style.content_margin_left = 12
+	head_style.content_margin_right = 12
+	head_style.content_margin_top = 6
+	head_style.content_margin_bottom = 6
+	_workspace_header.add_theme_stylebox_override("panel", head_style)
+	column.add_child(_workspace_header)
+	var head_row := HBoxContainer.new()
+	head_row.add_theme_constant_override("separation", 8)
+	_workspace_header.add_child(head_row)
+	_workspace_title = Kit.section_label("Timeline")
+	_workspace_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	head_row.add_child(_workspace_title)
+	_workspace_close_button = Kit.text_button("Close", "x", false, true)
+	_workspace_close_button.custom_minimum_size = Vector2(96, 44)
+	_workspace_close_button.pressed.connect(func() -> void: close_timeline_workspace())
+	head_row.add_child(_workspace_close_button)
+
+	# 52/48 body: the live dope sheet owns the left column, the real speed
+	# graph owns the right.
+	_workspace_body = HBoxContainer.new()
+	_workspace_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_body.add_theme_constant_override("separation", int(WORKSPACE_GUTTER))
+	column.add_child(_workspace_body)
+	_workspace_left = VBoxContainer.new()
+	_workspace_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_left.size_flags_stretch_ratio = WORKSPACE_LEFT_RATIO
+	_workspace_left.add_theme_constant_override("separation", 4)
+	_workspace_body.add_child(_workspace_left)
+	_workspace_right = VBoxContainer.new()
+	_workspace_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_right.size_flags_stretch_ratio = 1.0 - WORKSPACE_LEFT_RATIO
+	_workspace_right.add_theme_constant_override("separation", 0)
+	_workspace_body.add_child(_workspace_right)
+	_workspace_graph = SpeedGraphScript.new()
+	_workspace_graph.name = "SpeedGraph"
+	_workspace_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workspace_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_workspace_right.add_child(_workspace_graph)
+
+	# 56 dp footer: the one existing transport instance mounts here.
+	_workspace_footer = PanelContainer.new()
+	_workspace_footer.custom_minimum_size.y = WORKSPACE_FOOTER_H
+	var foot_style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	foot_style.border_width_top = 1
+	foot_style.content_margin_left = 0
+	foot_style.content_margin_right = 0
+	foot_style.content_margin_top = 0
+	foot_style.content_margin_bottom = 0
+	_workspace_footer.add_theme_stylebox_override("panel", foot_style)
+	column.add_child(_workspace_footer)
+
+
+func _layout_timeline_workspace() -> void:
+	if _workspace_body == null or _workspace_left == null or _workspace_right == null:
+		return
+	var width: float = _workspace_body.size.x
+	if width <= 1.0 and _timeline_workspace != null:
+		width = _timeline_workspace.size.x
+	if width <= 1.0:
+		return
+	var available := maxf(0.0, width - WORKSPACE_GUTTER)
+	var ratio := WORKSPACE_LEFT_RATIO
+	if available > 0.0 and available * (1.0 - ratio) < WORKSPACE_GRAPH_MIN:
+		ratio = clampf(1.0 - WORKSPACE_GRAPH_MIN / available, 0.45, WORKSPACE_LEFT_RATIO)
+	_workspace_left.custom_minimum_size.x = floorf(available * ratio)
+	_workspace_right.custom_minimum_size.x = floorf(available * (1.0 - ratio))
+
+
+func _active_clip_name() -> String:
+	if doc == null or doc.animation_system == null:
+		return "Timeline"
+	var clip_id: String = doc.animation_system.active_clip_id()
+	if clip_id == "":
+		return "Timeline"
+	var clip: Dictionary = doc.animation_system.get_clip(clip_id)
+	var title := str(clip.get("name", "")).strip_edges()
+	return title if title != "" else "Timeline"
+
+
+func timeline_workspace_open() -> bool:
+	return _workspace_open and _timeline_workspace != null and _timeline_workspace.visible
+
+
+func open_timeline_workspace() -> bool:
+	if _timeline_workspace == null or _timeline == null:
+		return false
+	if _workspace_open:
+		return true
+	if not _timeline.sheet_visible():
+		return false
+	if size.x < WORKSPACE_MIN.x or size.y < WORKSPACE_MIN.y:
+		return false
+	_workspace_previous_mode = _timeline.mode()
+	_workspace_saved = {
+		"timeline": _capture_child(_timeline),
+		"lane": _capture_child(_lane_scroll),
+		"transport": _capture_child(_timeline.transport_panel()),
+		"panel_visible": _timeline_panel.visible if _timeline_panel != null else true,
+	}
+	_workspace_open = true
+	var transport: Control = _timeline.transport_panel()
+	if transport != null:
+		transport.reparent(_workspace_footer, false)
+	_timeline.reparent(_workspace_left, false)
+	_lane_scroll.reparent(_workspace_left, false)
+	_workspace_left.move_child(_lane_scroll, 0)
+	_workspace_left.move_child(_timeline, 1)
+	# The workspace is the dope sheet and the graph, not a second clip/media
+	# lane stack. The lane scroll is still adopted so the restore is exact.
+	_lane_scroll.visible = false
+	_timeline.set_workspace_mode(true)
+	if _timeline_panel != null:
+		_timeline_panel.visible = false
+	_workspace_title.text = _active_clip_name()
+	_workspace_graph.setup(doc)
+	_workspace_graph.set_context(doc.selected_id if doc != null else "")
+	_workspace_graph.set_channel(_timeline.channel())
+	_timeline_workspace.visible = true
+	_layout_timeline_workspace()
+	return true
+
+
+func close_timeline_workspace(restore_focus: bool = true) -> void:
+	if not _workspace_open:
+		return
+	_workspace_open = false
+	_restore_workspace_child("transport")
+	_restore_workspace_child("timeline")
+	_restore_workspace_child("lane")
+	_timeline.set_workspace_mode(false)
+	_timeline.set_mode(_workspace_previous_mode)
+	if _timeline_panel != null:
+		_timeline_panel.visible = bool(_workspace_saved.get("panel_visible", true))
+	_timeline_workspace.visible = false
+	_sync_timeline_visibility()
+	if restore_focus:
+		var expand: Button = _timeline.expand_button()
+		if expand != null and expand.is_visible_in_tree():
+			expand.grab_focus()
+
+
+func _capture_child(node: Node) -> Dictionary:
+	if node == null or node.get_parent() == null:
+		return {"node": node, "parent": null, "index": -1}
+	return {"node": node, "parent": node.get_parent(), "index": node.get_index()}
+
+
+func _restore_workspace_child(key: String) -> void:
+	var saved: Dictionary = _workspace_saved.get(key, {})
+	var node: Node = saved.get("node") as Node
+	var parent: Node = saved.get("parent") as Node
+	if node == null or parent == null or not is_instance_valid(node) or not is_instance_valid(parent):
+		return
+	if node.get_parent() != parent:
+		node.reparent(parent, false)
+	var index: int = int(saved.get("index", -1))
+	if index >= 0 and index < parent.get_child_count():
+		parent.move_child(node, index)
+
+
+func _on_timeline_workspace_requested() -> void:
+	open_timeline_workspace()
+
+
+func _on_timeline_channel_selected(channel: String) -> void:
+	if _workspace_graph != null:
+		_workspace_graph.set_channel(channel)
+
+
+func _on_timeline_workspace_selection(object_id: String) -> void:
+	if _workspace_open and _workspace_graph != null:
+		_workspace_graph.set_context(object_id)
+
+
+## Close the workspace when its window falls below the 720x360 minimum. The
+## toast is emitted once because the close flips `_workspace_open` first.
+func _on_timeline_workspace_bounds() -> void:
+	if not _workspace_open:
+		return
+	if size.x >= WORKSPACE_MIN.x and size.y >= WORKSPACE_MIN.y:
+		_layout_timeline_workspace()
+		return
+	close_timeline_workspace(false)
+	if _overlay != null:
+		_overlay.toast(WORKSPACE_RESIZE_REASON, "triangle-alert", Kit.WARNING)
+
+
+func _on_lane_sheet_requested(body: Control, title: String, subtitle: String) -> void:
+	_overlay.show_sheet(title, subtitle, body, [
+		{"text": "Close", "compact": true},
+	])
+
+func _open_audio_sheet(id: String) -> void:
+	if doc == null:
+		return
+	var sheet := AudioSheetScript.new()
+	sheet.setup(doc.media_system)
+	sheet.open(id)
+	_overlay.show_sheet("Audio track", "Start, trim, fades and mute.", sheet, [
+		{"text": "Close", "compact": true},
+	])
+
+func _open_video_reference_sheet(id: String) -> void:
+	if doc == null:
+		return
+	var sheet := VideoReferencePanelScript.new()
+	sheet.setup(doc.media_system)
+	sheet.open(id)
+	_overlay.show_sheet("Video reference", "Opacity, fit, offset, scale and flip.", sheet, [
+		{"text": "Close", "compact": true},
+	])
+
+func _on_media_video_dragged(id: String, patch: Dictionary) -> void:
+	if doc == null:
+		return
+	doc.media_system.update_video_reference(id, patch)
 
 func _build_dock() -> void:
 	_dock = PanelContainer.new()
@@ -376,88 +829,290 @@ func _build_dock() -> void:
 	_dock.anchor_right = 1.0
 	_dock.anchor_top = 0.0
 	_dock.anchor_bottom = 1.0
-	_dock.offset_top = 48.0
+	_dock.offset_top = 44.0
 	_dock.offset_bottom = 0.0
 	_dock.offset_left = -320.0
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_left = 1
-	style.content_margin_left = 0
-	style.content_margin_right = 0
-	style.content_margin_top = 0
-	style.content_margin_bottom = 0
-	_dock.add_theme_stylebox_override("panel", style)
+	# Black chrome: the flyout separates from the stage by elevation and the
+	# scrim behind it, not by a hairline along the stage edge.
+	_dock.add_theme_stylebox_override("panel",
+		Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
 	add_child(_dock)
 
 	_dock_box = VBoxContainer.new()
-	_dock_box.add_theme_constant_override("separation", 0)
+	_dock_box.add_theme_constant_override("separation", int(Kit.GUTTER))
 	_dock.add_child(_dock_box)
 
 	_dock_close_row = MarginContainer.new()
 	_dock_close_row.add_theme_constant_override("margin_left", 8)
 	_dock_close_row.add_theme_constant_override("margin_right", 6)
-	_dock_close_row.add_theme_constant_override("margin_top", 5)
-	_dock_close_row.add_theme_constant_override("margin_bottom", 5)
+	_dock_close_row.add_theme_constant_override("margin_top", 2)
+	_dock_close_row.add_theme_constant_override("margin_bottom", 2)
 	_dock_close_row.visible = false
 	_dock_box.add_child(_dock_close_row)
 
 	var tabs := HBoxContainer.new()
 	tabs.add_theme_constant_override("separation", 4)
 	_dock_close_row.add_child(tabs)
+	_dock_title_label = Kit.label("Scene", 13, Kit.TEXT, 600)
+	_dock_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dock_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_dock_title_label.visible = false
+	tabs.add_child(_dock_title_label)
 	_drawer_scene_tab = Kit.text_toggle("Scene", "layers", true)
+	_drawer_scene_tab.custom_minimum_size.y = 44
 	_drawer_scene_tab.pressed.connect(func() -> void: _set_compact_tab("scene"))
 	tabs.add_child(_drawer_scene_tab)
 	_drawer_props_tab = Kit.text_toggle("Properties", "sliders-horizontal", true)
+	_drawer_props_tab.custom_minimum_size.y = 44
 	_drawer_props_tab.pressed.connect(func() -> void: _set_compact_tab("inspector"))
 	tabs.add_child(_drawer_props_tab)
+	_drawer_rig_tab = Kit.text_toggle("Rig", "bone", true)
+	_drawer_rig_tab.custom_minimum_size.y = 44
+	_drawer_rig_tab.pressed.connect(func() -> void: _set_compact_tab("rig"))
+	tabs.add_child(_drawer_rig_tab)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tabs.add_child(spacer)
-	var close := Kit.icon_button("x", "Close panels", 28, 14)
-	close.pressed.connect(_close_drawer)
-	tabs.add_child(close)
+	_dock_close_button = Kit.icon_button("x", "Close panels", 44, 20)
+	_dock_close_button.pressed.connect(_close_drawer)
+	tabs.add_child(_dock_close_button)
 
 	_dock_box.add_child(Kit.vsep())
 
 	_outliner_panel = PanelContainer.new()
 	_outliner_panel.custom_minimum_size.y = 172
 	_outliner_panel.size_flags_vertical = Control.SIZE_FILL
-	var out_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	out_style.border_width_bottom = 1
+	var out_style := Kit.flat_style(Kit.SURFACE, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
 	_outliner_panel.add_theme_stylebox_override("panel", out_style)
 	_dock_box.add_child(_outliner_panel)
 
 	_outliner = OutlinerScript.new()
 	_outliner.add_requested.connect(_open_add_sheet)
+	_outliner.collapse_toggled.connect(func(collapsed: bool) -> void:
+		_set_section_collapsed("outliner", collapsed)
+	)
+	_outliner.panel_collapse_requested.connect(func() -> void:
+		_set_scene_expanded_from_ui(false)
+	)
 	_outliner_panel.add_child(_outliner)
 
 	_inspector_panel = PanelContainer.new()
 	_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_inspector_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0))
+	_inspector_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
 	_dock_box.add_child(_inspector_panel)
 
 	_inspector = InspectorScript.new()
 	_inspector.add_requested.connect(_open_add_sheet)
 	_inspector.color_requested.connect(_open_color_sheet)
+	_inspector.choose_material_requested.connect(_open_material_sheet)
+	_inspector.edit_material_requested.connect(_open_material_editor_for_target)
+	_inspector.look_through_requested.connect(_enter_look_through)
+	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
+		_set_section_collapsed("inspector", collapsed)
+	)
 	_inspector_panel.add_child(_inspector)
+
+	_rig_frame = PanelContainer.new()
+	_rig_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_rig_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
+	_dock_box.add_child(_rig_frame)
+
+	_rig_panel = RigPanelScript.new()
+	_rig_panel.rig_mode_changed.connect(_on_rig_mode_changed)
+	_rig_frame.add_child(_rig_panel)
+	if doc != null:
+		_rig_panel.setup(doc)
+
+func _build_render_hud() -> void:
+	_render_hud = PanelContainer.new()
+	_render_hud.name = "RenderTransport"
+	_render_hud.visible = false
+	_render_hud.z_index = 50
+	_render_hud.anchor_left = 0.5
+	_render_hud.anchor_right = 0.5
+	_render_hud.anchor_top = 1.0
+	_render_hud.anchor_bottom = 1.0
+	_render_hud.offset_bottom = -24.0
+	_render_hud.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_render_hud.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	var style := Kit.flat_style(Kit.SURFACE, Kit.R_FLOAT, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	_render_hud.add_theme_stylebox_override("panel", style)
+	add_child(_render_hud)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	_render_hud.add_child(row)
+
+	var live := Kit.section_label("Render")
+	live.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(live)
+	var spacer_l := Control.new()
+	spacer_l.custom_minimum_size.x = 8
+	row.add_child(spacer_l)
+
+	_render_time_label = Kit.mono_label("00:00:00", 13, Kit.TEXT)
+	_render_time_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_render_time_label.custom_minimum_size.x = 88
+	row.add_child(_render_time_label)
+
+	_render_play_button = Kit.icon_button("pause", "Pause the render preview", 44, 20)
+	_render_play_button.add_theme_color_override("icon_normal_color", Kit.TIME_BRIGHT)
+	_render_play_button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
+	_render_play_button.pressed.connect(_toggle_render_playback)
+	row.add_child(_render_play_button)
+
+	var restart: Button = Kit.icon_button("restart", "Restart from the first frame", 44, 20)
+	restart.pressed.connect(_restart_render_playback)
+	row.add_child(restart)
+
+	var spacer_r := Control.new()
+	spacer_r.custom_minimum_size.x = 8
+	row.add_child(spacer_r)
+
+	var exit: Button = Kit.icon_button("x", "Exit render preview", 44, 20)
+	exit.pressed.connect(_exit_render_mode)
+	row.add_child(exit)
+
 
 func _build_drawer_scrim() -> void:
 	_drawer_scrim = ColorRect.new()
-	_drawer_scrim.color = Color(0.015, 0.022, 0.031, 0.55)
+	_drawer_scrim.color = Color(0, 0, 0, 0.58)
 	_drawer_scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_drawer_scrim.offset_top = 48.0
-	# Non-interactive: GUI picking follows tree order, not z_index, so a
-	# click-catching scrim added after the dock swallows every tap inside
-	# the drawer and closes it. The drawer closes via its own close button,
-	# Escape, or the Android back gesture instead.
-	_drawer_scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_drawer_scrim.offset_top = 44.0
+	# The scrim is built before the dock, so the drawer receives taps inside
+	# its own rectangle first. Only taps outside reach the scrim and close it.
+	_drawer_scrim.mouse_filter = Control.MOUSE_FILTER_STOP
 	_drawer_scrim.visible = false
 	_drawer_scrim.z_index = 11
+	_drawer_scrim.gui_input.connect(_on_drawer_scrim_input)
 	add_child(_drawer_scrim)
+
+
+func _on_drawer_scrim_input(event: InputEvent) -> void:
+	if not _drawer_open:
+		return
+	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
+		_close_drawer()
+	elif event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+		_close_drawer()
 
 # -------------------------------------------------------------------------
 # Documents
 # -------------------------------------------------------------------------
+
+## Applies a resolved layout result from Main: the workbench arrangement and
+## the interface fit. Main owns the resolution; the editor only presents it.
+func apply_layout(layout: Dictionary) -> void:
+	layout_info = layout
+	# Main already knows the mode it resolved, so this path never notifies it.
+	_apply_workspace_mode(str(layout.get("mode", "studio")), false)
+	apply_fit_info(
+		float(layout.get("fit_percent", 100.0)),
+		bool(layout.get("user_scale_enabled", true)),
+		bool(layout.get("clamped", false))
+	)
+
+
+func workspace_mode() -> String:
+	return workbench_mode
+
+
+## User intent. Persists the preference and, when the shell is hosted by Main,
+## asks it to re-resolve; without a host the mode is resolved here so pure
+## scenes and tests behave identically.
+func set_workspace_mode(mode: String) -> void:
+	var next := mode if mode in ["auto", "compact", "studio", "desktop"] else "auto"
+	Prefs.set_value("display.layout", next)
+	if _layout_hosted():
+		# Main re-resolves and calls apply_layout, which applies the mode and
+		# emits workspace_mode_changed if the arrangement actually changed.
+		var host := get_parent()
+		while host != null and not host.has_method("refresh_layout_scale"):
+			host = host.get_parent()
+		if host != null:
+			host.call("refresh_layout_scale")
+		return
+	_apply_workspace_mode(_resolve_local(next), true)
+
+
+func apply_fit_info(fit_percent: float, user_scale_enabled: bool, clamped: bool) -> void:
+	_fit_percent = clampf(fit_percent, 1.0, 100.0)
+	_fit_user_scale_enabled = user_scale_enabled
+	_fit_clamped = clamped
+	if _top_bar != null:
+		_top_bar.set_fit(_fit_percent, _fit_percent < 60.0)
+	if _status_bar != null:
+		_update_chrome_sample()
+	if _settings_panel != null and is_instance_valid(_settings_panel) and _settings_panel.has_method("refresh_fit"):
+		_settings_panel.call("refresh_fit")
+	if _workspace_sheet != null and is_instance_valid(_workspace_sheet) and _workspace_sheet.has_method("refresh_fit"):
+		_workspace_sheet.call("refresh_fit", _fit_percent, _fit_clamped)
+
+
+func fit_percent() -> float:
+	return _fit_percent
+
+
+func fit_user_scale_enabled() -> bool:
+	return _fit_user_scale_enabled
+
+
+func fit_clamped() -> bool:
+	return _fit_clamped
+
+
+func _apply_workspace_mode(mode: String, notify: bool) -> void:
+	var next := mode if mode in ["compact", "studio", "desktop"] else "studio"
+	var changed := next != workbench_mode
+	workbench_mode = next
+	if changed:
+		# A mode switch is a deliberate arrangement change, so it resets the
+		# manual sheet choice and uses the mode default.
+		_timeline_user_override = false
+		_timeline_visible = _default_timeline_visible()
+	_apply_shell()
+	if changed and notify:
+		workspace_mode_changed.emit(next)
+
+
+## The stage is the reason the editor exists. The dope sheet opens only when
+## the user asks for it; every mode starts with the 56 dp transport row.
+func _default_timeline_visible() -> bool:
+	return false
+
+
+func _layout_hosted() -> bool:
+	var node := get_parent()
+	while node != null:
+		if node.has_method("refresh_layout_scale"):
+			return true
+		node = node.get_parent()
+	return false
+
+
+func _resolve_local(preference: String) -> String:
+	var physical := Vector2i(1280, 800)
+	var window := get_window()
+	if window != null:
+		physical = Vector2i(window.size)
+	if physical.x <= 0 or physical.y <= 0:
+		physical = Vector2i(get_viewport_rect().size)
+	if DisplayServer.get_name() == "headless" or physical.x <= 0 or physical.y <= 0:
+		physical = Vector2i(get_viewport_rect().size)
+	if physical.x <= 0 or physical.y <= 0:
+		physical = Vector2i(1280, 800)
+	var dpi := float(DisplayServer.screen_get_dpi())
+	if dpi <= 0.0:
+		dpi = 160.0
+	var user_scale := float(Prefs.get_value("display.user_scale", 1.0))
+	var fit_desktop := workbench_mode != "compact"
+	var result: Dictionary = LayoutMathScript.resolve(physical, dpi, OS.get_name(), user_scale, preference, fit_desktop)
+	return str(result.get("mode", "studio"))
 
 func open_new(meta: Dictionary, template: String) -> void:
 	_project_meta = meta.duplicate(true)
@@ -480,7 +1135,11 @@ func open_loaded(meta: Dictionary, data: Dictionary) -> void:
 	_update_header()
 
 func _adopt_document(document: Node3D) -> void:
+	if doc != null and is_instance_valid(doc) and doc != document \
+			and doc.rig_adopted.is_connected(_on_rig_adopted):
+		doc.rig_adopted.disconnect(_on_rig_adopted)
 	doc = document
+	_rig_mode = false
 	if not Gfx.changed.is_connected(_on_graphics_changed):
 		Gfx.changed.connect(_on_graphics_changed)
 	doc.apply_graphics()
@@ -488,24 +1147,130 @@ func _adopt_document(document: Node3D) -> void:
 		_view.set_document(doc)
 		_view.set_tool(_tool)
 	_outliner.setup(doc)
+	_update_scene_rail_count()
 	_inspector.setup(doc)
 	_timeline.setup(doc)
+	_clip_lane.setup(doc)
+	_media_lanes.setup(doc)
+	_rig_panel.setup(doc)
+	if not doc.selection_changed.is_connected(_on_timeline_workspace_selection):
+		doc.selection_changed.connect(_on_timeline_workspace_selection)
+	if _video_overlay != null:
+		_video_overlay.setup(doc, _view)
+	if _rig_overlay != null:
+		_rig_overlay.setup(doc, _view, doc.rig_system)
 	doc.scene_changed.connect(_on_document_scene_changed)
+	if not doc.rigs_changed.is_connected(_on_document_rigs_changed):
+		doc.rigs_changed.connect(_on_document_rigs_changed)
+	if not doc.rig_adopted.is_connected(_on_rig_adopted):
+		doc.rig_adopted.connect(_on_rig_adopted)
 	doc.selection_changed.connect(_on_document_selection_changed)
 	doc.dirty_changed.connect(_on_document_dirty_changed)
 	doc.history_changed.connect(_on_document_history_changed)
+	if not doc.playback_changed.is_connected(_on_document_playback_changed):
+		doc.playback_changed.connect(_on_document_playback_changed)
 	doc.seek(doc.current_time, true)
+	# A load restores the playhead with a silent seek, so no playback event can
+	# carry it into the sequence snapshot. Adopt it explicitly.
+	_clip_time_before_sequence = float(doc.current_time)
+	_sequence_was_playing = false
+	if _rig_overlay != null:
+		_rig_overlay.set_rig("")
+		_sync_rig_overlay()
+	if _video_overlay != null:
+		_video_overlay.refresh()
+	_sync_sequence_transport()
 	_update_header()
 	_update_history_buttons()
 	_select_tool(_tool)
-	_set_compact_tab(_compact_tab)
+	# Both calls end with a deferred reframe; arrange the shell once the new
+	# document's deferred work has run so the first frame is already correct.
+	call_deferred("_apply_shell")
 
 func _on_document_scene_changed() -> void:
 	_update_header()
+	_update_scene_rail_count()
+
+func _on_document_rigs_changed() -> void:
+	if doc != null and _rig_overlay != null and _rig_mode:
+		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
+	_sync_rig_overlay()
+
+func _on_rig_mode_changed(_enabled: bool) -> void:
+	_sync_rig_overlay()
+
+func _on_overlay_mode_changed(mode: String) -> void:
+	if _rig_toolbar != null:
+		_rig_toolbar.set_mode(mode)
+	if _rig_panel != null:
+		_rig_panel.set_mode(mode)
+
+func _on_toolbar_mode_changed(mode: String) -> void:
+	if _rig_overlay != null:
+		_rig_overlay.set_mode(mode)
+
+func _on_rig_add_bone() -> void:
+	if doc == null or doc.rig_system == null:
+		return
+	var rig_id: String = doc.rig_system.active_rig_id()
+	if rig_id == "":
+		return
+	var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+	if rig.is_empty() or bool(rig.get("imported", false)):
+		return
+	var created: String = doc.rig_system.extrude_bone(rig_id, str(rig.get("active_bone", "")))
+	if created == "":
+		return
+	if _rig_mode and _rig_overlay != null:
+		_rig_overlay.set_rig(rig_id)
+	if _rig_panel != null:
+		# The new bone is active in rig_system; refresh re-renders the tree row
+		# and inspector so the selection is visible, not just stored.
+		_rig_panel.refresh()
+	_sync_rig_overlay()
+
+func _on_rig_done() -> void:
+	# Done leaves the rig in the document. It only clears the workbench state:
+	# the overlay stops drawing and the floating toolbar goes away.
+	_rig_mode = false
+	if _rig_overlay != null:
+		_rig_overlay.set_rig("")
+		_rig_overlay.set_enabled(false)
+	if _rig_toolbar != null:
+		_rig_toolbar.visible = false
+	_sync_rig_overlay()
+
+func _sync_rig_overlay() -> void:
+	var active := ""
+	var imported := false
+	if doc != null:
+		active = doc.rig_system.active_rig_id()
+		if active != "":
+			imported = bool(doc.rig_system.get_rig(active).get("imported", false))
+	# Look-through is the document camera's clean view: the rig workbench layer
+	# and its floating toolbar are suppressed until the view exits.
+	var engaged := _rig_mode and active != "" and not _render_mode and not _look_through
+	if _rig_overlay != null:
+		if engaged:
+			if str(_rig_overlay._rig_id) != active:
+				_rig_overlay.set_rig(active)
+		elif not _rig_mode:
+			_rig_overlay.set_rig("")
+		if imported and _rig_overlay.mode() == "edit":
+			_rig_overlay.set_mode("pose")
+		_rig_overlay.set_enabled(engaged and bool(Prefs.get_value("rig.show_overlay", true)))
+	if _rig_toolbar != null:
+		_rig_toolbar.visible = engaged
+		_rig_toolbar.set_imported(imported)
+		if _rig_overlay != null:
+			_rig_toolbar.set_mode(_rig_overlay.mode())
+	if _rig_panel != null and _rig_overlay != null:
+		_rig_panel.set_mode(_rig_overlay.mode())
 
 func _on_graphics_changed() -> void:
 	if doc != null:
 		doc.apply_graphics()
+	_sync_preset_buttons()
 
 func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
@@ -522,46 +1287,200 @@ func _on_document_history_changed() -> void:
 # -------------------------------------------------------------------------
 
 func _update_header() -> void:
-	if _title_label == null:
+	if _top_bar == null:
 		return
 	if doc == null:
-		_title_label.text = "Untitled"
-		_subtitle_label.text = "No project open"
-		_dirty_dot.color = Color(0, 0, 0, 0)
+		_top_bar.set_project("Untitled", false, false)
 		return
-	_title_label.text = doc.title
-	_title_label.tooltip_text = doc.title
-	var objects := doc.objects.size()
-	var dirty := doc.is_dirty()
-	if dirty:
-		_subtitle_label.text = "Unsaved · %d object%s · %d fps · %.1f s" % [
-			objects, "" if objects == 1 else "s", doc.fps, doc.duration
-		]
-	else:
-		var tag := "Autosaved" if _last_save_auto else "Saved"
-		_subtitle_label.text = "%s · %d object%s · %d fps · %.1f s" % [
-			tag, objects, "" if objects == 1 else "s", doc.fps, doc.duration
-		]
-	_dirty_dot.color = Kit.FOCUS_BRIGHT if dirty else Color(0, 0, 0, 0)
-	_save_button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT if dirty else Kit.TEXT_MUTED)
-	_save_button.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT if dirty else Kit.TEXT)
-	_save_button.tooltip_text = "Save project" if not dirty else "Save unsaved changes"
+	_top_bar.set_project(doc.title, doc.is_dirty(), true)
 
 func _update_history_buttons() -> void:
-	if _undo_button == null:
+	if _top_bar == null:
 		return
 	var has_undo := doc != null and doc.can_undo()
 	var has_redo := doc != null and doc.can_redo()
-	_undo_button.disabled = not has_undo
-	_redo_button.disabled = not has_redo
-	if has_undo:
-		_undo_button.tooltip_text = "Undo " + doc.undo_label()
-	else:
-		_undo_button.tooltip_text = "Undo"
-	if has_redo:
-		_redo_button.tooltip_text = "Redo " + doc.redo_label()
-	else:
-		_redo_button.tooltip_text = "Redo"
+	_top_bar.set_history(has_undo, has_redo)
+
+## Reports the renderer the engine is actually running. Godot selects a
+## renderer when the process starts; the chips request one for the next launch
+## and the actual value below is always read back from RenderingServer.
+func _open_renderer_sheet() -> void:
+	var current := Gfx.renderer_name()
+	var requested := Gfx.project_renderer_request()
+	_renderer_pending = current
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 10)
+	var headline := Kit.label(Gfx.display_name(), 13, Kit.TEXT, 500)
+	body.add_child(headline)
+
+	var strip := _segment_strip(body)
+	var group := ButtonGroup.new()
+	group.allow_unpress = false
+	var blocked_reasons: Array[String] = []
+	var entry_notes: Array[String] = []
+	for entry in Gfx.renderer_entries(OS.get_name()):
+		var data: Dictionary = entry
+		if not bool(data["supported"]):
+			blocked_reasons.append(str(data["reason"]))
+			continue
+		var note := str(data.get("note", ""))
+		if note != "":
+			entry_notes.append(note)
+		var value := str(data["value"])
+		var button := Kit.text_toggle(str(data["label"]), "", true)
+		_style_segment(button)
+		button.button_group = group
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.button_pressed = value == current
+		button.toggled.connect(func(on: bool) -> void:
+			if on:
+				_renderer_pending = value
+		)
+		strip.add_child(button)
+
+	var rows := [
+		["Renderer in use", Gfx.renderer_label(current)],
+		["Project request", Gfx.renderer_label(requested)],
+		["Driver", RenderingServer.get_current_rendering_driver_name()],
+		["Adapter", RenderingServer.get_video_adapter_name()],
+	]
+	for row in rows:
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 8)
+		var key := Kit.label(str(row[0]), 12, Kit.TEXT_MUTED)
+		key.custom_minimum_size.x = 132
+		line.add_child(key)
+		var value_label := Kit.mono_label(str(row[1]), 12, Kit.TEXT)
+		value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		value_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		line.add_child(value_label)
+		body.add_child(line)
+
+	for note in entry_notes:
+		var note_label := Kit.label(note, 11, Kit.TEXT_MUTED)
+		note_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(note_label)
+	if Gfx.last_renderer_error != "":
+		var error_label := Kit.label(Gfx.last_renderer_error, 11, Kit.WARNING)
+		error_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(error_label)
+
+	var note := Kit.label(
+		"Godot chooses the renderer before the first frame. Restart applies the selected backend with a real engine flag and never launches a backend this platform cannot use; the row above keeps reporting the renderer that is actually in use.",
+		11, Kit.TEXT_DIM
+	)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(note)
+	for reason in blocked_reasons:
+		var reason_label := Kit.label(reason, 11, Kit.TEXT_DIM)
+		reason_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(reason_label)
+	_overlay.show_sheet("Renderer", "Graphics backend reported by the engine", body, [
+		{"text": "Close", "compact": true},
+		{"text": "Restart", "primary": true, "callback": _restart_with_renderer},
+	], {"width": 720.0})
+
+func _restart_with_renderer() -> void:
+	var value := _renderer_pending
+	if value == "" or value == Gfx.renderer_name():
+		_overlay.toast("That renderer is already running", "info", Kit.TEXT_MUTED)
+		return
+	# The gate lives in Gfx: it refuses a backend the platform cannot serve and
+	# only ever hands back engine restart arguments it built itself.
+	var result: Dictionary = Gfx.prepare_renderer_switch(value)
+	if bool(result.get("blocked", false)):
+		_overlay.toast(str(result.get("reason", "")), "triangle-alert", Kit.WARNING)
+		return
+	var args: PackedStringArray = result.get("args", PackedStringArray())
+	if not bool(result.get("restart_required", false)):
+		_overlay.toast("%s is already running" % Gfx.renderer_label(value), "info", Kit.TEXT_MUTED)
+		return
+	if args.is_empty() or DisplayServer.get_name() == "headless":
+		_overlay.toast("The renderer request was stored and will apply on the next launch", "restart", Kit.WARNING)
+		return
+	if doc != null and doc.is_dirty():
+		_save_project(false, true)
+	OS.set_restart_on_exit(true, args)
+	get_tree().quit()
+
+
+func _open_shortcuts_sheet() -> void:
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	for pair in [
+		["Space", "Play or pause"],
+		["F", "Frame the selection"],
+		["1 / 2 / 3 / 4", "Select, move, rotate, scale"],
+		["Delete", "Remove the selected object"],
+		["Ctrl+Z / Ctrl+Y", "Undo and redo"],
+		["Ctrl+S", "Save the project"],
+	]:
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 12)
+		var key := Kit.mono_label(str(pair[0]), 12, Kit.TEXT)
+		key.custom_minimum_size.x = 128
+		line.add_child(key)
+		var action := Kit.label(str(pair[1]), 12, Kit.TEXT_MUTED)
+		action.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		line.add_child(action)
+		body.add_child(line)
+	_overlay.show_sheet("Keyboard shortcuts", "Physical keyboards and the desktop shell", body, [
+		{"text": "Close", "primary": true},
+	])
+
+
+func _open_performance_overlay() -> void:
+	_toggle_performance_overlay()
+
+func _toggle_performance_overlay() -> void:
+	if _perf_overlay == null:
+		return
+	if _perf_overlay.visible:
+		_perf_overlay.close_overlay()
+		return
+	_sync_perf_overlay()
+	_perf_overlay.open()
+
+func _sync_perf_overlay() -> void:
+	if _perf_overlay == null or _view == null:
+		return
+	var objects := 0 if doc == null else doc.objects.size()
+	_perf_overlay.set_sample(Perf.sample(), objects, _total_keys(), _view.preview_size())
+
+func _apply_perf_preferences() -> void:
+	if Perf == null:
+		return
+	Perf.set_adaptive_quality(bool(Prefs.get_value("performance.adaptive_quality", true)))
+	Perf.set_target_fps(int(Prefs.get_value("performance.target_fps", 60)))
+	Perf.min_preview_scale = clampf(float(Prefs.get_value("performance.min_preview_scale", 0.6)), 0.25, 1.0)
+	Perf.set_preview_update(str(Prefs.get_value("performance.preview_update", "on_demand")))
+	Perf.set_preview_cap(int(Prefs.get_value("performance.preview_cap", 1920)))
+	Engine.max_fps = clampi(int(Prefs.get_value("performance.max_fps", 60)), 0, 240)
+	var vsync := bool(Prefs.get_value("performance.vsync", true))
+	DisplayServer.window_set_vsync_mode(
+		DisplayServer.VSYNC_ENABLED if vsync else DisplayServer.VSYNC_DISABLED
+	)
+	var overlay_mode := str(Prefs.get_value("performance.overlay", "compact"))
+	var show_fps := bool(Prefs.get_value("editor.show_fps", true))
+	if _view != null:
+		_view.set_fps_chip_visible(show_fps and overlay_mode != "off")
+	if _perf_overlay != null:
+		_perf_overlay.set_frame_graph(bool(Prefs.get_value("performance.frame_graph", false)))
+		if overlay_mode == "full":
+			_sync_perf_overlay()
+			_perf_overlay.open()
+		else:
+			_perf_overlay.close_overlay()
+
+func _on_perf_sample(sample: Dictionary) -> void:
+	if _view != null:
+		_view.set_fps_value(float(sample.get("fps", -1.0)), float(sample.get("frame_ms", -1.0)))
+	if _perf_overlay != null and _perf_overlay.visible:
+		var objects := 0 if doc == null else doc.objects.size()
+		var preview: Vector2i = _view.preview_size() if _view != null else Vector2i.ZERO
+		_perf_overlay.set_sample(sample, objects, _total_keys(), preview)
+	_update_chrome_sample(sample)
+
 
 func _on_timeline_notice(text_value: String) -> void:
 	if _overlay != null:
@@ -595,12 +1514,19 @@ func save_now() -> bool:
 func request_close() -> void:
 	if _closing:
 		return
+	if _render_mode:
+		_exit_render_mode()
+		return
 	if _overlay != null and _overlay.has_modal():
 		_overlay.close_modal()
 		return
 	if _drawer_open:
 		_close_drawer()
 		return
+	# Every project close path leaves the landscape workspace before the close
+	# sheet so the sheet never mounts over a reparented timeline.
+	if _workspace_open:
+		close_timeline_workspace(false)
 	if doc == null or not doc.is_dirty():
 		_leave(false)
 		return
@@ -634,6 +1560,7 @@ func _save_and_leave() -> void:
 func _leave(save_first: bool = false) -> void:
 	if _closing:
 		return
+	close_timeline_workspace(false)
 	if _render_busy:
 		if _overlay != null:
 			_overlay.toast("Wait for the render to finish", "film", Kit.WARNING)
@@ -645,11 +1572,20 @@ func _leave(save_first: bool = false) -> void:
 	exit_requested.emit()
 
 func handle_back() -> bool:
+	if _look_through:
+		_exit_look_through()
+		return true
+	if _render_mode:
+		_exit_render_mode()
+		return true
 	if _overlay != null and _overlay.has_modal():
 		_overlay.close_modal()
 		return true
 	if _drawer_open:
 		_close_drawer()
+		return true
+	if _workspace_open:
+		close_timeline_workspace()
 		return true
 	request_close()
 	return true
@@ -664,76 +1600,583 @@ func _notification(what: int) -> void:
 # -------------------------------------------------------------------------
 
 func _on_resized() -> void:
-	_apply_responsive()
+	_on_timeline_workspace_bounds()
+	_apply_shell()
 
-func _apply_responsive() -> void:
+
+func _on_viewport_resized() -> void:
+	# The stage host finishes its container pass after the shell has applied,
+	# so recompute the overlay against the real stage height.
+	_on_timeline_workspace_bounds()
+	if _timeline_panel != null and not _render_mode:
+		_sync_timeline_visibility()
+
+
+## Arranges the shell for the current workbench mode. Idempotent: it is safe to
+## call on every resize, mode change and preference change.
+func _apply_shell() -> void:
 	if _dock == null or not is_inside_tree():
 		return
-	var wide := size.x >= WIDE_MIN_WIDTH
-	var short := size.y < SHORT_MAX_HEIGHT
-	_wide = wide
-	_short = short
-	if wide:
-		_drawer_open = false
-		_drawer_scrim.visible = false
-		_dock.visible = true
-		_dock.modulate.a = 1.0
+	# Render mode owns the whole frame. A resize or preference change must not
+	# re-show the workbench chrome over the live image; exiting render mode
+	# reapplies the shell in one pass.
+	if _render_mode:
+		return
+	var compact := workbench_mode == "compact"
+	# The dock is always an overlay. Studio and Desktop keep a 44 dp rail as
+	# the permanent affordance; Compact uses its bottom action bar. The stage
+	# never pays for a reserved panel column again. Below the Studio minimum
+	# width the rail would squeeze the transport, so the top-bar button opens
+	# the same flyout and the stage keeps every pixel.
+	var panel_rail_visible := not compact and size.x >= PANEL_RAIL_MIN_WIDTH
+	var rail_fallback := not compact and not panel_rail_visible
+	var was_short := _short
+	_short = size.y < SHORT_MAX_HEIGHT
+	_viewport_host.custom_minimum_size.y = 96.0 if _short else 120.0
+	_timeline.set_short_layout(_short)
+	# Rotation between portrait and landscape changes the default. A manual
+	# fold/open choice is respected until the next mode switch.
+	if _short != was_short and not _timeline_user_override:
+		_timeline_visible = _default_timeline_visible()
+	_top_bar.set_mode(workbench_mode)
+	_top_bar.set_available_width(size.x)
+	_rail.set_mode(workbench_mode)
+	_rail.set_available_height(size.y)
+	_view_header.set_mode(workbench_mode)
+	if _view != null:
+		_view_header.set_view_label(_view.view_preset())
+		_view_header.set_grid(_view.grid_enabled())
+	_bottom_bar.set_mode(workbench_mode)
+	_status_bar.set_mode(workbench_mode)
+	if _overlay != null:
+		_overlay.set_layout_mode(workbench_mode)
+	_timeline.set_chrome_mode(workbench_mode)
+
+	# The rail is a column on wide screens and a strip under the header on
+	# phones, so it is re-parented instead of duplicated.
+	var want_parent: Control = _center if compact else _body
+	if _rail.get_parent() != want_parent:
+		_rail.reparent(want_parent, false)
+		want_parent.move_child(_rail, 0)
+
+	# One outliner instance, one selection model, one search state. The scene
+	# column owns it on Studio/Desktop; Compact and sub-480 shells hand it back
+	# to the dock. Re-parenting never rebuilds the tree.
+	var scene_enabled: bool = not compact and size.x >= SCENE_PANEL_MIN_WIDTH
+	var scene_expanded: bool = scene_enabled and _scene_target_expanded()
+	var scene_width := 0.0
+	if scene_enabled:
+		scene_width = _scene_expanded_width() if scene_expanded else SCENE_RAIL_WIDTH
+		_scene_column.custom_minimum_size.x = scene_width
+		_scene_column.visible = true
 	else:
-		_dock.visible = _drawer_open
-		_drawer_scrim.visible = _drawer_open
+		_scene_column.custom_minimum_size.x = 0.0
+		_scene_column.visible = false
+	_scene_rail.visible = scene_enabled and not scene_expanded
+	_outliner.set_persistent_panel(scene_enabled)
+	if scene_enabled:
+		if _outliner_panel.get_parent() != _scene_column:
+			_outliner_panel.reparent(_scene_column, false)
+		_outliner_panel.visible = scene_expanded
+	else:
+		if _outliner_panel.get_parent() != _dock_box:
+			_outliner_panel.reparent(_dock_box, false)
+		_outliner_panel.visible = _compact_tab == "scene"
+	_update_scene_rail_state(scene_enabled and not scene_expanded)
+	if _panel_rail != null:
+		_panel_rail.visible = panel_rail_visible
+		if _drawer_open:
+			_panel_rail.set_page(_compact_tab, true)
+		else:
+			_panel_rail.set_page("scene", scene_expanded)
 
-	_topbar.custom_minimum_size.y = 42.0 if short else 48.0
-	if _drawer_scrim != null:
-		_drawer_scrim.offset_top = 42.0 if short else 48.0
-	# The tool rail is the one column that cannot scroll. Shrink its buttons and
-	# margins in a short landscape window so it never forces the editor body
-	# past the bottom edge (which used to hide the compact bar entirely).
-	var rail_size := 30.0 if short else 34.0
-	var rail_icon := 15 if short else 16
-	_rail.custom_minimum_size.x = 40.0 if short else 44.0
-	_rail_column.add_theme_constant_override("separation", 2 if short else 4)
-	_rail_style.content_margin_top = 4 if short else 8
-	_rail_style.content_margin_bottom = 4 if short else 8
-	for button in _rail_buttons:
-		button.custom_minimum_size = Vector2(rail_size, rail_size)
-		button.add_theme_constant_override("icon_max_width", rail_icon)
-	_dock_slot.visible = wide
-	_compact_bar.visible = not wide
-	_dock_close_row.visible = not wide
-	_outliner_panel.visible = wide or _compact_tab == "scene"
-	_inspector_panel.visible = wide or _compact_tab == "inspector"
-	_outliner_panel.size_flags_vertical = Control.SIZE_FILL if wide else Control.SIZE_EXPAND_FILL
-	# In short landscape the dock has only ~400 dp of height. A 112 dp
-	# outliner left room for the header and search but barely one scene row,
-	# so give the scene list a useful share and let the inspector scroll.
-	_outliner_panel.custom_minimum_size.y = 210.0 if short else 172.0
-	_timeline_panel.custom_minimum_size.y = 126.0 if short else (190.0 if wide else 154.0)
-	_subtitle_label.visible = size.x >= 540.0 and not short
+	_dock.visible = _drawer_open
+	_drawer_scrim.visible = _drawer_open
+	_dock.modulate.a = 1.0
+	_dock_close_row.visible = true
+	_dock_title_label.visible = not compact
+	# The tabs are visible whenever the rail is hidden: Compact has no rail,
+	# and a sub-480 Studio stage folds the rail into the top-bar button. In
+	# both cases the flyout itself has to carry the three pages or a page
+	# becomes unreachable.
+	var tabbed := compact or rail_fallback
+	_drawer_scene_tab.visible = tabbed
+	_drawer_props_tab.visible = tabbed
+	if _drawer_rig_tab != null:
+		_drawer_rig_tab.visible = tabbed
+	_dock_close_button.visible = true
+	if _top_bar != null:
+		# The rail replaced the old narrow-Studio top-bar toggle. A shell below
+		# the Studio minimum width falls back to it instead of squeezing the
+		# stage with two rails.
+		_top_bar.set_panels_button_visible(rail_fallback)
+		_top_bar.set_panels_open(_drawer_open)
+	# One page at a time: the flyout is not the old stacked wide dock. The
+	# outliner is only a dock page when the scene column does not own it.
+	if _outliner_panel.get_parent() == _dock_box:
+		_outliner_panel.visible = _compact_tab == "scene"
+	_inspector_panel.visible = _compact_tab == "inspector"
+	_rig_frame.visible = _compact_tab == "rig"
+	# The panel stays mounted and reachable; only its dock frame follows tabs.
+	_rig_panel.visible = true
+	var outliner_collapsed: bool = _outliner != null and _outliner.collapsed
+	if outliner_collapsed:
+		_outliner_panel.custom_minimum_size.y = 44.0
+		_outliner_panel.size_flags_vertical = Control.SIZE_FILL
+	else:
+		_outliner_panel.custom_minimum_size.y = 0.0
+		_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var inspector_collapsed: bool = _inspector != null and _inspector.collapsed
+	if inspector_collapsed:
+		_inspector_panel.custom_minimum_size.y = 44.0
+		_inspector_panel.size_flags_vertical = Control.SIZE_FILL
+	else:
+		_inspector_panel.custom_minimum_size.y = 0.0
+		_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
-	var dock_width := clampf(size.x * 0.25, 288.0, 340.0) if wide else clampf(size.x * 0.9, 280.0, 360.0)
-	if wide and short:
-		dock_width = clampf(size.x * 0.34, 272.0, 320.0)
-	_dock_slot.custom_minimum_size.x = dock_width
-	_dock.offset_left = -dock_width
-	_dock.offset_right = 0.0
-	_dock.offset_top = 42.0 if short else 48.0
+	# The 400 dp flyout maximum from the spec is an upper bound, not a target:
+	# clamp to it after the content minimum so a growing inspector can never
+	# push the dock past the edge. Compact uses the same cap under its 8%
+	# side margin.
+	var content_min := _dock.get_combined_minimum_size().x
+	var dock_width := 0.0
+	if compact:
+		dock_width = clampf(size.x * 0.92, 280.0, 400.0)
+	else:
+		dock_width = clampf(size.x * 0.34, 320.0, 400.0)
+	# The inspector's transform fields have a real floor; a dock narrower than
+	# its content would clip controls instead of growing past the edge.
+	dock_width = maxf(dock_width, content_min)
+	dock_width = minf(dock_width, 400.0)
+	# The timeline decides between its full transport and the overflow header.
+	# Give it the width the shell can actually reserve, including the new rail.
+	var rail_reserve := 0.0
+	if not compact:
+		rail_reserve = float(_rail.call("rail_width"))
+	var panel_reserve := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
+	_timeline.set_available_width(size.x - rail_reserve - panel_reserve - scene_width)
+	var bottom_inset := 0.0
+	if _status_bar.visible:
+		bottom_inset += _status_bar.custom_minimum_size.y
+	if _bottom_bar.visible:
+		bottom_inset += _bottom_bar.custom_minimum_size.y
+	# The flyout stops at the rail instead of covering it. Panel pages stay
+	# switchable while a panel is open. Where the stage is tighter than the
+	# 400 dp cap the flyout takes the width that is actually left, inside the
+	# rail inset (or the compact margin).
+	var rail_inset := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
+	var available := size.x * 0.92 if compact else size.x - rail_inset
+	dock_width = minf(dock_width, maxf(available, content_min))
+	_dock.offset_left = -(dock_width + rail_inset)
+	_dock.offset_right = -rail_inset
+	_dock.offset_top = _top_bar.custom_minimum_size.y
+	_dock.offset_bottom = -bottom_inset
+	_drawer_scrim.offset_top = _top_bar.custom_minimum_size.y
+	_drawer_scrim.offset_bottom = -(_bottom_bar.custom_minimum_size.y if _bottom_bar.visible else 0.0)
 	_sync_timeline_visibility()
-	_update_compact_bar()
+	_update_bottom_bar()
 	_update_drawer_tabs()
+	_sync_view_header_visibility()
+	_refresh_chrome_values()
+
+
+# -------------------------------------------------------------------------
+# Persistent scene panel
+# -------------------------------------------------------------------------
+
+func _scene_panel_enabled() -> bool:
+	return workbench_mode != "compact" and size.x >= SCENE_PANEL_MIN_WIDTH
+
+
+func _scene_expanded_width() -> float:
+	return clampf(size.x * 0.20, SCENE_EXPANDED_MIN, SCENE_EXPANDED_MAX)
+
+
+## A sub-760 expansion is legal only while the stage keeps 320 dp. The two
+## rails and the body gutters come out of the shell width first.
+func _scene_expansion_legal() -> bool:
+	if not _scene_panel_enabled():
+		return false
+	var rail_width := float(_rail.call("rail_width")) if _rail != null else SCENE_RAIL_WIDTH
+	var panel_rail := SCENE_RAIL_WIDTH if size.x >= PANEL_RAIL_MIN_WIDTH else 0.0
+	var stage := size.x - rail_width - _scene_expanded_width() - panel_rail - float(Kit.GUTTER) * 3.0
+	return stage >= SCENE_STAGE_FLOOR
+
+
+func _scene_can_expand() -> bool:
+	if not _scene_panel_enabled():
+		return false
+	if size.x >= SCENE_EXPANDED_MIN_WIDTH:
+		return true
+	return _scene_expansion_legal()
+
+
+func _scene_target_expanded() -> bool:
+	if not _scene_panel_enabled():
+		return false
+	if size.x >= SCENE_EXPANDED_MIN_WIDTH:
+		return bool(Prefs.get_value("editor.scene_panel_expanded", true))
+	return _scene_transient and absf(size.x - _scene_transient_width) < 0.5 and _scene_expansion_legal()
+
+
+func _scene_is_expanded() -> bool:
+	return _scene_panel_enabled() and _scene_target_expanded()
+
+
+## Public for the layout/smoke suites and the capture harness: persist the
+## choice at or above 760 dp, keep a sub-760 expansion transient.
+func set_scene_panel_expanded(expanded: bool, persist: bool = true) -> void:
+	if persist:
+		Prefs.set_value("editor.scene_panel_expanded", expanded)
+		_scene_transient = false
+	else:
+		_scene_transient = expanded
+		_scene_transient_width = size.x
+	if is_inside_tree():
+		_apply_shell()
+
+
+func _set_scene_expanded_from_ui(expanded: bool) -> void:
+	set_scene_panel_expanded(expanded, size.x >= SCENE_EXPANDED_MIN_WIDTH)
+
+
+func _toggle_scene_panel() -> void:
+	if not _scene_panel_enabled():
+		return
+	if _drawer_open:
+		# Scene from a Properties/Rig flyout focuses the panel and dismisses
+		# the overlay instead of opening a second scene surface.
+		_close_drawer()
+		if not _scene_is_expanded() and _scene_can_expand():
+			_set_scene_expanded_from_ui(true)
+		return
+	if _scene_is_expanded():
+		_set_scene_expanded_from_ui(false)
+	elif _scene_can_expand():
+		_set_scene_expanded_from_ui(true)
+
+
+func _on_scene_rail_expand() -> void:
+	if _scene_can_expand():
+		_set_scene_expanded_from_ui(true)
+
+
+func _update_scene_rail_state(rail_visible: bool) -> void:
+	if _scene_rail_expand == null:
+		return
+	var can_expand := _scene_can_expand()
+	_scene_rail_expand.disabled = rail_visible and not can_expand
+	if can_expand:
+		_scene_rail_expand.tooltip_text = "Expand the scene panel"
+	else:
+		_scene_rail_expand.tooltip_text = "The stage needs 320 dp; widen the window to expand the scene panel"
+
+
+func _update_scene_rail_count() -> void:
+	if _scene_rail_count == null:
+		return
+	var objects: int = 0 if doc == null else doc.objects.size()
+	_scene_rail_count.text = str(objects)
+
+
+## A drawer or sheet can begin inside the camera label and cut it mid-word
+## ("Persp"). The header is layout, so it yields the space while a surface
+## covers the viewport instead of leaving a clipped fragment behind an edge.
+func _sync_view_header_visibility() -> void:
+	if _view_header == null:
+		return
+	var covered := _render_mode or _drawer_open or _look_through
+	if _overlay != null and _overlay.has_modal():
+		covered = true
+	_view_header.visible = not covered
+
+
+func _refresh_chrome_values() -> void:
+	if doc != null:
+		_update_header()
+	_update_history_buttons()
+	_update_chrome_sample()
+
+
+func _update_chrome_sample(sample: Dictionary = {}) -> void:
+	if _status_bar == null:
+		return
+	if sample.is_empty():
+		sample = Perf.sample()
+	var keys := 0
+	if doc != null and doc.animation != null:
+		for track in range(doc.animation.get_track_count()):
+			keys += doc.animation.track_get_key_count(track)
+	sample["renderer"] = Gfx.renderer_name()
+	var objects := 0 if doc == null else doc.objects.size()
+	var saved := doc == null or not doc.is_dirty()
+	_status_bar.update(sample, objects, keys, saved, _fit_percent)
+
 
 func _timeline_should_show() -> bool:
-	if not _timeline_visible:
-		return false
-	# On a phone held sideways the timeline would eat most of the viewport.
-	# It starts folded away there and the bottom bar button brings it back.
-	return not _short or _short_timeline_open
+	return _timeline_visible
+
+
+func _apply_collapsed_sections() -> void:
+	var raw = Prefs.get_value("editor.collapsed_sections", [])
+	var sections: Array = []
+	if raw is Array:
+		sections.assign(raw)
+	_set_section_collapsed("outliner", sections.has("outliner"), false)
+	_set_section_collapsed("inspector", sections.has("inspector"), false)
+
+
+func _set_section_collapsed(section: String, collapsed: bool, persist: bool = true) -> void:
+	if section == "outliner" and _outliner != null:
+		_outliner.set_collapsed(collapsed)
+	elif section == "inspector" and _inspector != null:
+		_inspector.set_collapsed(collapsed)
+	else:
+		return
+	if persist:
+		var raw = Prefs.get_value("editor.collapsed_sections", [])
+		var sections: Array = []
+		if raw is Array:
+			sections.assign(raw)
+		var found := sections.has(section)
+		if collapsed and not found:
+			sections.append(section)
+		elif not collapsed and found:
+			sections.erase(section)
+		Prefs.set_value("editor.collapsed_sections", sections)
+	if is_inside_tree() and _dock != null:
+		_apply_shell()
+
+
+## The stage host's height drives the overlay budget. During the first shell
+## pass the container has not been laid out yet, so measure the real chrome
+## controls (top bar, view header, status bar, bottom bar) instead of
+## duplicating their heights as literals.
+func _stage_height() -> float:
+	if _viewport_host != null and _viewport_host.size.y > 1.0:
+		return _viewport_host.size.y
+	var height: float = size.y
+	var chrome := [_top_bar, _view_header, _status_bar, _bottom_bar]
+	for control in chrome:
+		if control != null and control.visible:
+			height -= control.custom_minimum_size.y
+	# Layout separations: the shell column (top/body/status/bottom) and the
+	# center column (header/stage).
+	height -= float(Kit.GUTTER) * 4.0
+	return maxf(height, 120.0)
+
+
+## The expanded sheet defaults to the compact budget: 34 percent of the stage
+## host, capped at 208 dp and never below 104 dp (transport 56 + a 48 dp sheet
+## floor). The explicit More control raises the session-only cap to 46 percent
+## / 260 dp; it is never the default and is capped independently of the view
+## height so the stage always keeps over half of its height.
+func _timeline_overlay_budget(stage_height: float) -> float:
+	if not _timeline_should_show():
+		return FOLDED_TIMELINE
+	# Graph mode is an explicit request, so the sheet gets the stage share
+	# (capped at 300 dp) instead of the dope sheet's quick-edit budget.
+	if _timeline != null and _timeline.mode() == "graph":
+		return minf(300.0, maxf(104.0, stage_height))
+	var ratio := 0.46 if _timeline_more else 0.34
+	var cap := 260.0 if _timeline_more else 208.0
+	return minf(cap, maxf(104.0, stage_height * ratio))
+
+
+func _set_timeline_overlay_height(value: float) -> void:
+	if _timeline_panel == null:
+		return
+	_timeline_panel.offset_top = -value
+	_timeline_panel.offset_bottom = 0.0
+	_timeline_panel.custom_minimum_size.y = value
+
+
+## The nav gizmo hugs the bottom-right of the stage, where the always-present
+## transport strip now lives. Lift it by the current overlay height plus the
+## 12 dp inset it already keeps from the edges so its axis tips stay tappable
+## instead of landing under the transport.
+func _sync_nav_gizmo_inset(timeline_height: float) -> void:
+	if _view == null:
+		return
+	var nav = _view.get("_nav_gizmo")
+	if nav == null or not is_instance_valid(nav):
+		return
+	var nav_size := 116.0
+	var inset := maxf(FOLDED_TIMELINE, timeline_height) + 12.0
+	nav.offset_bottom = -inset
+	nav.offset_top = -(nav_size + inset)
+
 
 func _sync_timeline_visibility() -> void:
-	if _timeline_panel != null:
-		_timeline_panel.visible = _timeline_should_show()
+	if _workspace_open:
+		return
+	if _timeline_panel == null or _timeline == null:
+		return
+	# The transport row is always present; only the sheet folds away, so the
+	# stage keeps its 3D height until the sheet is asked for.
+	var sheet := _timeline_should_show()
+	_timeline.set_sheet_visible(sheet)
+	if not sheet:
+		_timeline.set_header_folded(false)
+		if _media_lanes != null:
+			_media_lanes.visible = false
+			_media_lanes.fit_height(-1.0)
+		if _clip_lane != null:
+			_clip_lane.visible = false
+		if _lane_scroll != null:
+			_lane_scroll.visible = false
+			_lane_scroll.custom_minimum_size.y = 0.0
+		_set_timeline_overlay_height(FOLDED_TIMELINE)
+		_sync_nav_gizmo_inset(FOLDED_TIMELINE)
+		return
+
+	var budget := _timeline_overlay_budget(_stage_height())
+	if _timeline.mode() == "graph":
+		# The compact graph owns the sheet's stage share. Clips and media fold
+		# whole and are excluded from the budget so the plot can reach 120 dp.
+		_timeline.set_header_folded(true)
+		if _media_lanes != null:
+			_media_lanes.fit_height(-1.0)
+			_media_lanes.visible = false
+		if _clip_lane != null:
+			_clip_lane.visible = false
+		if _lane_scroll != null:
+			_lane_scroll.visible = false
+			_lane_scroll.custom_minimum_size.y = 0.0
+		_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
+		_set_timeline_overlay_height(budget)
+		_sync_nav_gizmo_inset(budget)
+		return
+	# Resolve content in the binding fold order: the media lanes fold first
+	# (their body is capped inside a scrollable shell, so the header stays
+	# reachable), then the clip lane folds, then the sheet shrinks. The
+	# resolution starts lean (compact header folded) and the header comes
+	# back only when the pass leaves 48 dp of slack for it.
+	_timeline.set_header_folded(true)
+	_timeline.fit_sheet_height(10000.0)
+	var tl_content: float = _timeline.get_combined_minimum_size().y
+	var lane_min := 0.0
+	if _clip_lane != null:
+		lane_min = _clip_lane.get_combined_minimum_size().y
+	var media_want := 0.0
+	if _media_lanes != null:
+		media_want = _media_lanes.get_combined_minimum_size().y
+	var show_lane := _clip_lane != null and lane_min > 0.0
+	var show_media := _media_lanes != null
+	var lane_part := 0.0
+	var media_part := 0.0
+	var lane_total := 0.0
+	var more_lanes := false
+	if _timeline_more:
+		# The explicit More state must mount both lanes. The sheet keeps its
+		# 48 dp floor and the lane stack gets everything above it, capped at the
+		# natural height and scrolled inside the cap when it does not fit.
+		var lane_natural := lane_min if show_lane else 0.0
+		if show_media:
+			lane_natural += media_want
+		if show_lane and show_media:
+			lane_natural += float(Kit.GUTTER)
+		var lane_room := budget - FOLDED_TIMELINE - 48.0
+		if lane_natural > 0.0 and lane_room >= 44.0:
+			lane_total = minf(lane_natural, lane_room)
+			lane_part = lane_total
+			more_lanes = true
+		else:
+			show_lane = false
+			show_media = false
+	else:
+		# Room left next to the transport row and the preferred sheet.
+		var room := budget - FOLDED_TIMELINE - tl_content
+		if room >= lane_min + media_want:
+			lane_part = lane_min
+			media_part = media_want
+		elif room >= lane_min + 44.0:
+			lane_part = lane_min
+			media_part = 44.0
+		elif room >= 44.0:
+			show_lane = false
+			media_part = minf(media_want, room)
+		else:
+			# The preferred sheet is unaffordable: keep the header folded, drop
+			# the sequence lane and shrink the sheet to its 48 dp floor so the
+			# collapsed media header gets one more chance.
+			show_lane = false
+			var floor_room := budget - FOLDED_TIMELINE - 48.0
+			if floor_room >= 44.0:
+				_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
+				media_part = minf(media_want, floor_room)
+			else:
+				# Even the floor cannot host the header. Fold the lanes whole and
+				# collapse the media lanes explicitly so the next pass (a taller
+				# stage, a resize) shows the header again instead of burying it.
+				show_media = false
+				media_part = 0.0
+		lane_total = lane_part + media_part
+		if show_lane and show_media:
+			lane_total += float(Kit.GUTTER)
+	if more_lanes:
+		if _media_lanes != null:
+			_media_lanes.fit_height(-1.0)
+			_media_lanes.visible = show_media
+		if _clip_lane != null:
+			_clip_lane.visible = show_lane
+	else:
+		if _media_lanes != null:
+			_media_lanes.fit_height(media_part if show_media else -1.0)
+			_media_lanes.visible = show_media and media_part >= 44.0
+			if not _media_lanes.visible:
+				_media_lanes.set_collapsed(true)
+		if _clip_lane != null:
+			_clip_lane.visible = show_lane
+	if _lane_scroll != null:
+		_lane_scroll.visible = lane_total >= 44.0 and \
+			(show_lane or (_media_lanes != null and _media_lanes.visible))
+		_lane_scroll.custom_minimum_size.y = lane_total if _lane_scroll.visible else 0.0
+	# The compact header returns only when it can coexist with a 48 dp sheet:
+	# available >= header + 48 + the 1 px rule. The sheet then takes what is
+	# left, never below 48 dp.
+	var can_host_header: bool = _timeline.header_allowed() and \
+		budget - FOLDED_TIMELINE - lane_part - media_part >= \
+		_timeline.header_height() + 48.0 + _timeline.sheet_rule_height()
+	if can_host_header:
+		_timeline.set_header_folded(false)
+	# Final pass: the sheet takes what is left, never below 48 dp.
+	_timeline.fit_sheet_height(budget - FOLDED_TIMELINE - lane_part - media_part)
+	_set_timeline_overlay_height(budget)
+	_sync_nav_gizmo_inset(budget)
+
+func _on_timeline_mode_changed(mode: String) -> void:
+	# Entering graph mode is the explicit request that raises the session
+	# budget. Returning to dope keeps More on; closing the sheet resets both.
+	if mode == "graph":
+		_timeline_more = true
+		if _timeline != null:
+			_timeline.set_more_state(true)
+	_sync_timeline_visibility()
+
+func _on_media_lanes_collapsed_changed(_collapsed: bool) -> void:
+	# Folding media is a layout change only; the document and its media are
+	# untouched. The panel must reserve the new stack height immediately.
+	_sync_timeline_visibility()
+
+## Puts the clip clock back where the sequence took over. Runs on the actual
+## sequence stop (lane pause, Space, natural end or stop_sequence), never while
+## it still runs.
+func _restore_clip_after_sequence() -> void:
+	if doc == null or not _sequence_was_playing or doc.is_sequence_playing() or _restoring_clip:
+		return
+	_sequence_was_playing = false
+	_restoring_clip = true
+	# Not silent: the dope sheet and clip lane must show the restored playhead.
+	doc.seek(_clip_time_before_sequence)
+	_clip_time_before_sequence = float(doc.current_time)
+	_restoring_clip = false
 
 func _toggle_drawer(tab: String) -> void:
-	if _wide:
+	# On Studio/Desktop the scene tree is the persistent column. The rail and
+	# the Scene page toggle that column; only Compact still opens the dock.
+	if tab == "scene" and _scene_panel_enabled():
+		_toggle_scene_panel()
 		return
 	if _drawer_open and _compact_tab == tab:
 		_close_drawer()
@@ -742,73 +2185,200 @@ func _toggle_drawer(tab: String) -> void:
 	_open_drawer()
 
 func _open_drawer() -> void:
-	if _wide:
-		return
 	_drawer_open = true
 	_overlay.clear_toast()
 	_drawer_scrim.visible = true
 	_dock.visible = true
 	_dock.modulate.a = 0.0
 	_drawer_scrim.modulate.a = 0.0
+	_sync_view_header_visibility()
 	var tween := create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(_dock, "modulate:a", 1.0, 0.13)
 	tween.tween_property(_drawer_scrim, "modulate:a", 1.0, 0.13)
 	_set_compact_tab(_compact_tab)
-	_update_compact_bar()
+	_update_bottom_bar()
 
 func _close_drawer() -> void:
-	if _wide:
-		return
 	_drawer_open = false
 	_drawer_scrim.visible = false
 	_dock.visible = false
 	_dock.modulate.a = 1.0
-	_update_compact_bar()
+	_sync_view_header_visibility()
+	_update_drawer_tabs()
+	_update_bottom_bar()
+
+func _dock_overlay_mode() -> bool:
+	# Kept for the existing call sites and tests: the dock is an overlay in
+	# every mode now. Compact opens it from the bottom bar; Studio and Desktop
+	# open it from the 44 dp panel rail.
+	return true
+
+func _compact_shell() -> bool:
+	return workbench_mode == "compact"
+
 
 func _set_compact_tab(tab: String) -> void:
-	_compact_tab = tab if tab in ["scene", "inspector"] else "scene"
-	if not _wide and _dock != null:
-		_outliner_panel.visible = _compact_tab == "scene"
+	_compact_tab = tab if tab in ["scene", "inspector", "rig"] else "scene"
+	if _compact_tab == "rig":
+		# Selecting the Rig page is how the workbench enters rig mode. Closing
+		# the dock or showing another page does not leave it.
+		_rig_mode = true
+	if _dock != null:
+		if _outliner_panel.get_parent() == _dock_box:
+			_outliner_panel.visible = _compact_tab == "scene"
 		_inspector_panel.visible = _compact_tab == "inspector"
+		_rig_frame.visible = _compact_tab == "rig"
+		_rig_panel.visible = true
 	_update_drawer_tabs()
-	_update_compact_bar()
+	_update_bottom_bar()
+	_sync_rig_overlay()
 
 func _update_drawer_tabs() -> void:
 	if _drawer_scene_tab == null:
 		return
-	_drawer_scene_tab.set_pressed_no_signal(not _wide and _compact_tab == "scene")
-	_drawer_props_tab.set_pressed_no_signal(not _wide and _compact_tab == "inspector")
+	# Same rule as _apply_shell: the tabs light up wherever the flyout is the
+	# only panel navigation (Compact, or Studio below the rail's minimum).
+	var tabbed := workbench_mode == "compact" \
+		or (workbench_mode != "compact" and size.x < PANEL_RAIL_MIN_WIDTH)
+	_drawer_scene_tab.set_pressed_no_signal(tabbed and _compact_tab == "scene")
+	_drawer_props_tab.set_pressed_no_signal(tabbed and _compact_tab == "inspector")
+	if _drawer_rig_tab != null:
+		_drawer_rig_tab.set_pressed_no_signal(tabbed and _compact_tab == "rig")
+	if _dock_title_label != null:
+		_dock_title_label.text = _panel_page_title(_compact_tab)
+	if _panel_rail != null:
+		if _drawer_open:
+			_panel_rail.set_page(_compact_tab, true)
+		else:
+			_panel_rail.set_page("scene", _scene_panel_enabled() and _scene_is_expanded())
+	if _top_bar != null:
+		_top_bar.set_panels_open(_drawer_open)
 
-func _update_compact_bar() -> void:
-	if _scene_compact == null:
+
+func _panel_page_title(page: String) -> String:
+	match page:
+		"inspector":
+			return "Properties"
+		"rig":
+			return "Rig"
+	return "Scene"
+
+func _update_bottom_bar() -> void:
+	if _bottom_bar == null:
 		return
-	_style_compact_active(_scene_compact, _drawer_open and _compact_tab == "scene")
-	_style_compact_active(_props_compact, _drawer_open and _compact_tab == "inspector")
-	Kit.set_icon_active(_timeline_compact, _timeline_should_show())
-	_timeline_compact.tooltip_text = "Hide timeline" if _timeline_should_show() else "Show timeline"
-	_sync_timeline_visibility()
+	_bottom_bar.set_timeline_open(_timeline_should_show())
+	_bottom_bar.set_active(BottomBarScript.ACTION_SCENE, _drawer_open and _compact_tab == "scene")
+	_bottom_bar.set_active(BottomBarScript.ACTION_PROPS, _drawer_open and _compact_tab == "inspector")
 
-func _style_compact_active(button: Button, active: bool) -> void:
-	if active:
-		button.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
-		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
-		button.add_theme_stylebox_override("normal", _compact_style(Kit.FOCUS_DARK, Kit.FOCUS * Color(1, 1, 1, 0.4)))
-		button.add_theme_stylebox_override("hover", _compact_style(Kit.FOCUS_DARK.lightened(0.04), Kit.FOCUS * Color(1, 1, 1, 0.55)))
-		button.add_theme_stylebox_override("pressed", _compact_style(Kit.FOCUS_DARK.darkened(0.06), Kit.FOCUS))
-	else:
-		button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
-		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
-		button.add_theme_stylebox_override("normal", _compact_style(Color(0, 0, 0, 0), Color(0, 0, 0, 0)))
-		button.add_theme_stylebox_override("hover", _compact_style(Kit.SURFACE_HOVER, Kit.BORDER_SOFT))
-		button.add_theme_stylebox_override("pressed", _compact_style(Kit.SURFACE_3, Kit.BORDER))
+
+func _on_bottom_action(action: String) -> void:
+	match action:
+		BottomBarScript.ACTION_ADD:
+			_open_add_sheet()
+		BottomBarScript.ACTION_SCENE:
+			_toggle_drawer("scene")
+		BottomBarScript.ACTION_PROPS:
+			_toggle_drawer("inspector")
+		BottomBarScript.ACTION_TIMELINE:
+			_toggle_timeline()
+
+
+func _on_chrome_action(action: String) -> void:
+	match action:
+		TopBarScript.ACTION_BACK:
+			request_close()
+		TopBarScript.ACTION_UNDO:
+			_undo()
+		TopBarScript.ACTION_REDO:
+			_redo()
+		TopBarScript.ACTION_SAVE:
+			_save_project(true)
+		TopBarScript.ACTION_RENDER:
+			_open_render_sheet()
+		TopBarScript.ACTION_RENDER_STILL:
+			_open_render_sheet()
+		TopBarScript.ACTION_RENDER_SEQUENCE:
+			_open_render_sheet()
+		TopBarScript.ACTION_SETTINGS:
+			_open_settings()
+		TopBarScript.ACTION_PANELS:
+			_toggle_drawer(_compact_tab)
+		TopBarScript.ACTION_TIMELINE:
+			_toggle_timeline()
+		TopBarScript.ACTION_PERFORMANCE:
+			_open_performance_overlay()
+		TopBarScript.ACTION_IMPORT:
+			_pick_model()
+		TopBarScript.ACTION_FRAME:
+			_focus_selection()
+		TopBarScript.ACTION_FRAME_ALL:
+			if _view != null:
+				_view.frame_all()
+		TopBarScript.ACTION_TOGGLE_GRID:
+			if _view != null:
+				_view.toggle_grid()
+		TopBarScript.ACTION_DUPLICATE:
+			if doc != null:
+				doc.duplicate_selected()
+		TopBarScript.ACTION_DELETE:
+			if doc != null:
+				doc.delete_selected()
+		TopBarScript.ACTION_RESET_LAYOUT:
+			set_workspace_mode("auto")
+		TopBarScript.ACTION_ABOUT:
+			_show_about()
+		TopBarScript.ACTION_SHORTCUTS:
+			_open_shortcuts_sheet()
+
 
 func _toggle_timeline() -> void:
+	_timeline_user_override = true
 	_timeline_visible = not _timeline_visible
-	if _short:
-		_short_timeline_open = _timeline_visible
+	# The sheet always opens and closes as the compact dope surface. More is
+	# session-only and belongs to one open sheet, so a reopened sheet can never
+	# inherit the full-stage graph budget.
+	_timeline_more = false
+	if _timeline != null:
+		_timeline.set_more_state(false)
+		_timeline.set_mode("dope")
 	_sync_timeline_visibility()
-	_update_compact_bar()
+	# The gesture hint belongs to the user's open action, not to boot/resize
+	# syncs. The timeline itself guarantees it only appears once.
+	if _timeline_visible and _timeline != null:
+		_timeline.show_gesture_hint_once()
+	_update_bottom_bar()
+
+
+## The timeline's explicit More control. Toggling only changes the overlay
+## budget; the document and the sheet content are untouched.
+func _on_timeline_more_requested() -> void:
+	_timeline_more = not _timeline_more
+	if _timeline != null:
+		_timeline.set_more_state(_timeline_more)
+	_sync_timeline_visibility()
+
+
+func _on_timeline_duration_row_changed(_open: bool) -> void:
+	_sync_timeline_visibility()
+
+
+## A shrink that would delete keys asks first. The timeline has already left
+## the document untouched; confirming applies the exact requested length.
+func _on_timeline_duration_confirmation(value: float, message: String) -> void:
+	var target := clampf(value, 0.25, 3600.0)
+	_overlay.confirm("Shorten the clip?", message, "Shorten", func() -> void:
+		if _timeline != null:
+			_timeline.apply_duration(target)
+	)
+
+
+func _on_timeline_close_requested() -> void:
+	# The transport stays on screen while the sheet folds, so the same control
+	# has to reopen it. Treating close as one-way left a folded timeline with
+	# no way back on Studio and Desktop.
+	_toggle_timeline()
+
 
 # -------------------------------------------------------------------------
 # Tools, editing and shortcuts
@@ -818,13 +2388,28 @@ func _select_tool(tool_id: String) -> void:
 	_tool = tool_id
 	if _view != null:
 		_view.set_tool(_tool)
-	for id in _tool_buttons:
-		var button: Button = _tool_buttons[id]
-		Kit.set_icon_active(button, str(id) == _tool)
+	if _rail != null:
+		_rail.set_tool(_tool)
 
 func _focus_selection() -> void:
 	if _view != null:
 		_view.focus_selection()
+
+func _on_view_requested(label: String) -> void:
+	if _view != null:
+		_view.set_view_preset(label)
+
+func _on_view_changed(label: String) -> void:
+	if _view_header != null:
+		_view_header.set_view_label(label)
+
+func _on_view_grid_changed(enabled: bool) -> void:
+	if _view_header != null:
+		_view_header.set_grid(enabled)
+
+func _on_view_header_grid_toggled(enabled: bool) -> void:
+	if _view != null:
+		_view.set_grid_enabled(enabled)
 
 func _undo() -> void:
 	if doc == null or not doc.can_undo():
@@ -866,7 +2451,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	match key.keycode:
 		KEY_SPACE:
 			if doc != null:
-				doc.toggle_play()
+				if doc.is_sequence_playing():
+					doc.pause_sequence()
+				else:
+					doc.toggle_play()
 			get_viewport().set_input_as_handled()
 		KEY_F:
 			_focus_selection()
@@ -898,7 +2486,7 @@ func _open_add_sheet() -> void:
 	if _drawer_open:
 		_close_drawer()
 	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 8)
+	body.add_theme_constant_override("separation", 6)
 
 	body.add_child(Kit.section_label("Geometry"))
 	var geometry := GridContainer.new()
@@ -924,23 +2512,27 @@ func _open_add_sheet() -> void:
 	scene_grid.add_child(_sheet_button("Camera", "camera", _add_camera))
 	scene_grid.add_child(_sheet_button("Key light", "sun", _add_directional_light))
 	scene_grid.add_child(_sheet_button("Omni light", "lightbulb", _add_omni_light))
+	scene_grid.add_child(_sheet_button("Rig", "bone", _add_rig))
 
 	body.add_child(Kit.vsep())
 	body.add_child(Kit.section_label("Assets"))
-	body.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
+	var asset_grid := GridContainer.new()
+	asset_grid.columns = 2
+	asset_grid.add_theme_constant_override("h_separation", 5)
+	asset_grid.add_theme_constant_override("v_separation", 5)
+	body.add_child(asset_grid)
+	asset_grid.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
+	asset_grid.add_child(_sheet_button("Audio", "audio-wave", _add_audio_entry))
+	asset_grid.add_child(_sheet_button("Video reference", "film", _add_video_reference_entry))
 
-	var hint := Kit.label("Primitives are placed on the ground at the center of the current view.", 9, Kit.TEXT_DIM)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(hint)
-
-	_overlay.show_modal("Add object", "Scene elements are independent and can be keyed immediately.", body, [
+	_overlay.show_modal("Add object", "Scene elements are independent and can be keyed immediately. Primitives are placed on the ground at the center of the current view.", body, [
 		{"text": "Close", "compact": true},
 	])
 
 func _sheet_button(text_value: String, icon_name: String, action: Callable) -> Button:
 	var button := Kit.text_button(text_value, icon_name, false, true)
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, 40)
+	button.custom_minimum_size = Vector2(44, Kit.FIELD)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.pressed.connect(func() -> void:
 		_overlay.close_modal()
@@ -987,6 +2579,67 @@ func _add_omni_light() -> void:
 	doc.add_light("omni", _spawn_point() + Vector3(1.4, 2.4, 1.2))
 	_overlay.toast("Omni light added", "lightbulb", Kit.SUCCESS)
 
+func _add_rig() -> void:
+	if doc == null:
+		return
+	doc.rig_system.create_rig("Rig", _spawn_point())
+	_overlay.toast("Rig added", "check", Kit.SUCCESS)
+	_focus_selection()
+
+func _add_audio_entry() -> void:
+	_open_media_import_sheet()
+
+func _add_video_reference_entry() -> void:
+	_open_media_import_sheet()
+
+func _open_media_import_sheet() -> void:
+	if doc == null:
+		return
+	if _drawer_open:
+		_close_drawer()
+	var sheet := MediaImportSheetScript.new()
+	sheet.setup(doc)
+	sheet.audio_import_requested.connect(_on_media_import_audio)
+	sheet.video_import_requested.connect(_on_media_import_video)
+	_overlay.show_sheet("Add media", "Audio and video references are copied into the project folder.", sheet, [
+		{"text": "Close", "compact": true},
+	])
+
+func _on_media_import_audio(uri: String) -> void:
+	if doc == null:
+		return
+	var media = doc.media_system
+	var result: Dictionary = media.import_audio(uri)
+	if not bool(result.get("ok", false)):
+		_overlay.toast(str(result.get("error", "The audio could not be imported")), "triangle-alert", Kit.DANGER)
+		return
+	var track_id: String = media.add_audio_track(str(result.get("rel_path", "")), 0.0)
+	if track_id == "":
+		_overlay.toast("The audio track could not be added", "triangle-alert", Kit.DANGER)
+		return
+	_overlay.toast("Audio track added", "check", Kit.SUCCESS)
+
+func _on_media_import_video(uri: String, options: Dictionary) -> void:
+	if doc == null:
+		return
+	var proxy: Dictionary = {
+		"fps": int(Prefs.get_value("media.proxy_fps", 12)),
+		"max_width": int(Prefs.get_value("media.proxy_max_width", 1280)),
+	}
+	for key in options:
+		proxy[key] = options[key]
+	# Sheet options already carry the proxy the user confirmed; the Prefs
+	# values above only seed the defaults for a plain import.
+	var result: Dictionary = doc.media_system.import_video_reference(uri, proxy)
+	if not bool(result.get("ok", false)):
+		_overlay.toast(str(result.get("error", "The video reference could not be imported")), "triangle-alert", Kit.DANGER)
+		return
+	var note := str(result.get("note", ""))
+	if note != "":
+		_overlay.toast(note, "info", Kit.TIME)
+	else:
+		_overlay.toast("Video reference added", "check", Kit.SUCCESS)
+
 # -------------------------------------------------------------------------
 # Import and still rendering
 # -------------------------------------------------------------------------
@@ -997,9 +2650,7 @@ func _pick_model() -> void:
 	if doc.project_dir == "":
 		_save_project(false)
 	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
-		var filters := PackedStringArray([
-			"*.glb, *.gltf, *.obj;3D models;model/gltf-binary,model/gltf+json,application/octet-stream",
-		])
+		var filters: PackedStringArray = model_picker_filters()
 		var err := DisplayServer.file_dialog_show(
 			"Import 3D model", "", "", false,
 			DisplayServer.FILE_DIALOG_MODE_OPEN_FILE, filters, _on_model_selected
@@ -1009,24 +2660,108 @@ func _pick_model() -> void:
 	else:
 		_overlay.toast("This platform has no native file picker", "triangle-alert", Kit.DANGER)
 
+
+static func model_picker_filters() -> PackedStringArray:
+	return PackedStringArray([
+		"*.glb, *.gltf, *.obj, *.fbx;3D models;model/gltf-binary,model/gltf+json,application/octet-stream",
+	])
+
+
+static func fbx_conversion_copy() -> Dictionary:
+	return {
+		"title": "FBX needs a conversion",
+		"body": "Godot's FBX importer only exists in the editor, so it cannot run on Android. Convert the model to glTF 2.0 first.",
+		"steps": [
+			"Open the model in Blender.",
+			"File → Export → glTF 2.0.",
+			"Choose glTF Binary (.glb).",
+			"Import the .glb in Kinema.",
+		],
+		"actions": [
+			{"text": "Choose another file", "primary": true},
+			{"text": "Cancel", "primary": false},
+		],
+	}
+
+
+static func rig_adopted_toast(bone_count: int) -> String:
+	return "Skeleton detected · %d bones · Pose mode is ready." % bone_count
+
+
+func _show_fbx_conversion_sheet() -> void:
+	var copy: Dictionary = fbx_conversion_copy()
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 10)
+	var paragraph := Kit.label(str(copy.get("body", "")), Kit.TYPE_BODY, Kit.TEXT)
+	paragraph.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(paragraph)
+	var steps := VBoxContainer.new()
+	steps.add_theme_constant_override("separation", 6)
+	var index := 1
+	for step in copy.get("steps", []):
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		var number := Kit.mono_label("%d" % index, Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+		number.custom_minimum_size.x = 18
+		row.add_child(number)
+		var text := Kit.label(str(step), Kit.TYPE_BODY, Kit.TEXT)
+		text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(text)
+		steps.add_child(row)
+		index += 1
+	body.add_child(steps)
+	var actions: Array = []
+	for raw in copy.get("actions", []):
+		if not raw is Dictionary:
+			continue
+		var action: Dictionary = (raw as Dictionary).duplicate(true)
+		if bool(action.get("primary", false)):
+			action["callback"] = _pick_model
+		actions.append(action)
+	_overlay.show_sheet(str(copy.get("title", "")), "", body, actions)
+
+
+func _on_rig_adopted(_object_id: String, bone_count: int) -> void:
+	if _overlay == null:
+		return
+	_overlay.toast(rig_adopted_toast(bone_count), "user-round", Kit.SUCCESS)
+
+
 func _on_model_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
 	if not status or paths.is_empty() or doc == null:
 		return
 	var uri := paths[0]
+	if uri.get_extension().to_lower() == "fbx":
+		_show_fbx_conversion_sheet()
+		return
 	var result: Dictionary = Store.import_model(uri, doc.project_dir, "Model")
 	if not bool(result.get("ok", false)):
 		_overlay.toast(str(result.get("error", "The model could not be imported")), "triangle-alert", Kit.DANGER)
 		return
 	var at := _spawn_point()
 	at.y = 0.0
-	doc.add_imported(str(result.get("rel_path", "")), str(result.get("name", "Model")), at)
+	var imported_id: String = doc.add_imported(
+		str(result.get("rel_path", "")), str(result.get("name", "Model")), at)
 	_save_project(false)
 	var warning := str(result.get("warning", ""))
 	if warning != "":
 		_overlay.toast(warning, "triangle-alert", Kit.WARNING)
 	else:
-		_overlay.toast("Imported " + str(result.get("name", "model")), "package-open", Kit.SUCCESS)
+		# Name the hierarchy the import just made discoverable: OBJ stays one
+		# mesh row, while glTF/GLB reports the real part count.
+		var parts: Array = doc.import_parts(imported_id)
+		var detail := "single mesh" if parts.is_empty() else "%d hierarchy nodes" % parts.size()
+		_overlay.toast("Imported " + str(result.get("name", "model")) + " · " + detail,
+			"package-open", Kit.SUCCESS)
 	_focus_selection()
+
+func _open_import_sheet() -> void:
+	# The import options live in the file picker flow until the dedicated
+	# import panel lands. Keeping one entry point means Settings never calls a
+	# missing method.
+	_pick_model()
+
 
 func _open_render_sheet() -> void:
 	if doc == null or _view == null:
@@ -1063,12 +2798,10 @@ func _open_render_sheet() -> void:
 	still_actions.add_theme_constant_override("separation", 8)
 	body.add_child(still_actions)
 	_render_still_button = Kit.text_button("Quick still", "camera", true, true)
-	_render_still_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_render_still_button.tooltip_text = "Capture now and save in app storage"
 	_render_still_button.pressed.connect(_quick_still)
 	still_actions.add_child(_render_still_button)
 	_render_save_button = Kit.text_button("Save still…", "download", false, true)
-	_render_save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_render_save_button.pressed.connect(_render_still)
 	still_actions.add_child(_render_save_button)
 
@@ -1105,27 +2838,39 @@ func _open_render_sheet() -> void:
 	_render_progress.step = 0.001
 	_render_progress.show_percentage = false
 	_render_progress.custom_minimum_size.y = 5
-	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, 3, Kit.BORDER_SOFT, 0))
-	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, 3, Kit.FOCUS, 0))
+	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Kit.BORDER_SOFT, 0))
+	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, Kit.R_CONTROL, Kit.FOCUS, 0))
 	progress_box.add_child(_render_progress)
 	_render_status = Kit.mono_label("", 9, Kit.TEXT_MUTED)
 	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	progress_box.add_child(_render_status)
 
-	var note := Kit.label(
-		"Captures use the live 3D renderer, including lights, shadows and materials. " +
-		"Sequences are saved as a ZIP of numbered PNG frames; MP4 encoding is not available in this build.",
-		9, Kit.TEXT_DIM
-	)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(note)
+	_media_export = MediaExportSheetScript.new()
+	_media_export.setup(doc, _view)
+	_media_export.export_requested.connect(_run_media_export)
+	_media_export.cancel_requested.connect(func() -> void: _media_cancel = true)
+	body.add_child(Kit.vsep())
+	body.add_child(Kit.section_label("Formats"))
+	var format_note := Kit.label(
+		"GIF encodes in the app. MP4 uses the Android encoder; on this platform it reports unavailable. Captures keep the reviewing renderer, IK included.",
+		9, Kit.TEXT_DIM)
+	format_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(format_note)
+	body.add_child(_media_export)
 
 	_overlay.show_modal("Render", "Real engine captures, saved as image files.", body, [
 		{"text": "Done", "primary": true},
 	])
 
+## Every capture entry point shares this guard. A still or sequence must not
+## start while another render or a media export owns the probe renderer:
+## overlapping captures would interleave their chrome suppression and their
+## progress state.
+func _capture_blocked() -> bool:
+	return _render_busy or _media_busy
+
 func _quick_still() -> void:
-	if doc == null or _view == null or _render_busy:
+	if doc == null or _view == null or _capture_blocked():
 		return
 	doc.pause()
 	_set_render_busy(true)
@@ -1139,8 +2884,568 @@ func _quick_still() -> void:
 	_save_still_internal(image)
 	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
 
+# -------------------------------------------------------------------------
+# Media export sheet (PNG sequence / GIF / MP4 / camera). The quick still and
+# quick PNG sequence actions above keep their own one-tap paths.
+# -------------------------------------------------------------------------
+
+func _run_media_export(options: Dictionary) -> void:
+	if doc == null or _view == null or _media_export == null or _capture_blocked():
+		return
+	_media_busy = true
+	_media_cancel = false
+	match str(options.get("format", "png")):
+		"png", "png_sequence":
+			await _export_png_sequence(options)
+		"gif":
+			await _export_gif(options)
+		"mp4":
+			await _export_mp4(options)
+		"camera":
+			await _export_camera(options)
+		_:
+			_export_failed("Unsupported export format: %s" % str(options.get("format", "")))
+	_media_busy = false
+
+func _export_failed(message: String) -> void:
+	if _media_export != null:
+		_media_export.set_progress("error")
+		# Errors are a status, not a result row: a result renders as
+		# "path · size · duration · tracks", which is meaningless here.
+		_media_export.clear_result()
+		_media_export.set_status(message)
+	_overlay.toast(message, "triangle-alert", Kit.DANGER)
+
+func _export_progress(kind: String) -> Callable:
+	return func(done: int, total: int) -> void:
+		if _media_export != null:
+			_media_export.set_progress(kind, done, total)
+
+func _export_cancelled() -> Callable:
+	return func() -> bool:
+		return _media_cancel
+
+func _export_png_sequence(options: Dictionary) -> void:
+	var renderer := SequenceRendererScript.new()
+	renderer.setup(doc, _view)
+	var result: Dictionary = await renderer.render(options, _export_progress("frames"), _export_cancelled())
+	var frames_dir := str(result.get("frames_dir", ""))
+	if not bool(result.get("ok", false)):
+		# A capture failure stops mid-render and returns the partial directory.
+		if frames_dir != "":
+			_clean_dir(frames_dir)
+		_export_failed(str(result.get("error", "The PNG sequence could not be rendered.")))
+		return
+	if _media_cancel:
+		if frames_dir != "":
+			_clean_dir(frames_dir)
+		_export_failed("Export cancelled.")
+		return
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = RenderExport.sequence_dir() + ".zip"
+	elif not output.ends_with(".zip"):
+		output = output.get_basename() + ".zip"
+	if not RenderExport.zip_directory(frames_dir, output):
+		_clean_dir(frames_dir)
+		_export_failed("The ZIP archive could not be written.")
+		return
+	_clean_dir(frames_dir)
+	var duration: float = float(options.get("end", doc.sequence_duration())) - float(options.get("start", 0.0))
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "%d PNG frames" % int(result.get("frame_count", 0)))
+	_overlay.toast("PNG sequence exported", "check", Kit.SUCCESS)
+
+func _export_gif(options: Dictionary) -> void:
+	var fps := maxi(1, int(options.get("fps", 24)))
+	if not GifEncoder.can_encode(fps):
+		_export_failed(GifEncoder.unsupported_reason(fps))
+		return
+	var width := int(options.get("width", GifEncoder.widths()[0]))
+	var height := GifEncoder.height_for_width(width)
+	var renderer := SequenceRendererScript.new()
+	renderer.setup(doc, _view)
+	var frame_options: Dictionary = {
+		"width": width,
+		"height": height,
+		"fps": fps,
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", doc.sequence_duration())),
+	}
+	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
+	var frames_dir := str(result.get("frames_dir", ""))
+	if not bool(result.get("ok", false)):
+		if frames_dir != "":
+			_clean_dir(frames_dir)
+		_export_failed(str(result.get("error", "The GIF frames could not be rendered.")))
+		return
+	var frames: Array = []
+	var dir := DirAccess.open(frames_dir)
+	if dir != null:
+		var names: Array = []
+		dir.list_dir_begin()
+		var file := dir.get_next()
+		while file != "":
+			if file.ends_with(".png"):
+				names.append(file)
+			file = dir.get_next()
+		dir.list_dir_end()
+		names.sort()
+		for file_name in names:
+			var image := Image.new()
+			if image.load(frames_dir.path_join(file_name)) == OK:
+				frames.append(image)
+	_clean_dir(frames_dir)
+	if _media_cancel:
+		_export_failed("Export cancelled.")
+		return
+	if frames.is_empty():
+		_export_failed("The GIF could not be encoded because no frames were captured.")
+		return
+	var bytes := GifEncoder.encode(frames, fps, true)
+	if bytes.is_empty():
+		_export_failed("The GIF encoder returned no data.")
+		return
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = "user://export.gif"
+	elif not output.ends_with(".gif"):
+		output = output.get_basename() + ".gif"
+	if not _write_gif_file(output, bytes):
+		_export_failed("The GIF file could not be written.")
+		return
+	var duration: float = float(frame_options["end"]) - float(frame_options["start"])
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "%d GIF frames" % frames.size())
+	_overlay.toast("GIF exported", "check", Kit.SUCCESS)
+
+## Pure builders for the MP4 path, so the options the renderer and the Java
+## manifest receive can be inspected without running the Android encoder.
+## `msaa` uses the Godot viewport index: 2× = 1, 4× = 2. The sheet always
+## sends it; the default keeps older callers on the previous 4× behaviour.
+static func mp4_frame_options(options: Dictionary, fallback_end: float) -> Dictionary:
+	return {
+		"width": int(options.get("width", 1280)),
+		"height": int(options.get("height", 720)),
+		"fps": int(options.get("fps", 24)),
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", fallback_end)),
+		"msaa": int(options.get("msaa", 2)),
+	}
+
+
+static func mp4_manifest_options(options: Dictionary) -> Dictionary:
+	return {
+		"width": int(options.get("width", 1920)),
+		"height": int(options.get("height", 1080)),
+		"fps": int(options.get("fps", 24)),
+		"start": float(options.get("start", 0.0)),
+		"end": float(options.get("end", 0.0)),
+		"bitrate": int(options.get("bitrate", 12000000)),
+		"audio_bitrate": int(options.get("audio_bitrate", 192000)),
+	}
+
+
+func _export_mp4(options: Dictionary) -> void:
+	var backend = AndroidVideo.new()
+	if not bool(backend.available()):
+		# Never fake MP4: report the exact backend reason on this platform.
+		_export_failed(AndroidVideo.REASON)
+		return
+	var renderer := SequenceRendererScript.new()
+	renderer.setup(doc, _view)
+	var frame_options: Dictionary = mp4_frame_options(options, doc.sequence_duration())
+	var result: Dictionary = await renderer.render(frame_options, _export_progress("frames"), _export_cancelled())
+	var frames_dir := str(result.get("frames_dir", ""))
+	if not bool(result.get("ok", false)):
+		if frames_dir != "":
+			_clean_dir(frames_dir)
+		_export_failed(str(result.get("error", "The MP4 frames could not be rendered.")))
+		return
+	var audio: Array = []
+	if bool(options.get("include_audio", true)):
+		for track in doc.media_system.audio_tracks():
+			if not bool(track.get("muted", false)):
+				audio.append(track)
+	var manifest_input: Dictionary = mp4_manifest_options(options)
+	manifest_input["project_dir"] = doc.project_dir
+	manifest_input["frame_count"] = int(result.get("frame_count", 0))
+	manifest_input["frame_dir"] = frames_dir
+	manifest_input["audio"] = audio
+	var manifest: Dictionary = backend.build_manifest(manifest_input)
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = "user://export.mp4"
+	elif not output.ends_with(".mp4"):
+		output = output.get_basename() + ".mp4"
+	if not _ensure_output_dir(output):
+		_clean_dir(frames_dir)
+		_export_failed("The MP4 output folder could not be created.")
+		return
+	var started: Dictionary = backend.encode(manifest, output)
+	if not bool(started.get("ok", false)):
+		_clean_dir(frames_dir)
+		_export_failed(str(started.get("error", AndroidVideo.REASON)))
+		return
+	var timeout_seconds := AndroidVideo.encode_timeout_seconds(int(result.get("frame_count", 0)))
+	var deadline_msec := Time.get_ticks_msec() + int(ceil(timeout_seconds * 1000.0))
+	while true:
+		var poll: Dictionary = backend.poll()
+		if _media_export != null:
+			_media_export.set_progress("encoding", int(round(float(poll.get("progress", 0.0)) * 100.0)), 100)
+		if bool(poll.get("done", false)) and str(poll.get("state", "")) == "done":
+			break
+		if bool(poll.get("done", false)) or str(poll.get("error", "")) != "":
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed(str(poll.get("error", "The MP4 encode failed.")))
+			return
+		if _media_cancel:
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed("Export cancelled.")
+			return
+		# A wedged native encoder must end the export, not leave the sheet busy.
+		if Time.get_ticks_msec() >= deadline_msec:
+			backend.cancel()
+			_clean_dir(frames_dir)
+			_export_failed("The MP4 encoder did not finish within %d s, so the export was cancelled." % int(round(timeout_seconds)))
+			return
+		await get_tree().create_timer(0.05).timeout
+	_clean_dir(frames_dir)
+	var verified: Dictionary = backend.verify(output, not audio.is_empty(), int(frame_options["fps"]), float(frame_options["end"]) - float(frame_options["start"]))
+	if not bool(verified.get("ok", false)):
+		_export_failed(str(verified.get("error", "The MP4 file could not be verified.")))
+		return
+	var duration: float = float(frame_options["end"]) - float(frame_options["start"])
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "%d audio tracks" % audio.size() if not audio.is_empty() else "no audio")
+	_overlay.toast("MP4 exported", "check", Kit.SUCCESS)
+
+func _export_camera(options: Dictionary) -> void:
+	var exporter := CameraExportScript.new()
+	exporter.setup(doc)
+	var fps := maxi(1, int(options.get("fps", 24)))
+	var duration: float = float(options.get("end", doc.sequence_duration())) - float(options.get("start", 0.0))
+	var output := str(options.get("output_path", ""))
+	if output == "":
+		output = "user://camera_track.json"
+	elif not output.ends_with(".json"):
+		output = output.get_basename() + ".json"
+	var result: Dictionary = await exporter.export(
+		output,
+		str(options.get("camera_id", "")),
+		fps,
+		duration)
+	if not bool(result.get("ok", false)):
+		_export_failed(str(result.get("error", "The camera export failed.")))
+		return
+	if _media_export != null:
+		_media_export.set_progress("done")
+		_media_export.set_result(output, _file_size(output), duration, "camera track")
+	_overlay.toast("Camera track exported", "check", Kit.SUCCESS)
+
+func _write_gif_file(path: String, bytes: PackedByteArray) -> bool:
+	if not _ensure_output_dir(path):
+		return false
+	var writer := FileAccess.open(path, FileAccess.WRITE)
+	if writer == null:
+		return false
+	writer.store_buffer(bytes)
+	writer.close()
+	return true
+
+
+## `FileAccess.open(..., WRITE)` never creates parent directories. Default
+## exports point below `user://exports`, so every writer creates its parent
+## first instead of failing the first time.
+func _ensure_output_dir(path: String) -> bool:
+	var directory := path.get_base_dir()
+	if directory == "" or directory == ".":
+		return true
+	return DirAccess.make_dir_recursive_absolute(directory) == OK
+
+
+func _clean_dir(path: String) -> void:
+	var dir := DirAccess.open(path)
+	if dir == null:
+		# The timeout and failure paths depend on this cleanup, so a silent
+		# no-op would leave a frames directory behind with no diagnostic.
+		push_warning("Kinema: could not open %s to clean it; frames may remain." % path)
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		dir.remove(name)
+		name = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(path)
+
+func _file_size(path: String) -> int:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return 0
+	var size := int(file.get_length())
+	file.close()
+	return size
+
+## Look-through is a viewing mode, not a document change. The view copies the
+## document camera; here we hide the editing header and keep the timeline,
+## transport, dock and scene tree exactly as they were.
+func _enter_look_through(camera_id: String) -> void:
+	if _view == null or _render_mode:
+		return
+	if _view.is_look_through():
+		return
+	if not _view.enter_look_through(camera_id):
+		return
+	_look_through = true
+	_look_camera_id = camera_id
+	_look_header_was_visible = _view_header != null and _view_header.visible
+	_look_perf_was_visible = _perf_overlay != null and _perf_overlay.visible
+	if _view_header != null:
+		_view_header.visible = false
+	if _perf_overlay != null:
+		_perf_overlay.visible = false
+	# The rotoscope and rig handles are workbench layers, not part of the
+	# document camera's view. The dock stays live, so the Rig tab can be opened
+	# after entry; _sync_rig_overlay() also gates on _look_through.
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(true)
+	if _rig_overlay != null:
+		_rig_overlay.set_enabled(false)
+	# The floating toolbar is a separate stage surface. Re-derive it from the
+	# look-through flag so it cannot stay tappable on the clean camera view.
+	_sync_rig_overlay()
+	_sync_view_header_visibility()
+
+## The view can leave look-through by itself (the Exit control lives inside
+## it), so the editor restores its own chrome from this one handler. Calling
+## `_exit_look_through()` therefore just asks the view to exit, and the restore
+## happens exactly once from here.
+func _on_view_look_through_exited() -> void:
+	_look_through = false
+	_look_camera_id = ""
+	if _perf_overlay != null:
+		_perf_overlay.visible = _look_perf_was_visible
+	if _view_header != null:
+		_view_header.visible = _look_header_was_visible
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(false)
+	_sync_rig_overlay()
+	_sync_view_header_visibility()
+	_apply_shell()
+
+func _exit_look_through() -> void:
+	if _view != null and _view.is_look_through():
+		_view.exit_look_through()
+		return
+	if _look_through:
+		_on_view_look_through_exited()
+
+func is_look_through() -> bool:
+	return _look_through
+
+## Quick render is the review loop: the editor becomes a live, full-quality
+## playback surface instead of showing a static capture of the current frame.
+## Nothing is captured here; the renderer keeps drawing the document in real
+## time. Saving a still or a sequence stays in the Render sheet.
+func _enter_render_mode() -> void:
+	if _render_mode or doc == null or _view == null or _render_busy:
+		return
+	if _look_through:
+		_exit_look_through()
+	if _overlay != null and _overlay.has_modal():
+		_overlay.close_modal()
+	# Render preview runs the clip clock. Stop a sequence first so its stop
+	# handler restores the clip playhead before we save it.
+	if doc.is_sequence_playing():
+		doc.pause_sequence()
+	_render_mode = true
+	_render_saved_time = doc.current_time
+	_render_was_playing = doc.is_playing
+	_capture_render_chrome()
+	if _drawer_open:
+		_close_drawer()
+	if _perf_overlay != null:
+		_perf_overlay.visible = false
+	if _overlay != null:
+		_overlay.clear_toast()
+	_set_render_chrome_hidden()
+	_view.set_render_mode(true)
+	if _render_hud != null:
+		_render_hud.visible = true
+	# A render starts at the first frame. The prior playhead is restored when
+	# the user returns to editing, so the review never loses their place.
+	doc.seek(0.0, true)
+	doc.play()
+	_sync_render_hud()
+
+
+func _exit_render_mode() -> void:
+	if not _render_mode:
+		return
+	_render_mode = false
+	if doc != null:
+		doc.pause()
+		doc.seek(_render_saved_time, true)
+		# The restore is silent, so the sequence snapshot must be told about it
+		# here; otherwise a later sequence stop rewinds to a stale clip time.
+		_clip_time_before_sequence = float(doc.current_time)
+		if _render_was_playing:
+			doc.play()
+	if _view != null:
+		_view.set_render_mode(false)
+	if _render_hud != null:
+		_render_hud.visible = false
+	_restore_render_chrome()
+	_apply_shell()
+	_sync_render_hud()
+
+
+func _toggle_render_playback() -> void:
+	if not _render_mode or doc == null:
+		return
+	if doc.is_playing:
+		doc.pause()
+	else:
+		doc.play()
+	_sync_render_hud()
+
+
+func _restart_render_playback() -> void:
+	if not _render_mode or doc == null:
+		return
+	doc.seek(0.0, true)
+	doc.play()
+	_sync_render_hud()
+
+
+func _sync_render_hud() -> void:
+	if doc == null:
+		return
+	if _render_time_label != null:
+		_render_time_label.text = doc.format_timecode(doc.current_time)
+	if _render_play_button != null:
+		var playing := doc.is_playing
+		Kit.set_icon(_render_play_button, "pause" if playing else "play")
+		_render_play_button.tooltip_text = "Pause the render preview" if playing else "Resume the render preview"
+
+
+func _on_document_playback_changed(_time: float, _playing: bool) -> void:
+	if _render_mode:
+		_sync_render_hud()
+	_sync_sequence_transport()
+	if doc == null or _restoring_clip:
+		return
+	if doc.is_sequence_playing():
+		_sequence_was_playing = true
+		return
+	if _sequence_was_playing and not _playing:
+		# Every stop path (lane pause, Space, natural end, stop_sequence) goes
+		# through here, so the clip clock always returns to its saved playhead.
+		# Do not snapshot the sequence's local time over the saved clip time.
+		_restore_clip_after_sequence()
+		return
+	# Every other non-sequence event is clip time, including while the clip
+	# plays. `play_sequence()` overwrites `current_time` without a preceding
+	# clip emit, so this snapshot must already be current when the lane takes
+	# over.
+	_clip_time_before_sequence = float(doc.current_time)
+	if _sequence_was_playing:
+		# A clip play superseded the sequence without a stop emit; drop the
+		# stale flag so the next clip pause does not rewind the new run.
+		_sequence_was_playing = false
+
+func _sync_sequence_transport() -> void:
+	if doc == null:
+		return
+	if _timeline != null:
+		# The timeline owns its disabled flag and reason; the shell only says
+		# whether the clip clock may run.
+		_timeline.set_clip_transport_enabled(not doc.is_sequence_playing())
+
+
+func _capture_render_chrome() -> void:
+	_render_ui_state = {
+		"top": _top_bar != null and _top_bar.visible,
+		"status": _status_bar != null and _status_bar.visible,
+		"bottom": _bottom_bar != null and _bottom_bar.visible,
+		"rail": _rail != null and _rail.visible,
+		"header": _view_header != null and _view_header.visible,
+		"timeline": _timeline_panel != null and _timeline_panel.visible,
+		"scene_column": _scene_column != null and _scene_column.visible,
+		"dock": _dock != null and _dock.visible,
+		"panel_rail": _panel_rail != null and _panel_rail.visible,
+		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
+		"perf": _perf_overlay != null and _perf_overlay.visible,
+		"drawer": _drawer_open,
+	}
+
+
+func _set_render_chrome_hidden() -> void:
+	if _top_bar != null:
+		_top_bar.visible = false
+	if _status_bar != null:
+		_status_bar.visible = false
+	if _bottom_bar != null:
+		_bottom_bar.visible = false
+	if _rail != null:
+		_rail.visible = false
+	if _view_header != null:
+		_view_header.visible = false
+	if _timeline_panel != null:
+		_timeline_panel.visible = false
+	if _scene_column != null:
+		_scene_column.visible = false
+	if _dock != null:
+		_dock.visible = false
+	if _panel_rail != null:
+		_panel_rail.visible = false
+	if _drawer_scrim != null:
+		_drawer_scrim.visible = false
+	# Neither overlay may draw over the review image: the rig handles and the
+	# rotoscope layer belong to the workbench, not to the render.
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(true)
+	if _rig_overlay != null:
+		_rig_overlay.set_enabled(false)
+	if _rig_toolbar != null:
+		_rig_toolbar.visible = false
+
+
+func _restore_render_chrome() -> void:
+	if _top_bar != null:
+		_top_bar.visible = bool(_render_ui_state.get("top", true))
+	if _status_bar != null:
+		_status_bar.visible = bool(_render_ui_state.get("status", false))
+	if _bottom_bar != null:
+		_bottom_bar.visible = bool(_render_ui_state.get("bottom", false))
+	if _rail != null:
+		_rail.visible = bool(_render_ui_state.get("rail", true))
+	if _view_header != null:
+		_view_header.visible = bool(_render_ui_state.get("header", true))
+	if _timeline_panel != null:
+		_timeline_panel.visible = bool(_render_ui_state.get("timeline", true))
+	if _scene_column != null:
+		_scene_column.visible = bool(_render_ui_state.get("scene_column", true))
+	if _panel_rail != null:
+		_panel_rail.visible = bool(_render_ui_state.get("panel_rail", true))
+	if _perf_overlay != null:
+		_perf_overlay.visible = bool(_render_ui_state.get("perf", false))
+	if _video_overlay != null:
+		_video_overlay.set_render_mode(false)
+	# The flyout can be open in any mode now. _apply_shell re-shows the dock
+	# and scrim together from this flag after the render preview exits.
+	_drawer_open = bool(_render_ui_state.get("drawer", false))
+	_render_ui_state.clear()
+	_sync_rig_overlay()
+
 func _render_still() -> void:
-	if doc == null or _view == null or _render_busy:
+	if doc == null or _view == null or _capture_blocked():
 		return
 	doc.pause()
 	_set_render_busy(true)
@@ -1244,7 +3549,7 @@ func _set_render_progress(value: float, text: String) -> void:
 		_render_status.text = text
 
 func _render_sequence(with_dialog: bool = true) -> void:
-	if doc == null or _view == null or _render_busy:
+	if doc == null or _view == null or _capture_blocked():
 		return
 	doc.pause()
 	_set_render_busy(true)
@@ -1355,7 +3660,7 @@ func _keep_zip_internal() -> void:
 func _menu_button(text_value: String, icon_name: String, action: Callable, danger: bool = false) -> Button:
 	var button := Kit.text_button(text_value, icon_name, false, true)
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, 38)
+	button.custom_minimum_size = Vector2(0, Kit.FIELD)
 	if danger:
 		button.add_theme_color_override("font_color", Kit.DANGER)
 		button.add_theme_color_override("icon_normal_color", Kit.DANGER)
@@ -1370,7 +3675,7 @@ func _open_project_menu() -> void:
 		return
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 3)
-	body.add_child(_menu_button("Project settings", "sliders-horizontal", _open_settings))
+	body.add_child(_menu_button("Project settings", "sliders-horizontal", _open_project_settings))
 	body.add_child(_menu_button("Graphics and performance", "gauge", _open_graphics_settings))
 	body.add_child(_menu_button("Import 3D model", "upload", _pick_model))
 	body.add_child(_menu_button("Render and export", "clapperboard", _open_render_sheet))
@@ -1384,7 +3689,7 @@ func _open_project_menu() -> void:
 	body.add_child(_menu_button("Close project", "chevron-left", request_close))
 	_overlay.show_modal("Project", doc.title, body, [{"text": "Close", "compact": true}])
 
-func _open_settings() -> void:
+func _open_project_settings() -> void:
 	if doc == null:
 		return
 	_settings_interp = doc.interpolation
@@ -1402,12 +3707,11 @@ func _open_settings() -> void:
 	_settings_fps_field = _number_row(body, "Frame rate", "FPS", 1.0, 120.0, 1.0, float(doc.fps), 40)
 
 	body.add_child(Kit.section_label("Interpolation"))
-	var modes := HBoxContainer.new()
-	modes.add_theme_constant_override("separation", 4)
-	body.add_child(modes)
+	var modes := _segment_strip(body)
 	var mode_group := ButtonGroup.new()
 	mode_group.allow_unpress = false
 	_settings_linear = Kit.text_toggle("Linear", "", true)
+	_style_segment(_settings_linear)
 	_settings_linear.button_group = mode_group
 	_settings_linear.custom_minimum_size.x = 82
 	_settings_linear.button_pressed = _settings_interp == "linear"
@@ -1418,6 +3722,7 @@ func _open_settings() -> void:
 	)
 	modes.add_child(_settings_linear)
 	_settings_cubic = Kit.text_toggle("Cubic", "", true)
+	_style_segment(_settings_cubic)
 	_settings_cubic.button_group = mode_group
 	_settings_cubic.custom_minimum_size.x = 82
 	_settings_cubic.button_pressed = _settings_interp == "cubic"
@@ -1454,7 +3759,30 @@ func _open_settings() -> void:
 		{"text": "Apply", "primary": true, "callback": apply},
 	])
 
-func _graphics_choice(parent: Control, title: String, hint: String, options: Array, current_value: Variant, on_change: Callable) -> void:
+func _segment_strip(parent: Control) -> HBoxContainer:
+	# Segmented controls sit on a quiet track. The selected segment is a
+	# lighter fill, so the group reads without a frame around every option.
+	var track := PanelContainer.new()
+	track.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	parent.add_child(track)
+	var strip := HBoxContainer.new()
+	strip.add_theme_constant_override("separation", 2)
+	track.add_child(strip)
+	return strip
+
+func _style_segment(button: Button) -> void:
+	button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_stylebox_override("hover_pressed", Kit.flat_style(Kit.SURFACE_ACTIVE.lightened(0.04), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+	button.add_theme_color_override("font_hover_color", Kit.TEXT)
+	button.add_theme_color_override("font_pressed_color", Kit.TEXT)
+	button.add_theme_color_override("font_hover_pressed_color", Kit.TEXT)
+	button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
+	button.add_theme_color_override("icon_pressed_color", Kit.TEXT)
+
+func _graphics_choice(parent: Control, title: String, hint: String, options: Array, current_value: Variant, on_change: Callable, disabled: bool = false) -> void:
 	var block := VBoxContainer.new()
 	block.add_theme_constant_override("separation", 5)
 	parent.add_child(block)
@@ -1466,21 +3794,21 @@ func _graphics_choice(parent: Control, title: String, hint: String, options: Arr
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(spacer)
 	if hint != "":
-		head.add_child(Kit.label(hint, 9, Kit.TEXT_DIM))
+		head.add_child(Kit.label(hint, 11, Kit.TEXT_DIM if disabled else Kit.TEXT_MUTED))
 	block.add_child(head)
 
-	var strip := HBoxContainer.new()
-	strip.add_theme_constant_override("separation", 3)
-	block.add_child(strip)
+	var strip := _segment_strip(block)
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
 	for option in options:
 		var data: Dictionary = option
 		var value: Variant = data.get("value")
 		var button := Kit.text_toggle(str(data.get("label", "")), "", true)
+		_style_segment(button)
 		button.button_group = group
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.button_pressed = value == current_value
+		button.disabled = disabled
 		button.toggled.connect(func(on: bool) -> void:
 			if on:
 				on_change.call(value)
@@ -1491,119 +3819,315 @@ func _graphics_choice(parent: Control, title: String, hint: String, options: Arr
 		strip.add_child(button)
 
 func _open_graphics_settings() -> void:
+	_open_settings("graphics")
+
+
+func _open_settings(category: String = "general") -> void:
 	if doc == null:
 		return
+	var panel = SettingsPanelScript.new()
+	panel.setup(self)
+	panel.renderer_restart_requested.connect(_on_settings_renderer_restart)
+	panel.orientation_requested.connect(_on_settings_orientation)
+	panel.risk_change_requested.connect(_on_settings_risk_change)
+	panel.open_render_requested.connect(_open_render_sheet)
+	panel.open_import_requested.connect(_open_import_sheet)
+	_settings_panel = panel
+	panel.open(category)
+	_show_settings_surface(panel)
+
+
+func _show_settings_surface(panel: Control) -> void:
+	if _overlay == null:
+		return
+	_overlay.show_sheet(
+		"Settings",
+		"Device preferences, graphics, performance and output.",
+		panel,
+		[{"text": "Done", "primary": true}],
+		{"width": 860.0}
+	)
+
+
+func _on_settings_renderer_restart(preference: String) -> void:
+	var result: Dictionary = Gfx.prepare_renderer_switch(preference)
+	if bool(result.get("blocked", false)):
+		if _overlay != null:
+			_overlay.toast(str(result.get("reason", "")), "triangle-alert", Kit.WARNING)
+		if _settings_panel != null and is_instance_valid(_settings_panel):
+			_settings_panel.call("sync_preset_buttons")
+		return
+	if not bool(result.get("restart_required", false)):
+		if _overlay != null:
+			_overlay.toast("%s is already running" % Gfx.renderer_label(preference), "info", Kit.TEXT_MUTED)
+		if _settings_panel != null and is_instance_valid(_settings_panel):
+			_settings_panel.call("sync_preset_buttons")
+		return
+	var args: PackedStringArray = result.get("args", PackedStringArray())
+	if args.is_empty() or DisplayServer.get_name() == "headless":
+		if _overlay != null:
+			_overlay.toast("The renderer request was stored and will apply on the next launch", "restart", Kit.WARNING)
+		return
+	if doc != null and doc.is_dirty():
+		_save_project(false, true)
+	OS.set_restart_on_exit(true, args)
+	get_tree().quit()
+
+
+func _on_settings_orientation(value: String) -> void:
+	if value == "auto":
+		if DisplayServer.has_feature(DisplayServer.FEATURE_ORIENTATION):
+			DisplayServer.screen_set_orientation(DisplayServer.SCREEN_SENSOR)
+		return
+	var host := get_parent()
+	while host != null and not host.has_method("apply_orientation"):
+		host = host.get_parent()
+	if host == null or not bool(host.call("apply_orientation", value)):
+		if _overlay != null:
+			_overlay.toast("This device does not allow apps to lock orientation", "triangle-alert", Kit.WARNING)
+
+
+func _on_settings_risk_change(enabled: bool) -> void:
+	if not Gfx.risk_supported():
+		return
+	if not enabled:
+		Gfx.disable_risk()
+		if _overlay != null:
+			_overlay.toast(RISK_RESTORED_TOAST, "check", Kit.SUCCESS)
+		_open_graphics_settings()
+		return
+	if _overlay == null:
+		return
 	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 12)
+	body.add_theme_constant_override("separation", 8)
+	var message := Kit.label(RISK_CONFIRM_BODY, Kit.TYPE_BODY, Kit.TEXT_MUTED)
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(message)
+	var actions: Array = RISK_CONFIRM_ACTIONS.duplicate(true)
+	actions[0]["callback"] = func() -> void: _open_graphics_settings()
+	actions[1]["callback"] = _confirm_risk_enable
+	_overlay.show_modal(RISK_CONFIRM_TITLE, "", body, actions)
 
-	var renderer_row := HBoxContainer.new()
-	renderer_row.add_theme_constant_override("separation", 8)
-	renderer_row.add_child(Kit.label("Renderer", 12, Kit.TEXT))
-	var renderer_spacer := Control.new()
-	renderer_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	renderer_row.add_child(renderer_spacer)
-	var renderer_text := Gfx.display_name()
-	renderer_row.add_child(Kit.mono_label(renderer_text, 9, Kit.TEXT_MUTED))
-	body.add_child(renderer_row)
 
-	var unavailable := ""
-	if not Gfx.is_forward():
-		unavailable = "Requires Forward+"
+func _confirm_risk_enable() -> void:
+	if not Gfx.risk_supported():
+		return
+	# The probe is persisted inside enable_risk() before the profile applies.
+	Gfx.enable_risk()
+	await RenderingServer.frame_post_draw
+	Gfx.confirm_risk_probe()
+	if _overlay != null:
+		_overlay.toast(RISK_ENABLED_TOAST, "check", Kit.SUCCESS)
+	_open_graphics_settings()
 
-	body.add_child(Kit.section_label("Quality preset"))
-	graphics_preset_row(body)
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Anti-aliasing"))
-	_graphics_choice(body, "Samples", "MSAA", [
+func _on_settings_pref_changed(key: String) -> void:
+	match key:
+		"editor.autosave_seconds":
+			var seconds := _autosave_seconds()
+			if _autosave != null:
+				_autosave.wait_time = maxf(0.05, seconds)
+				if seconds > 0.0:
+					_autosave.start()
+				else:
+					_autosave.stop()
+		"editor.show_fps", "performance.overlay", "performance.frame_graph", \
+		"performance.adaptive_quality", "performance.target_fps", \
+		"performance.min_preview_scale", "performance.preview_update", \
+		"performance.preview_cap", "performance.max_fps", "performance.vsync":
+			_apply_perf_preferences()
+		"editor.reduce_motion":
+			if _overlay != null and _overlay.has_method("set_reduce_motion"):
+				_overlay.set_reduce_motion(bool(Prefs.get_value("editor.reduce_motion", false)))
+		"editor.haptics":
+			if bool(Prefs.get_value("editor.haptics", false)):
+				Input.vibrate_handheld(12)
+		"editor.gizmo_size", "editor.translate_snap", "editor.rotate_snap", "editor.scale_snap":
+			_apply_transform_preferences()
+		"editor.timeline_default":
+			if _timeline != null:
+				_timeline.set_mode(str(Prefs.get_value("editor.timeline_default", "dope")))
+		"rig.show_overlay":
+			_sync_rig_overlay()
+		"display.keep_screen_on":
+			DisplayServer.screen_set_keep_on(bool(Prefs.get_value("display.keep_screen_on", true)))
+		"display.fullscreen":
+			if OS.get_name() != "Android" and OS.get_name() != "iOS":
+				var fullscreen := bool(Prefs.get_value("display.fullscreen", false))
+				DisplayServer.window_set_mode(
+					DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED
+				)
+		"display.orientation":
+			_on_settings_orientation(str(Prefs.get_value("display.orientation", "auto")))
+		_:
+			if key.ends_with(".reset"):
+				_apply_editor_preferences()
+				_apply_perf_preferences()
+				if key.begins_with("display"):
+					DisplayServer.screen_set_keep_on(bool(Prefs.get_value("display.keep_screen_on", true)))
+				if _view != null:
+					_view.queue_redraw()
+	if _view != null:
+		_view.request_preview_update()
+
+
+func _apply_editor_preferences() -> void:
+	if _timeline != null:
+		_timeline.set_mode(str(Prefs.get_value("editor.timeline_default", "dope")))
+	_apply_transform_preferences()
+	if _overlay != null and _overlay.has_method("set_reduce_motion"):
+		_overlay.set_reduce_motion(bool(Prefs.get_value("editor.reduce_motion", false)))
+
+
+func _apply_transform_preferences() -> void:
+	if _view == null:
+		return
+	if _view.has_method("set_gizmo_scale"):
+		_view.set_gizmo_scale(float(Prefs.get_value("editor.gizmo_size", 1.25)))
+	if _view.has_method("set_snap_values"):
+		_view.set_snap_values(
+			float(Prefs.get_value("editor.translate_snap", 0.25)),
+			float(Prefs.get_value("editor.rotate_snap", 15.0)),
+			float(Prefs.get_value("editor.scale_snap", 0.25))
+		)
+
+
+func _autosave_seconds() -> float:
+	return clampf(float(Prefs.get_value("editor.autosave_seconds", AUTOSAVE_SECONDS)), 0.0, 600.0)
+
+
+func _open_workspace_sheet() -> void:
+	if doc == null:
+		return
+	var sheet = WorkspaceSheetScript.new()
+	sheet.setup(self)
+	sheet.layout_selected.connect(func(mode: String) -> void:
+		set_workspace_mode(mode)
+		sheet.call_deferred("close")
+	)
+	sheet.orientation_selected.connect(_on_settings_orientation)
+	sheet.ui_scale_changed.connect(func(value: float) -> void:
+		Prefs.set_value("display.user_scale", value)
+	)
+	_workspace_sheet = sheet
+	sheet.open(
+		str(Prefs.get_value("display.layout", "auto")),
+		_fit_percent,
+		_fit_clamped
+	)
+	# A landscape phone has width to spare, so the sheet opens wide enough for
+	# two columns and the scale slider stays above the fold. Portrait keeps the
+	# single 560 dp column.
+	var sheet_width := 560.0
+	if size.y < 560.0 and size.x >= 780.0:
+		sheet_width = clampf(size.x - 120.0, 620.0, 760.0)
+	_overlay.show_sheet(
+		"Workspace",
+		"Choose an arrangement. Desktop shrinks to fit instead of falling back.",
+		sheet,
+		[{"text": "Done", "primary": true}],
+		{"width": sheet_width}
+	)
+
+
+func _graphics_antialiasing(parent: Control, unavailable: String) -> void:
+	parent.add_child(Kit.section_label("Anti-aliasing"))
+	_graphics_choice(parent, "Samples", "MSAA", [
 		{"label": "Off", "value": 0},
 		{"label": "2×", "value": 1},
 		{"label": "4×", "value": 2},
 		{"label": "8×", "value": 3},
 	], Gfx.msaa, func(value: Variant) -> void: Gfx.set_option("msaa", value))
-	_graphics_choice(body, "Temporal", unavailable, [
+	_graphics_choice(parent, "Temporal", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.taa, func(value: Variant) -> void: Gfx.set_option("taa", value))
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Lighting and surfaces"))
-	_graphics_choice(body, "Ambient occlusion", unavailable, [
+func _graphics_lighting(parent: Control, unavailable: String) -> void:
+	parent.add_child(Kit.vsep())
+	parent.add_child(Kit.section_label("Lighting and surfaces"))
+	_graphics_choice(parent, "Ambient occlusion", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.ssao, func(value: Variant) -> void: Gfx.set_option("ssao", value))
-	_graphics_choice(body, "AO quality", "", [
+	_graphics_choice(parent, "AO quality", "", [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
 		{"label": "Ultra", "value": 3},
 	], Gfx.ssao_quality, func(value: Variant) -> void: Gfx.set_option("ssao_quality", value))
-	_graphics_choice(body, "Indirect lighting", unavailable, [
+	_graphics_choice(parent, "Indirect lighting", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.ssil, func(value: Variant) -> void: Gfx.set_option("ssil", value))
-	_graphics_choice(body, "Screen-space reflections", unavailable, [
+	_graphics_choice(parent, "Screen-space reflections", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.ssr, func(value: Variant) -> void: Gfx.set_option("ssr", value))
-	_graphics_choice(body, "Glow", "", [
+	_graphics_choice(parent, "Glow", "", [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.glow, func(value: Variant) -> void: Gfx.set_option("glow", value))
-	_graphics_choice(body, "Volumetric fog", unavailable, [
+	_graphics_choice(parent, "Volumetric fog", unavailable, [
 		{"label": "Off", "value": false},
 		{"label": "On", "value": true},
 	], Gfx.volumetric_fog, func(value: Variant) -> void: Gfx.set_option("volumetric_fog", value))
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Shadows"))
-	_graphics_choice(body, "Filter quality", "", [
+func _graphics_shadows(parent: Control) -> void:
+	parent.add_child(Kit.section_label("Shadows"))
+	_graphics_choice(parent, "Filter quality", "", [
 		{"label": "Low", "value": 0},
 		{"label": "Medium", "value": 1},
 		{"label": "High", "value": 2},
 		{"label": "Ultra", "value": 3},
 	], Gfx.shadow_quality, func(value: Variant) -> void: Gfx.set_option("shadow_quality", value))
-	_graphics_choice(body, "Cascades", "sun", [
+	_graphics_choice(parent, "Cascades", "sun", [
 		{"label": "1", "value": 1},
 		{"label": "2", "value": 2},
 		{"label": "4", "value": 4},
 	], Gfx.shadow_splits, func(value: Variant) -> void: Gfx.set_option("shadow_splits", value))
-	_graphics_choice(body, "Range", "meters", [
+	_graphics_choice(parent, "Range", "meters", [
 		{"label": "25", "value": 25.0},
 		{"label": "40", "value": 40.0},
 		{"label": "60", "value": 60.0},
 		{"label": "100", "value": 100.0},
 	], Gfx.shadow_distance, func(value: Variant) -> void: Gfx.set_option("shadow_distance", value))
-	body.add_child(Kit.vsep())
 
-	body.add_child(Kit.section_label("Performance"))
-	_graphics_choice(body, "3D resolution", "%", [
+func _graphics_performance(parent: Control) -> void:
+	parent.add_child(Kit.vsep())
+	parent.add_child(Kit.section_label("Performance"))
+	_graphics_choice(parent, "3D resolution", "%", [
 		{"label": "60", "value": 0.6},
 		{"label": "80", "value": 0.8},
 		{"label": "100", "value": 1.0},
 	], Gfx.scale_3d, func(value: Variant) -> void: Gfx.set_option("scale_3d", value))
-	_graphics_choice(body, "Frame cap", "fps", [
+	_graphics_choice(parent, "Draft while editing", "interaction", [
+		{"label": "Off", "value": false},
+		{"label": "On", "value": true},
+	], Gfx.draft_editing, func(value: Variant) -> void:
+		Gfx.set_draft_editing(value)
+		if _view != null:
+			_view.set_draft_quality(value)
+	)
+	_graphics_choice(parent, "Frame cap", "fps", [
 		{"label": "30", "value": 30},
 		{"label": "60", "value": 60},
 		{"label": "90", "value": 90},
 		{"label": "120", "value": 120},
 	], Gfx.max_fps, func(value: Variant) -> void: Gfx.set_option("max_fps", value))
 
-	var note := Kit.label("Changes apply immediately and are stored on this device. Render output resolution and anti-aliasing are set in the Render sheet.", 9, Kit.TEXT_DIM)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(note)
-
-	_overlay.show_modal("Graphics and performance", "Real engine settings, not decoration.", body, [
-		{"text": "Done", "primary": true},
-	])
-
-func graphics_preset_row(parent: Control) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 3)
-	parent.add_child(row)
+func graphics_preset_row(parent: Control, reopen: bool = true) -> void:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	parent.add_child(box)
+	var grid := GridContainer.new()
+	grid.columns = 4 if size.x >= 700.0 else 2
+	grid.add_theme_constant_override("h_separation", 2)
+	grid.add_theme_constant_override("v_separation", 2)
+	box.add_child(grid)
+	_preset_buttons.clear()
 	var group := ButtonGroup.new()
 	group.allow_unpress = false
-	_preset_buttons.clear()
 	for entry in [
 		{"label": "Performance", "value": "performance"},
 		{"label": "Balanced", "value": "balanced"},
@@ -1612,6 +4136,7 @@ func graphics_preset_row(parent: Control) -> void:
 		var data: Dictionary = entry
 		var preset_name := str(data.get("value"))
 		var button := Kit.text_toggle(str(data.get("label")), "", true)
+		_style_segment(button)
 		button.button_group = group
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.set_meta("preset", preset_name)
@@ -1619,16 +4144,49 @@ func graphics_preset_row(parent: Control) -> void:
 		button.toggled.connect(func(on: bool) -> void:
 			if on:
 				Gfx.apply_preset(preset_name)
-				call_deferred("_open_graphics_settings")
+				_sync_preset_buttons()
+				if reopen:
+					call_deferred("_open_graphics_settings")
 		)
-		row.add_child(button)
+		grid.add_child(button)
 		_preset_buttons.append(button)
+
+	# Custom is a state readout, not an action. A single option edit already
+	# moves the preset there; tapping it would only pretend to do something.
+	var custom := Kit.text_toggle("Custom", "", true)
+	_style_segment(custom)
+	custom.set_meta("preset", "custom")
+	custom.button_pressed = Gfx.preset == "custom"
+	custom.disabled = true
+	custom.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(custom)
+	_preset_buttons.append(custom)
+
+	var reset := Kit.text_button("Reset to Balanced", "rotate-ccw", false, true)
+	reset.custom_minimum_size.y = 44.0
+	reset.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	reset.pressed.connect(func() -> void:
+		Gfx.apply_preset("balanced")
+		_sync_preset_buttons()
+		if reopen:
+			call_deferred("_open_graphics_settings")
+	)
+	box.add_child(reset)
+	_preset_buttons.append(reset)
+
 
 func _sync_preset_buttons() -> void:
 	for button in _preset_buttons:
 		if not is_instance_valid(button):
 			continue
-		button.set_pressed_no_signal(str(button.get_meta("preset", "")) == Gfx.preset)
+		var name := str(button.get_meta("preset", ""))
+		if name == "":
+			continue
+		button.set_pressed_no_signal(name == Gfx.preset)
+		if name == "custom":
+			button.add_theme_color_override(
+				"font_disabled_color", Kit.TEXT if name == Gfx.preset else Kit.TEXT_DIM
+			)
 
 func _number_row(parent: Control, label_text: String, badge: String, min_value: float, max_value: float, step: float, value: float, badge_width: int) -> Control:
 	var row := HBoxContainer.new()
@@ -1667,6 +4225,109 @@ func _total_keys() -> int:
 	return count
 
 # -------------------------------------------------------------------------
+# Material sheets
+# -------------------------------------------------------------------------
+
+func _open_material_sheet(target: Dictionary) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	var sheet = MaterialSheetScript.new()
+	_material_sheet = sheet
+	sheet.setup(doc, target)
+	sheet.changed.connect(_on_material_sheet_changed)
+	sheet.assigned.connect(_on_material_assigned)
+	sheet.delete_requested.connect(_confirm_delete_material)
+	_overlay.show_sheet(
+		"Materials",
+		"Assign a library material to this target.",
+		sheet,
+		[{"text": "Close", "compact": true}]
+	)
+
+
+func _open_material_editor_for_target(target: Dictionary) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	var material_id: String = doc.material_system.resolve_assignment(
+		str(target.get("object_id", "")),
+		str(target.get("part_path", "")),
+		int(target.get("surface", -1))
+	)
+	if material_id == "":
+		return
+	_open_material_editor(material_id, target)
+
+
+func _open_material_editor(material_id: String, target: Dictionary = {}) -> void:
+	if doc == null or doc.material_system == null or material_id == "":
+		return
+	var sheet = MaterialEditorSheetScript.new()
+	_material_editor_sheet = sheet
+	sheet.setup(doc, material_id)
+	sheet.set_target(target)
+	sheet.changed.connect(_on_material_sheet_changed)
+	sheet.delete_requested.connect(_confirm_delete_material)
+	sheet.color_requested.connect(_on_material_color_requested.bind(material_id))
+	_overlay.show_sheet(
+		"Material",
+		"Name, shading, maps and UVs.",
+		sheet,
+		[{"text": "Close", "compact": true}]
+	)
+
+
+func _on_material_sheet_changed(_material_id: String) -> void:
+	if _inspector != null:
+		_inspector._rebuild()
+
+
+func _on_material_assigned(_material_id: String) -> void:
+	if _overlay != null:
+		_overlay.close_modal()
+	_on_material_sheet_changed(_material_id)
+
+
+func _on_material_color_requested(property: String, current: Color, material_id: String) -> void:
+	var target_material := material_id
+	open_color_sheet(
+		{"kind": "material", "id": target_material},
+		property,
+		current,
+		func(color: Color) -> void:
+			if doc != null and doc.material_system != null:
+				doc.material_system.update_material(
+					target_material, {property: "#" + color.to_html(false)}
+				)
+	)
+
+
+func _confirm_delete_material(material_id: String) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	var record: Dictionary = doc.material_system.get_material(material_id)
+	if record.is_empty():
+		return
+	var label := str(record.get("name", "this material"))
+	_overlay.confirm(
+		"Delete material?",
+		"Delete %s? Objects keep their shapes but lose this material." % label,
+		"Delete",
+		func() -> void: _delete_material(material_id)
+	)
+
+
+func _delete_material(material_id: String) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	doc.begin_edit("Delete material")
+	var ok: bool = doc.material_system.delete_material(material_id)
+	doc.end_edit()
+	if ok:
+		_on_material_sheet_changed(material_id)
+		_overlay.toast("Material deleted", "trash-2", Kit.TEXT_MUTED)
+
+
+# -------------------------------------------------------------------------
 # Color sheet
 # -------------------------------------------------------------------------
 
@@ -1676,10 +4337,33 @@ func _open_color_sheet(property: String) -> void:
 	var obj: Dictionary = doc.get_selected_object()
 	if obj.is_empty():
 		return
+	var selected := doc.selected_id
+	var current := Color.from_string(str(obj.get(property, "#A8A8A8")), Color(0.6, 0.6, 0.6))
+	var commit := func(color: Color) -> void:
+		if property == "color":
+			doc.set_material_color(selected, color)
+		else:
+			doc.set_light_property(selected, property, "#" + color.to_html(false))
+	open_color_sheet(
+		{"kind": "light" if property != "color" else "object", "id": selected},
+		property,
+		current,
+		commit
+	)
+
+
+## One color surface for every target. The target carries the object, light or
+## material identity; `on_commit` writes the field and the caller owns the edit
+## semantics. The sheet itself owns the undo boundary for the whole change.
+func open_color_sheet(target: Dictionary, property: String, current: Color, on_commit: Callable) -> void:
+	if doc == null:
+		return
 	_color_sheet_active = true
-	_color_id = doc.selected_id
+	_color_target = target.duplicate(true)
+	_color_id = str(_color_target.get("id", ""))
 	_color_property = property
-	_color_value = Color.from_string(str(obj.get(property, "#AAB2BF")), Color(0.6, 0.6, 0.6))
+	_color_value = current
+	_color_commit = on_commit
 	doc.begin_edit("Change color")
 
 	var body := VBoxContainer.new()
@@ -1704,12 +4388,12 @@ func _open_color_sheet(property: String) -> void:
 		var color := Color.from_string(str(hex), Color.GRAY)
 		var swatch := Button.new()
 		swatch.focus_mode = Control.FOCUS_NONE
-		swatch.custom_minimum_size = Vector2(30, 28)
+		swatch.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 		swatch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		swatch.tooltip_text = str(hex)
-		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, 4, Kit.BORDER, 1))
-		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), 4, Kit.TEXT_MUTED, 1))
-		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), 4, Kit.FOCUS, 1))
+		swatch.add_theme_stylebox_override("normal", Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
+		swatch.add_theme_stylebox_override("hover", Kit.flat_style(color.lightened(0.09), Kit.R_CONTROL, Kit.TEXT_MUTED, 1))
+		swatch.add_theme_stylebox_override("pressed", Kit.flat_style(color.darkened(0.12), Kit.R_CONTROL, Kit.FOCUS, 1))
 		swatch.pressed.connect(_set_color_value.bind(color))
 		grid.add_child(swatch)
 
@@ -1735,7 +4419,7 @@ func _open_color_sheet(property: String) -> void:
 		bar.max_value = 1.0
 		bar.value = _color_value[i]
 		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		bar.fill_color = Color(0.72, 0.55, 0.38) if i == 0 else (Color(0.48, 0.63, 0.43) if i == 1 else Color(0.38, 0.53, 0.75))
+		bar.fill_color = Kit.AXIS_X if i == 0 else (Kit.AXIS_Y if i == 1 else Kit.AXIS_Z)
 		bar.value_changed.connect(_on_rgb_changed.bind(i))
 		row.add_child(bar)
 		_color_rgb.append(bar)
@@ -1744,16 +4428,20 @@ func _open_color_sheet(property: String) -> void:
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
 
-	_overlay.show_modal(
-		"Color" if _color_property == "color" else "Light color",
-		"Base color" if _color_property == "color" else "Light tint",
-		body,
-		[{"text": "Done", "primary": true}]
-	)
+	var sheet_title := "Color"
+	var sheet_subtitle := "Base color"
+	match str(_color_target.get("kind", "object")):
+		"light":
+			sheet_title = "Light color"
+			sheet_subtitle = "Light tint"
+		"material":
+			sheet_title = "Material colour"
+			sheet_subtitle = "Base colour"
+	_overlay.show_modal(sheet_title, sheet_subtitle, body, [{"text": "Done", "primary": true}])
 	_sync_color_controls()
 
 func _color_preview_style() -> StyleBoxFlat:
-	var style := Kit.flat_style(_color_value, 7, Kit.BORDER, 1)
+	var style := Kit.flat_style(_color_value, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	return style
@@ -1762,10 +4450,8 @@ func _set_color_value(color: Color) -> void:
 	if not _color_sheet_active or doc == null:
 		return
 	_color_value = Color(clampf(color.r, 0.0, 1.0), clampf(color.g, 0.0, 1.0), clampf(color.b, 0.0, 1.0), 1.0)
-	if _color_property == "color":
-		doc.set_material_color(_color_id, _color_value)
-	else:
-		doc.set_light_property(_color_id, _color_property, "#" + _color_value.to_html(false))
+	if _color_commit.is_valid():
+		_color_commit.call(_color_value)
 	_sync_color_controls()
 
 func _sync_color_controls() -> void:
@@ -1773,7 +4459,7 @@ func _sync_color_controls() -> void:
 		_color_preview.add_theme_stylebox_override("panel", _color_preview_style())
 	if _color_preview_label != null:
 		var luminance := _color_value.r * 0.299 + _color_value.g * 0.587 + _color_value.b * 0.114
-		_color_preview_label.add_theme_color_override("font_color", Color(0.05, 0.06, 0.07) if luminance > 0.58 else Color(0.93, 0.94, 0.95))
+		_color_preview_label.add_theme_color_override("font_color", Color(0.03, 0.03, 0.03) if luminance > 0.58 else Color(0.94, 0.94, 0.94))
 		_color_preview_label.text = "#" + _color_value.to_html(false).to_upper()
 	_color_updating = true
 	for i in range(mini(3, _color_rgb.size())):
@@ -1803,12 +4489,24 @@ func _on_hex_focus_lost() -> void:
 	if _color_hex != null:
 		_on_hex_submitted(_color_hex.text)
 
+func _on_modal_opened() -> void:
+	# A modal dims the workbench, so its floating HUD must not peek above the
+	# surface. The 3D scene remains visible through the scrim.
+	if _view != null:
+		_view.set_hud_visible(false)
+	_sync_view_header_visibility()
+
 func _on_modal_closed() -> void:
+	if _view != null and not _render_mode and not _look_through:
+		_view.set_hud_visible(true)
+	_sync_view_header_visibility()
 	if not _color_sheet_active:
 		return
 	_color_sheet_active = false
 	if doc != null and is_instance_valid(doc):
 		doc.end_edit()
+	_color_commit = Callable()
+	_color_target.clear()
 	_color_preview = null
 	_color_preview_label = null
 	_color_hex = null
@@ -1885,7 +4583,7 @@ func _show_about() -> void:
 	var limits := Kit.label("Import: glTF/GLB and OBJ. Binary FBX must be converted to GLB or OBJ first because Godot's FBX importer is editor-only. On Android, SAF may prevent an OBJ from reading sibling MTL/texture files.", 9, Kit.TEXT_DIM)
 	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(limits)
-	var licenses := Kit.label("Engine: Godot (MIT). Fonts: Inter and JetBrains Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
+	var licenses := Kit.label("Engine: Godot (MIT). Fonts: IBM Plex Sans and IBM Plex Mono (SIL OFL). Icons: Lucide (ISC). Full notices are bundled with this build.", 9, Kit.TEXT_DIM)
 	licenses.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(licenses)
 	_overlay.show_modal("About Kinema", "A quiet tool for motion.", body, [

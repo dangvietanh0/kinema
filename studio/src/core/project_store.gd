@@ -12,6 +12,8 @@ const ROOT := "user://projects"
 const RECENT_FILE := "user://recent_projects.json"
 const PROJECT_FILE := "project.json"
 const MAX_RECENTS := 12
+const GLTF_MISSING := "This .gltf references files that are not next to it. Move the .gltf, its .bin and its textures into one folder, or export a .glb."
+const GLTF_ESCAPE := "This .gltf references a file outside its folder. Export it as a .glb or keep every file in one folder."
 
 var _recents: Array = []
 
@@ -161,7 +163,9 @@ func import_model(uri: String, project_dir: String, fallback_name: String = "Mod
 		}
 	if kind == "obj":
 		return _import_obj(uri, bytes, project_dir, fallback_name)
-	if kind != "glb" and kind != "gltf":
+	if kind == "gltf":
+		return _import_gltf(uri, bytes, project_dir, fallback_name)
+	if kind != "glb":
 		return {"ok": false, "error": "Kinema imports glTF (.glb/.gltf) and Wavefront OBJ (.obj) models."}
 
 	var base_name := _display_name_for(uri, fallback_name)
@@ -216,7 +220,105 @@ func import_model(uri: String, project_dir: String, fallback_name: String = "Mod
 		"extension": extension,
 	}
 
-# Wavefront OBJ is not importable through ResourceLoader in an exported build,
+# -------------------------------------------------------------------------
+# glTF with external buffers and textures
+# -------------------------------------------------------------------------
+
+func _import_gltf(uri: String, bytes: PackedByteArray, project_dir: String, fallback_name: String) -> Dictionary:
+	var parse_error := {
+		"ok": false,
+		"error": "The model could not be parsed. If this is a .gltf with external buffers or textures, export it as a .glb and try again.",
+	}
+	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	if not parsed is Dictionary:
+		return parse_error
+	var references := _gltf_references(parsed as Dictionary, uri.get_base_dir())
+	if str(references.get("error", "")) != "":
+		return {"ok": false, "error": str(references["error"])}
+	var external: Array = references.get("files", [])
+	for reference in external:
+		if not _file_readable(str(reference.get("source", ""))):
+			return {"ok": false, "error": GLTF_MISSING}
+
+	# Validate from the source folder so relative .bin and image URIs resolve.
+	var gltf := GLTFDocument.new()
+	var state := GLTFState.new()
+	var node: Node = null
+	if gltf.append_from_buffer(bytes, uri, state) == OK:
+		node = gltf.generate_scene(state)
+	if node == null:
+		return parse_error
+	node.free()
+
+	var models_dir := project_dir.path_join("models")
+	DirAccess.make_dir_recursive_absolute(models_dir)
+	var base_name := _display_name_for(uri, fallback_name)
+	var folder_name := _unique_dir_name(models_dir, _safe_slug(base_name, "model"))
+	var folder := models_dir.path_join(folder_name)
+	if DirAccess.make_dir_recursive_absolute(folder) != OK:
+		return {"ok": false, "error": "Kinema could not create a folder for this model."}
+
+	var file_name := _safe_file_name(_uri_file_name(uri), _safe_slug(base_name, "model") + ".gltf")
+	if file_name.get_extension().to_lower() != "gltf":
+		file_name += ".gltf"
+	if not _write_bytes(folder.path_join(file_name), bytes):
+		_remove_dir_recursive(folder)
+		return {"ok": false, "error": "Kinema could not copy the model into this project."}
+
+	for reference in external:
+		var relative := str(reference.get("relative", ""))
+		var target := folder.path_join(relative).simplify_path()
+		if target != folder.simplify_path() and not target.begins_with(folder.simplify_path() + "/"):
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": GLTF_ESCAPE}
+		DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+		var source := str(reference.get("source", ""))
+		if not _file_readable(source):
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": GLTF_MISSING}
+		if not _write_bytes(target, _read_uri_bytes(source)):
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "Kinema could not copy the model into this project."}
+
+	return {
+		"ok": true,
+		"rel_path": "models".path_join(folder_name).path_join(file_name),
+		"name": base_name,
+		"extension": "gltf",
+	}
+
+
+func _gltf_references(data: Dictionary, source_dir: String) -> Dictionary:
+	var files: Array = []
+	var seen: Dictionary = {}
+	for group in ["buffers", "images"]:
+		for entry in data.get(group, []):
+			if not entry is Dictionary:
+				continue
+			var raw := str((entry as Dictionary).get("uri", "")).strip_edges()
+			if raw == "" or raw.begins_with("data:"):
+				continue
+			var clean := raw.replace("\\", "/")
+			if clean.contains("://") or clean.is_absolute_path() or clean.begins_with("/") \
+					or (clean.length() > 1 and clean[1] == ":"):
+				return {"error": GLTF_ESCAPE}
+			var simplified := clean.uri_decode().simplify_path()
+			if simplified == ".." or simplified.begins_with("../"):
+				return {"error": GLTF_ESCAPE}
+			if seen.has(simplified):
+				continue
+			seen[simplified] = true
+			files.append({
+				"relative": simplified,
+				"source": source_dir.path_join(simplified),
+			})
+	return {"files": files}
+
+
+# -------------------------------------------------------------------------
+# Wavefront OBJ
+# -------------------------------------------------------------------------
+# OBJ is not importable through ResourceLoader in an exported build,
 # because Godot's OBJ importer exists only in the editor. The runtime parser in
 # obj_importer.gd reads the mesh; this function copies the OBJ, its MTL files
 # and diffuse textures into the project and rewrites the relative references so
@@ -484,6 +586,73 @@ func _write_bytes(path: String, bytes: PackedByteArray) -> bool:
 	var error := file.get_error()
 	file.close()
 	return error == OK
+
+# -------------------------------------------------------------------------
+# Imported textures
+# -------------------------------------------------------------------------
+
+func import_texture(uri: String, project_dir: String, fallback_name: String = "Texture") -> Dictionary:
+	if project_dir == "":
+		return {"ok": false, "error": "No destination project is open."}
+	var extension := uri.get_extension().to_lower()
+	if not ["png", "jpg", "jpeg", "webp"].has(extension):
+		return {"ok": false, "error": "Kinema imports PNG, JPEG and WebP textures."}
+	var image: Image = Image.load_from_file(uri)
+	if image == null or image.is_empty():
+		return {"ok": false, "error": "This image could not be read."}
+
+	var textures_dir := project_dir.path_join("textures")
+	DirAccess.make_dir_recursive_absolute(textures_dir)
+	var slug := _safe_slug(fallback_name, "texture")
+	var folder_name := _unique_dir_name(textures_dir, slug)
+	var folder := textures_dir.path_join(folder_name)
+	if DirAccess.make_dir_recursive_absolute(folder) != OK:
+		return {"ok": false, "error": "Kinema could not create a folder for this texture."}
+
+	var width := image.get_width()
+	var height := image.get_height()
+	var largest := maxi(width, height)
+	var stored_width := width
+	var stored_height := height
+	var resized_from := ""
+	var destination := ""
+
+	if largest <= 4096:
+		var original := _safe_file_name(_uri_file_name(uri), folder_name + "." + extension)
+		if original.get_extension().to_lower() == "":
+			original += "." + extension
+		var bytes := _read_uri_bytes(uri)
+		if bytes.is_empty():
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "This image could not be read."}
+		destination = folder.path_join(original)
+		if not _write_bytes(destination, bytes):
+			if FileAccess.file_exists(destination):
+				DirAccess.remove_absolute(destination)
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "Kinema could not copy the texture into this project."}
+	else:
+		var factor := 4096.0 / float(largest)
+		stored_width = maxi(1, int(round(float(width) * factor)))
+		stored_height = maxi(1, int(round(float(height) * factor)))
+		var stored: Image = image.duplicate()
+		stored.resize(stored_width, stored_height, Image.INTERPOLATE_BILINEAR)
+		destination = folder.path_join(folder_name + ".png")
+		var save_error := stored.save_png(destination)
+		if save_error != OK or not FileAccess.file_exists(destination):
+			if FileAccess.file_exists(destination):
+				DirAccess.remove_absolute(destination)
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "Kinema could not save the resized texture."}
+		resized_from = "%dx%d" % [width, height]
+
+	return {
+		"ok": true,
+		"rel_path": "textures/" + folder_name + "/" + destination.get_file(),
+		"width": stored_width,
+		"height": stored_height,
+		"resized_from": resized_from,
+	}
 
 # -------------------------------------------------------------------------
 # Recent list and filesystem helpers

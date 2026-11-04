@@ -191,7 +191,7 @@ func _load_mtl(relative: String) -> bool:
 				if current != "":
 					_materials[current] = pending
 				current = line.substr(6).strip_edges()
-				pending = {"albedo": Color(0.72, 0.73, 0.76), "roughness": 0.55, "alpha": 1.0}
+				pending = {"albedo": Color(0.72, 0.72, 0.72), "roughness": 0.55, "alpha": 1.0}
 			"Kd":
 				if parts.size() >= 4:
 					pending["albedo"] = Color(_f(parts[1]), _f(parts[2]), _f(parts[3]))
@@ -235,7 +235,7 @@ func _resolve_texture(value: String, base_dir: String) -> String:
 func _material_for(name: String) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	var data: Dictionary = _materials.get(name, {})
-	material.albedo_color = data.get("albedo", Color(0.72, 0.73, 0.76))
+	material.albedo_color = data.get("albedo", Color(0.72, 0.72, 0.72))
 	material.roughness = float(data.get("roughness", 0.55))
 	material.metallic = 0.0
 	material.metallic_specular = float(data.get("specular", 0.4))

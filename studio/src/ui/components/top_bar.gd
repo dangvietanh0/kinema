@@ -1,0 +1,439 @@
+extends PanelContainer
+## The workbench header.
+##
+## Three arrangements share one set of actions:
+##   compact  48 dp - back, title, undo/redo, overflow.
+##   studio   44 dp - back, title, undo/redo, render, settings, overflow.
+##   desktop  36 dp - a real menu bar, a centred document title, undo/redo and
+##                    the editor actions. The 36 dp row is a mouse target; every
+##                    action that a finger reaches keeps a 44 dp target.
+##
+## The bar only reports intent. The editor owns every action.
+
+signal action_requested(action: String)
+signal layout_requested
+
+const ACTION_BACK := "back"
+const ACTION_UNDO := "undo"
+const ACTION_REDO := "redo"
+const ACTION_SAVE := "save"
+const ACTION_RENDER := "render"
+const ACTION_SETTINGS := "settings"
+const ACTION_PERFORMANCE := "performance"
+const ACTION_IMPORT := "import"
+const ACTION_FRAME := "frame"
+const ACTION_DUPLICATE := "duplicate"
+const ACTION_DELETE := "delete"
+const ACTION_KEYS := "keys"
+const ACTION_FRAME_ALL := "frame_all"
+const ACTION_TOGGLE_GRID := "toggle_grid"
+const ACTION_RENDER_STILL := "render_still"
+const ACTION_RENDER_SEQUENCE := "render_sequence"
+const ACTION_RESET_LAYOUT := "reset_layout"
+const ACTION_TIMELINE := "timeline"
+const ACTION_PANELS := "panels"
+const ACTION_ABOUT := "about"
+const ACTION_SHORTCUTS := "shortcuts"
+
+const MENUS := [
+	{
+		"label": "Kinema",
+		"items": [
+			{"id": ACTION_ABOUT, "text": "About Kinema"},
+			{"id": ACTION_SHORTCUTS, "text": "Keyboard shortcuts"},
+		],
+	},
+	{
+		"label": "Project",
+		"items": [
+			{"id": ACTION_SAVE, "text": "Save", "shortcut": "Ctrl+S"},
+			{"id": ACTION_IMPORT, "text": "Import model"},
+			{"id": ACTION_BACK, "text": "Close project"},
+		],
+	},
+	{
+		"label": "Edit",
+		"items": [
+			{"id": ACTION_UNDO, "text": "Undo", "shortcut": "Ctrl+Z"},
+			{"id": ACTION_REDO, "text": "Redo", "shortcut": "Ctrl+Y"},
+			{"id": ACTION_DUPLICATE, "text": "Duplicate"},
+			{"id": ACTION_DELETE, "text": "Delete"},
+		],
+	},
+	{
+		"label": "View",
+		"items": [
+			{"id": ACTION_FRAME, "text": "Frame selection", "shortcut": "F"},
+			{"id": ACTION_FRAME_ALL, "text": "Frame all"},
+			{"id": ACTION_TOGGLE_GRID, "text": "Toggle grid"},
+			{"id": ACTION_RESET_LAYOUT, "text": "Fit interface to screen"},
+		],
+	},
+	{
+		"label": "Render",
+		"items": [
+			{"id": ACTION_RENDER, "text": "Render settings"},
+			{"id": ACTION_RENDER_STILL, "text": "Quick still"},
+			{"id": ACTION_RENDER_SEQUENCE, "text": "PNG sequence"},
+		],
+	},
+	{
+		"label": "Help",
+		"items": [
+			{"id": ACTION_PERFORMANCE, "text": "Performance"},
+			{"id": ACTION_SETTINGS, "text": "Settings"},
+		],
+	},
+]
+
+var _mode := "studio"
+var _row: HBoxContainer
+var _title_box: VBoxContainer
+var _title_label: Label
+var _subtitle_label: Label
+var _dirty_dot: ColorRect
+var _center_title_host: CenterContainer
+var _center_title_label: Label
+var _center_subtitle_label: Label
+var _center_dirty_dot: ColorRect
+var _undo_button: Button
+var _redo_button: Button
+var _back_button: Button
+var _menu_button: Button
+var _settings_button: Button
+var _render_button: Button
+var _panels_button: Button
+var _fit_label: Label
+var _menu_bar: HBoxContainer
+var _overflow: PopupMenu
+var _can_undo := false
+var _can_redo := false
+## Width the editor actually reserved for the header. The bar's own size may
+## already be widened by its minimum, so the arrangement is decided from this.
+var _available_width := -1.0
+
+## The full studio strip needs 399 dp: back, title, history, render, settings,
+## the dock toggle and the overflow, all at 44 dp. On a narrower canvas the
+## render and settings buttons join the overflow menu instead of hanging off
+## the edge.
+const STUDIO_FULL_WIDTH := 400.0
+
+
+func _ready() -> void:
+	add_theme_constant_override("separation", 0)
+	_build()
+	_apply_mode()
+
+
+func _build() -> void:
+	_row = HBoxContainer.new()
+	_row.add_theme_constant_override("separation", 4)
+	add_child(_row)
+
+	_back_button = Kit.icon_button("chevron-left", "Back to projects")
+	_back_button.pressed.connect(func() -> void: action_requested.emit(ACTION_BACK))
+	_row.add_child(_back_button)
+
+	_menu_bar = HBoxContainer.new()
+	_menu_bar.add_theme_constant_override("separation", 0)
+	_row.add_child(_menu_bar)
+
+	_overflow = PopupMenu.new()
+	_overflow.add_theme_font_override("font", Kit.font_regular)
+	_overflow.id_pressed.connect(_emit_menu_id)
+	add_child(_overflow)
+
+	for menu in MENUS:
+		var button := Kit.text_toggle(str(menu["label"]), "", false)
+		button.add_theme_font_override("font", Kit.font_medium)
+		Kit.exempt_from_hit_floor(button)
+		button.pressed.connect(_open_menu.bind(button, menu))
+		_menu_bar.add_child(button)
+
+	var title_box := VBoxContainer.new()
+	_title_box = title_box
+	title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	title_box.add_theme_constant_override("separation", 0)
+	title_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_row.add_child(title_box)
+
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation", 6)
+	title_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_box.add_child(title_row)
+
+	_title_label = Kit.label("Untitled", 13, Kit.TEXT, 600)
+	_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_title_label.clip_text = true
+	_title_label.custom_minimum_size.x = 40
+	title_row.add_child(_title_label)
+
+	_dirty_dot = ColorRect.new()
+	_dirty_dot.color = Color(0, 0, 0, 0)
+	_dirty_dot.custom_minimum_size = Vector2(5, 5)
+	_dirty_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_dirty_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_row.add_child(_dirty_dot)
+
+	_subtitle_label = Kit.mono_label("", 10, Kit.TEXT_DIM)
+	_subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_subtitle_label.clip_text = true
+	title_box.add_child(_subtitle_label)
+
+	_undo_button = Kit.icon_button("undo-2", "Undo")
+	_undo_button.disabled = true
+	_undo_button.pressed.connect(func() -> void: action_requested.emit(ACTION_UNDO))
+	_row.add_child(_undo_button)
+
+	_redo_button = Kit.icon_button("redo-2", "Redo")
+	_redo_button.disabled = true
+	_redo_button.pressed.connect(func() -> void: action_requested.emit(ACTION_REDO))
+	_row.add_child(_redo_button)
+
+	# Desktop gets a genuinely centred document title. The row title is still
+	# used by compact and studio; this overlay is pointer-transparent so the
+	# menu and actions underneath keep their full hit areas.
+	_center_title_host = CenterContainer.new()
+	_center_title_host.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_center_title_host.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_center_title_host.visible = false
+	add_child(_center_title_host)
+	var center_box := VBoxContainer.new()
+	center_box.custom_minimum_size.x = 300
+	center_box.add_theme_constant_override("separation", 0)
+	center_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_center_title_host.add_child(center_box)
+	var center_row := HBoxContainer.new()
+	center_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	center_row.add_theme_constant_override("separation", 6)
+	center_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_box.add_child(center_row)
+	_center_title_label = Kit.label("Untitled", 13, Kit.TEXT, 600)
+	_center_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_center_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_center_title_label.clip_text = true
+	_center_title_label.custom_minimum_size.x = 300
+	_center_title_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_row.add_child(_center_title_label)
+	_center_dirty_dot = ColorRect.new()
+	_center_dirty_dot.color = Color(0, 0, 0, 0)
+	_center_dirty_dot.custom_minimum_size = Vector2(5, 5)
+	_center_dirty_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_center_dirty_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_row.add_child(_center_dirty_dot)
+	_center_subtitle_label = Kit.mono_label("", 10, Kit.TEXT_DIM)
+	_center_subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_center_subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_center_subtitle_label.clip_text = true
+	_center_subtitle_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_box.add_child(_center_subtitle_label)
+
+	_fit_label = Kit.mono_label("", 10, Kit.TEXT_DIM)
+	_fit_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_fit_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	Kit.bind_tap(_fit_label, func() -> void: layout_requested.emit())
+	_fit_label.tooltip_text = "Interface fit · choose a workspace"
+	_row.add_child(_fit_label)
+
+	_render_button = Kit.icon_button("clapperboard", "Render and export")
+	_render_button.pressed.connect(func() -> void: action_requested.emit(ACTION_RENDER))
+	_row.add_child(_render_button)
+
+	_settings_button = Kit.icon_button("settings", "Settings")
+	_settings_button.pressed.connect(func() -> void: action_requested.emit(ACTION_SETTINGS))
+	_row.add_child(_settings_button)
+
+	# Studio on a narrow portrait screen cannot afford a 280 dp dock beside the
+	# viewport. The dock becomes an overlay drawer there and this button is the
+	# explicit way to open it. It stays hidden on wide Studio and in Compact,
+	# where the bottom bar already owns Scene and Properties.
+	_panels_button = Kit.icon_button("panel-right", "Show scene and properties")
+	_panels_button.pressed.connect(func() -> void: action_requested.emit(ACTION_PANELS))
+	_panels_button.visible = false
+	_row.add_child(_panels_button)
+
+	_menu_button = Kit.icon_button("ellipsis-vertical", "More actions")
+	_menu_button.pressed.connect(_open_overflow)
+	_row.add_child(_menu_button)
+
+
+func set_mode(mode: String) -> void:
+	_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
+	_apply_mode()
+
+
+## The editor reserves the canvas width for the header; the bar must not infer
+## its own available width from a size its own minimum has already forced.
+func set_available_width(value: float) -> void:
+	if is_equal_approx(_available_width, value):
+		return
+	_available_width = value
+	_apply_mode()
+
+
+func mode() -> String:
+	return _mode
+
+
+func set_project(title: String, dirty: bool, saved: bool) -> void:
+	var clean := title if title != "" else "Untitled"
+	var status := ("Unsaved edits" if dirty else "Saved") if saved else ""
+	_title_label.text = clean
+	_dirty_dot.color = Kit.TEXT if dirty else Color(0, 0, 0, 0)
+	_subtitle_label.text = status
+	_center_title_label.text = clean
+	_center_dirty_dot.color = Kit.TEXT if dirty else Color(0, 0, 0, 0)
+	_center_subtitle_label.text = status
+
+
+func set_fit(percent: float, small: bool) -> void:
+	if percent >= 99.5:
+		_fit_label.text = ""
+		return
+	_fit_label.text = "Fit %d%%" % int(round(percent))
+	_fit_label.add_theme_color_override("font_color", Kit.TEXT if small else Kit.TEXT_DIM)
+
+
+## The editor owns the dock policy, so it decides when the toggle is relevant.
+func set_panels_button_visible(on: bool) -> void:
+	if _panels_button != null:
+		_panels_button.visible = on and _mode == "studio"
+
+
+func set_panels_open(open: bool) -> void:
+	if _panels_button == null:
+		return
+	_panels_button.tooltip_text = "Hide scene and properties" if open else "Show scene and properties"
+	_panels_button.add_theme_color_override(
+		"icon_normal_color", Kit.FOCUS_BRIGHT if open else Kit.TEXT_MUTED
+	)
+	_panels_button.add_theme_color_override("icon_hover_color", Kit.TEXT)
+	_panels_button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
+
+
+func set_history(can_undo: bool, can_redo: bool) -> void:
+	_can_undo = can_undo
+	_can_redo = can_redo
+	_undo_button.disabled = not can_undo
+	_redo_button.disabled = not can_redo
+
+
+func _apply_mode() -> void:
+	var height := 48.0
+	var icon_size := 20
+	match _mode:
+		"compact":
+			height = 48.0
+		"studio":
+			height = 44.0
+		"desktop":
+			height = 36.0
+			icon_size = 18
+	custom_minimum_size.y = height
+	var desktop := _mode == "desktop"
+	# Desktop is a mouse surface with a 36 dp menu bar. Touch modes keep the
+	# full 44 dp target, even when that leaves the icon visually small.
+	for menu_button in _menu_bar.get_children():
+		if menu_button is Button:
+			menu_button.custom_minimum_size.y = 32 if desktop else Kit.Tokens.HIT
+			menu_button.add_theme_font_size_override("font_size", 11 if desktop else Kit.TYPE_BODY)
+
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 6
+	style.content_margin_right = 6
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	add_theme_stylebox_override("panel", style)
+	_menu_bar.visible = _mode == "desktop"
+	_back_button.visible = _mode != "desktop"
+	_subtitle_label.visible = _mode != "compact" and not desktop
+	_fit_label.visible = _mode == "desktop"
+	# Desktop centres the title in its own overlay and leaves the row title
+	# empty as an expanding spacer; compact and studio keep the inline title.
+	_title_box.visible = true
+	_title_label.visible = not desktop
+	_dirty_dot.visible = not desktop
+	_center_title_host.visible = desktop
+	# Compact is a phone header, not a toolbar: back, title/dirty and one
+	# overflow. Undo, redo, save, render and settings live in that menu.
+	# A narrow Studio canvas keeps history and the dock toggle but sends render
+	# and settings to the overflow too, so the strip never exceeds the canvas.
+	var measured := size.x
+	if _available_width > 0.0:
+		measured = minf(measured, _available_width)
+	var narrow_studio := _mode == "studio" and measured > 0.0 and measured < STUDIO_FULL_WIDTH
+	_undo_button.visible = _mode != "compact"
+	_redo_button.visible = _mode != "compact"
+	_settings_button.visible = _mode != "compact" and not narrow_studio
+	if _render_button != null:
+		_render_button.visible = _mode != "compact" and not narrow_studio
+	# Visibility is editor-driven: only a narrow Studio needs the dock toggle.
+	_panels_button.visible = false
+	# Desktop is a mouse surface: the 36 dp bar may use 36 dp targets there.
+	# Every touch arrangement keeps 44 dp, which is why the list below is
+	# resized by mode rather than fixed at construction time.
+	for button in [_back_button, _undo_button, _redo_button, _render_button, _settings_button, _panels_button, _menu_button]:
+		if button == null:
+			continue
+		if desktop:
+			button.custom_minimum_size = Vector2(36, 36)
+			button.add_theme_constant_override("icon_max_width", 18)
+			# Desktop is a mouse surface: the 36 dp bar is exempt from the
+			# 44 dp touch-floor sweep, exactly like the menu-bar labels.
+			Kit.exempt_from_hit_floor(button)
+		else:
+			button.custom_minimum_size = Vector2(44, 44)
+			button.add_theme_constant_override("icon_max_width", icon_size)
+
+
+func _open_menu(button: Control, menu: Dictionary) -> void:
+	_overflow.clear()
+	for item in menu["items"]:
+		var entry: Dictionary = item
+		var label := str(entry["text"])
+		if entry.has("shortcut"):
+			label += "    " + str(entry["shortcut"])
+		_overflow.add_item(label)
+		_overflow.set_item_metadata(_overflow.get_item_count() - 1, str(entry["id"]))
+	var rect := button.get_global_rect()
+	_overflow.position = Vector2i(int(rect.position.x), int(rect.position.y + rect.size.y))
+	_overflow.popup()
+
+
+func _emit_menu_id(id: int) -> void:
+	var index := _overflow.get_item_index(id)
+	if index < 0:
+		return
+	var action := str(_overflow.get_item_metadata(index))
+	if action != "":
+		action_requested.emit(action)
+
+
+func _open_overflow() -> void:
+	_overflow.clear()
+	var actions := [
+		{"id": ACTION_UNDO, "text": "Undo", "disabled": not _can_undo},
+		{"id": ACTION_REDO, "text": "Redo", "disabled": not _can_redo},
+		{"id": ACTION_SAVE, "text": "Save"},
+		{"id": ACTION_RENDER, "text": "Render and export"},
+		{"id": ACTION_RENDER_STILL, "text": "Quick still"},
+		{"id": ACTION_IMPORT, "text": "Import model"},
+		{"id": ACTION_PERFORMANCE, "text": "Performance"},
+		{"id": ACTION_SETTINGS, "text": "Settings"},
+		{"id": ACTION_TIMELINE, "text": "Show or hide timeline"},
+		{"id": ACTION_FRAME_ALL, "text": "Frame all"},
+	]
+	if _mode == "desktop":
+		actions.push_front({"id": ACTION_RESET_LAYOUT, "text": "Fit interface to screen"})
+	for action in actions:
+		var entry: Dictionary = action
+		_overflow.add_item(str(entry["text"]))
+		var index := _overflow.get_item_count() - 1
+		_overflow.set_item_metadata(index, str(entry["id"]))
+		if bool(entry.get("disabled", false)):
+			_overflow.set_item_disabled(index, true)
+	var rect := _menu_button.get_global_rect()
+	_overflow.position = Vector2i(int(rect.position.x), int(rect.position.y + rect.size.y))
+	_overflow.popup()

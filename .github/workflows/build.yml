@@ -135,7 +135,7 @@ jobs:
           head -20 badging.txt
           grep -F "package: name='studio.kinema.app'" badging.txt
           unzip -l Kinema-Studio-0.1.0-arm64-debug.apk | grep -E \
-            'assets/project\.godot|assets/src/app/main\.tscn|assets/assets/fonts/Inter\.ttf|assets/assets/licenses/godot/COPYRIGHT\.txt|lib/arm64-v8a/libgodot_android\.so'
+            'assets/project\.godot|assets/src/app/main\.tscn|assets/assets/fonts/IBMPlexSans-Regular\.ttf|assets/assets/licenses/godot/COPYRIGHT\.txt|lib/arm64-v8a/libgodot_android\.so'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
