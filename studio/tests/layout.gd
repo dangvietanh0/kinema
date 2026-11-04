@@ -24,6 +24,7 @@ const SIZES := [
 ]
 const MODES := ["compact", "studio", "desktop"]
 const LayoutMath = preload("res://src/app/layout_math.gd")
+const TimelineScript = preload("res://src/ui/timeline.gd")
 const HIT_FLOOR := 43.5
 const PROJECT_TITLE := "Layout Matrix"
 const SCENE_PANEL_MIN := 480.0
@@ -304,7 +305,9 @@ func _ready() -> void:
 	# Contract: min(208, max(104, stage * 0.34)). The 104 dp floor binds below
 	# ~306 dp (transport 56 + 48 dp sheet floor); the 208 dp cap binds above
 	# ~612 dp. The stage-96 cap can only bind under the 104 floor and therefore
-	# never wins at these independent heights.
+	# never wins at these independent heights. More keeps the wave-2 contract
+	# min(260, max(104, stage * 0.46)); graph mode instead gives the sheet the
+	# stage share min(300, stage), because the user explicitly asked for it.
 	_check(absf(editor._timeline_overlay_budget(1000.0) - 208.0) < 0.5,
 		"stage 1000 hits the 208 dp cap")
 	_check(absf(editor._timeline_overlay_budget(500.0) - 170.0) < 0.5,
@@ -356,13 +359,14 @@ func _ready() -> void:
 	editor._sync_timeline_visibility()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	var graph_budget := dope_budget
-	_check(editor._timeline_panel.size.y <= graph_budget + 0.5,
-		"the graph overlay shares the same 42 percent cap")
+	_check(editor._timeline_panel.size.y <= minf(300.0, overlay_stage_h) + 0.5,
+		"the graph overlay uses its own min(300, stage) budget")
 	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
 		"the open graph overlay still leaves a visible stage")
 	editor._timeline.set_mode("dope")
 	editor._timeline_visible = false
+	editor._timeline_more = false
+	editor._timeline.set_more_state(false)
 	editor._sync_timeline_visibility()
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -452,6 +456,86 @@ func _ready() -> void:
 			"915x412 keeps key-step inside the transport width")
 		editor._on_timeline_more_requested()
 		await get_tree().process_frame
+	# The graph is its own session budget: entering it is an explicit action, so
+	# it may take the stage share up to 300 dp while dope keeps wave-2's
+	# 34 percent / 208 dp. At 915x412 the plot must reach 120 dp, not a sliver.
+	print("LAYOUT STEP: compact speed graph budget")
+	editor._timeline.set_mode("dope")
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	editor._timeline.set_mode("graph")
+	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var graph_stage: float = short_host.size.y
+	var graph_budget := minf(300.0, maxf(104.0, graph_stage))
+	_check(editor._timeline_more, "entering graph mode turns More on")
+	_check(absf(editor._timeline_overlay_budget(graph_stage) - graph_budget) < 0.5,
+		"the graph budget is min(300, stage)")
+	_check(editor._timeline_panel.size.y <= minf(300.0, graph_stage) + 0.5,
+		"the graph overlay stays inside the 300 dp stage cap")
+	_check(editor._timeline_panel.size.y >= graph_budget - 0.5,
+		"the graph overlay gives the sheet the stage share")
+	_check(not editor._clip_lane.visible and not editor._media_lanes.visible,
+		"graph mode hides the clip lane and media lanes")
+	var graph_lane_scroll = editor.get("_lane_scroll")
+	_check(graph_lane_scroll == null or (not graph_lane_scroll.visible and graph_lane_scroll.custom_minimum_size.y <= 0.5),
+		"graph mode excludes the lane stack from the budget")
+	_check(editor._timeline.graph_plot_rect().size.y >= 120.0,
+		"915x412 graph reaches the 120 dp plot floor")
+	_check(editor._timeline._header_folded,
+		"the compact graph uses the folded header")
+	_check_hit_targets(editor._timeline, "studio", "915x412 compact graph")
+	# Returning to dope keeps More on and hands the lanes back.
+	editor._timeline.set_mode("dope")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._timeline_more, "returning to dope leaves More on")
+	var dope_more := minf(260.0, maxf(104.0, graph_stage * 0.46))
+	_check(absf(editor._timeline_overlay_budget(graph_stage) - dope_more) < 0.5,
+		"dope More uses the 46 percent / 260 dp budget")
+	_check(editor._clip_lane.visible and editor._media_lanes.visible,
+		"dope makes the clip and media lanes eligible again")
+	# A stage too short for a 120 dp plot states the honest reason instead of
+	# drawing a miniature curve.
+	var short_timeline = TimelineScript.new()
+	add_child(short_timeline)
+	await get_tree().process_frame
+	var short_transport_host := Control.new()
+	add_child(short_transport_host)
+	short_timeline.mount_transport(short_transport_host)
+	short_timeline.size = Vector2(600.0, 144.0)
+	short_timeline.set_sheet_visible(true)
+	short_timeline.set_header_folded(true)
+	short_timeline.set_short_layout(true)
+	short_timeline.set_mode("graph")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(short_timeline.graph_plot_rect().size.y < 120.0,
+		"a 200 dp stage cannot afford the 120 dp graph plot")
+	_check(short_timeline.graph_caption() == "Rotate or open the timeline workspace for curve editing",
+		"the short graph draws the exact workspace caption")
+	_check(editor._timeline_overlay_budget(200.0) <= 200.0 + 0.5,
+		"a 200 dp stage caps the graph budget at the stage")
+	short_timeline.queue_free()
+	short_transport_host.queue_free()
+	await get_tree().process_frame
+	# Closing and reopening resets the session state for later layout checks.
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	editor._toggle_timeline()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._timeline.mode() == "dope", "reopening resets the timeline to dope")
+	_check(not editor._timeline_more, "reopening resets More to off")
+	_check(absf(editor._timeline_overlay_budget(graph_stage) -
+		minf(208.0, maxf(104.0, graph_stage * 0.34))) < 0.5,
+		"reopening restores the 34 percent / 208 dp dope budget")
+	# The gesture hint belongs to the next real user open, not to this reset
+	# check; put the one-time flag back so the following block still proves it.
+	editor._timeline._hint_seen = false
+	editor._timeline._dismiss_gesture_hint()
 	# The gesture hint lives on the sheet surface, survives the folded compact
 	# header, and only appears on the user's open path. Reopening does not
 	# repeat it.

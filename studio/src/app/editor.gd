@@ -1685,6 +1685,10 @@ func _stage_height() -> float:
 func _timeline_overlay_budget(stage_height: float) -> float:
 	if not _timeline_should_show():
 		return FOLDED_TIMELINE
+	# Graph mode is an explicit request, so the sheet gets the stage share
+	# (capped at 300 dp) instead of the dope sheet's quick-edit budget.
+	if _timeline != null and _timeline.mode() == "graph":
+		return minf(300.0, maxf(104.0, stage_height))
 	var ratio := 0.46 if _timeline_more else 0.34
 	var cap := 260.0 if _timeline_more else 208.0
 	return minf(cap, maxf(104.0, stage_height * ratio))
@@ -1736,6 +1740,22 @@ func _sync_timeline_visibility() -> void:
 		return
 
 	var budget := _timeline_overlay_budget(_stage_height())
+	if _timeline.mode() == "graph":
+		# The compact graph owns the sheet's stage share. Clips and media fold
+		# whole and are excluded from the budget so the plot can reach 120 dp.
+		_timeline.set_header_folded(true)
+		if _media_lanes != null:
+			_media_lanes.fit_height(-1.0)
+			_media_lanes.visible = false
+		if _clip_lane != null:
+			_clip_lane.visible = false
+		if _lane_scroll != null:
+			_lane_scroll.visible = false
+			_lane_scroll.custom_minimum_size.y = 0.0
+		_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
+		_set_timeline_overlay_height(budget)
+		_sync_nav_gizmo_inset(budget)
+		return
 	# Resolve content in the binding fold order: the media lanes fold first
 	# (their body is capped inside a scrollable shell, so the header stays
 	# reachable), then the clip lane folds, then the sheet shrinks. The
@@ -1834,7 +1854,13 @@ func _sync_timeline_visibility() -> void:
 	_set_timeline_overlay_height(budget)
 	_sync_nav_gizmo_inset(budget)
 
-func _on_timeline_mode_changed(_mode: String) -> void:
+func _on_timeline_mode_changed(mode: String) -> void:
+	# Entering graph mode is the explicit request that raises the session
+	# budget. Returning to dope keeps More on; closing the sheet resets both.
+	if mode == "graph":
+		_timeline_more = true
+		if _timeline != null:
+			_timeline.set_more_state(true)
 	_sync_timeline_visibility()
 
 func _on_media_lanes_collapsed_changed(_collapsed: bool) -> void:
@@ -2018,11 +2044,13 @@ func _on_chrome_action(action: String) -> void:
 func _toggle_timeline() -> void:
 	_timeline_user_override = true
 	_timeline_visible = not _timeline_visible
-	# More is session-only and belongs to one open sheet: every close/reopen
-	# returns to the compact default.
+	# The sheet always opens and closes as the compact dope surface. More is
+	# session-only and belongs to one open sheet, so a reopened sheet can never
+	# inherit the full-stage graph budget.
 	_timeline_more = false
 	if _timeline != null:
 		_timeline.set_more_state(false)
+		_timeline.set_mode("dope")
 	_sync_timeline_visibility()
 	# The gesture hint belongs to the user's open action, not to boot/resize
 	# syncs. The timeline itself guarantees it only appears once.
