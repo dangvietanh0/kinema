@@ -68,6 +68,11 @@ const WORKSPACE_HEADER_H := 56.0
 const WORKSPACE_FOOTER_H := 56.0
 const WORKSPACE_GUTTER := 8.0
 const WORKSPACE_LEFT_RATIO := 0.52
+## The narrow SpeedGraph header needs about 392 dp: Presets collapses to a
+## 44 dp curve icon below 420 dp, but the rest of the row stays 44 dp. When
+## the 52 percent split would starve that row at the 720 dp minimum, the left
+## column yields down to 45 percent instead of letting the graph overflow.
+const WORKSPACE_GRAPH_MIN := 392.0
 const WORKSPACE_RESIZE_REASON := "The timeline workspace needs at least 720 × 360 dp."
 const WORKSPACE_DISABLED_REASON := "Landscape workspace needs at least 720 × 360 dp"
 ## The scene panel is persistent on Studio and Desktop once the shell can hold
@@ -643,8 +648,11 @@ func _layout_timeline_workspace() -> void:
 	if width <= 1.0:
 		return
 	var available := maxf(0.0, width - WORKSPACE_GUTTER)
-	_workspace_left.custom_minimum_size.x = floorf(available * WORKSPACE_LEFT_RATIO)
-	_workspace_right.custom_minimum_size.x = floorf(available * (1.0 - WORKSPACE_LEFT_RATIO))
+	var ratio := WORKSPACE_LEFT_RATIO
+	if available > 0.0 and available * (1.0 - ratio) < WORKSPACE_GRAPH_MIN:
+		ratio = clampf(1.0 - WORKSPACE_GRAPH_MIN / available, 0.45, WORKSPACE_LEFT_RATIO)
+	_workspace_left.custom_minimum_size.x = floorf(available * ratio)
+	_workspace_right.custom_minimum_size.x = floorf(available * (1.0 - ratio))
 
 
 func _active_clip_name() -> String:
