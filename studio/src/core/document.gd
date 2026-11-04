@@ -24,6 +24,7 @@ signal media_changed
 signal rigs_changed
 signal rig_selection_changed(rig_id: String, bone: String)
 signal imported_scene_ready(object_id: String, node: Node)
+signal rig_adopted(object_id: String, bone_count: int)
 signal object_spawned(object_id: String, node: Node)
 ## Emitted when the selected import part changes. An empty id/path pair means
 ## the part highlight was cleared; the import root stays selected either way.

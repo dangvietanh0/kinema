@@ -14,6 +14,7 @@ const BoneTreeScript = preload("res://src/ui/bone_tree.gd")
 const PosePanelScript = preload("res://src/ui/pose_panel.gd")
 const IkPanelScript = preload("res://src/ui/ik_panel.gd")
 const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
+const EditorAppScript = preload("res://src/app/editor.gd")
 
 const CAPTURE_DIR := "/tmp/opencode/wave2-rig-captures"
 
@@ -67,6 +68,7 @@ func _ready() -> void:
 	await _test_pose_and_bone_keys()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
+	await _test_fbx_and_adoption()
 	await _test_ui()
 	await _test_overlay()
 	await _test_overlay_hit_transform()
@@ -989,6 +991,147 @@ func _find_mesh_instance(node: Node) -> MeshInstance3D:
 		if found != null:
 			return found
 	return null
+
+
+# -------------------------------------------------------------------------
+# C2d — FBX guidance and skeleton adoption notice
+# -------------------------------------------------------------------------
+
+func _test_fbx_and_adoption() -> void:
+	print("RIG STEP: FBX and adoption notice")
+	var copy: Dictionary = EditorAppScript.fbx_conversion_copy()
+	_check(str(copy.get("title", "")) == "FBX needs a conversion", "the FBX sheet title is exact")
+	_check(str(copy.get("body", "")) == "Godot's FBX importer only exists in the editor, so it cannot run on Android. Convert the model to glTF 2.0 first.", "the FBX sheet body is exact")
+	var steps: Array = copy.get("steps", [])
+	_check(steps == [
+		"Open the model in Blender.",
+		"File → Export → glTF 2.0.",
+		"Choose glTF Binary (.glb).",
+		"Import the .glb in Kinema.",
+	], "the FBX sheet lists the four conversion steps")
+	var actions: Array = copy.get("actions", [])
+	_check(actions.size() == 2, "the FBX sheet has two actions")
+	if actions.size() == 2:
+		_check(str((actions[0] as Dictionary).get("text", "")) == "Choose another file" and bool((actions[0] as Dictionary).get("primary", false)), "Choose another file is the primary FBX action")
+		_check(str((actions[1] as Dictionary).get("text", "")) == "Cancel" and not bool((actions[1] as Dictionary).get("primary", true)), "Cancel closes the FBX sheet")
+
+	var filters: PackedStringArray = EditorAppScript.model_picker_filters()
+	var joined := " ".join(filters)
+	_check(joined.contains("*.fbx"), "the model picker offers .fbx for the conversion sheet")
+	_check(joined.contains("*.glb") and joined.contains("*.gltf") and joined.contains("*.obj"), "the model picker keeps glTF and OBJ")
+
+	var fbx_path := _tmp_dir.path_join("x.fbx")
+	_write_bytes(fbx_path, "Kaydara FBX Binary  \n".to_utf8_buffer())
+	var fbx: Dictionary = Store.import_model(fbx_path, _tmp_dir, "Fbx")
+	_check(not bool(fbx.get("ok", true)), "Store.import_model still refuses FBX")
+	_check(str(fbx.get("error", "")) == "FBX needs an editor-side importer that Godot only ships in the editor. Export the model as GLB or OBJ instead.", "the FBX refusal keeps its existing reason")
+
+	_check(EditorAppScript.rig_adopted_toast(7) == "Skeleton detected · 7 bones · Pose mode is ready.", "the adoption toast copy is exact")
+
+	# Fixtures are exported with the engine's own writer so the test exercises
+	# a real imported skeleton, not a hand-built scene.
+	var fixture_dir := _tmp_dir.path_join("fixtures")
+	_rmrf(fixture_dir)
+	DirAccess.make_dir_recursive_absolute(fixture_dir)
+
+	var skinned_scene := _skinned_fixture_scene()
+	var skinned_path := fixture_dir.path_join("skinned.glb")
+	_check(_write_scene_fixture(skinned_path, skinned_scene), "the skinned GLB fixture is written")
+	var skinned: Dictionary = Store.import_model(skinned_path, _tmp_dir, "Skinned")
+	_check(bool(skinned.get("ok", false)), "the skinned GLB fixture imports")
+
+	var doc := _new_doc("Adoption Notice")
+	var emissions: Array = []
+	doc.rig_adopted.connect(func(object_id: String, bone_count: int) -> void:
+		emissions.append({"id": object_id, "bones": bone_count}))
+	var skinned_id: String = doc.add_imported(str(skinned.get("rel_path", "")), "Skinned")
+	_check(emissions.size() == 1, "importing a skinned GLB emits rig_adopted once")
+	if emissions.size() == 1:
+		_check(str((emissions[0] as Dictionary).get("id", "")) == skinned_id, "the adoption signal names the imported object")
+		_check(int((emissions[0] as Dictionary).get("bones", 0)) == 2, "the adoption signal reports the real bone count")
+
+	var data: Dictionary = doc.to_data()
+	var loaded := _new_doc("Adoption Reload")
+	var reload_emissions := [0]
+	loaded.rig_adopted.connect(func(_object_id: String, _bone_count: int) -> void:
+		reload_emissions[0] += 1)
+	loaded.load_project(data, _tmp_dir)
+	_check(int(reload_emissions[0]) == 0, "loading a saved project does not emit rig_adopted")
+	_check(not loaded.rig_system.get_rig(skinned_id).is_empty(), "the loaded project keeps the adopted rig")
+
+	var armature_scene := _skinned_fixture_scene()
+	var armature_path := fixture_dir.path_join("armature.gltf")
+	_check(_write_scene_fixture(armature_path, armature_scene), "the armature-only glTF fixture is written")
+	_strip_mesh_from_gltf(armature_path)
+	var armature: Dictionary = Store.import_model(armature_path, _tmp_dir, "Armature")
+	_check(bool(armature.get("ok", false)), "the armature-only glTF fixture imports")
+	var armature_emissions: Array = []
+	doc.rig_adopted.connect(func(_object_id: String, bone_count: int) -> void:
+		armature_emissions.append(bone_count))
+	doc.add_imported(str(armature.get("rel_path", "")), "Armature")
+	_check(armature_emissions == [2], "an armature-only glTF emits rig_adopted once with its bone count")
+
+	var mesh_only_path := fixture_dir.path_join("plain.glb")
+	_write_bytes(mesh_only_path, _glb_bytes(_gltf_glb_json()))
+	var plain: Dictionary = Store.import_model(mesh_only_path, _tmp_dir, "Plain")
+	_check(bool(plain.get("ok", false)), "the mesh-only fixture imports")
+	var plain_emissions := [0]
+	doc.rig_adopted.connect(func(_object_id: String, _bone_count: int) -> void:
+		plain_emissions[0] += 1)
+	doc.add_imported(str(plain.get("rel_path", "")), "Plain")
+	_check(int(plain_emissions[0]) == 0, "an import with no skeleton emits nothing")
+
+	doc.queue_free()
+	loaded.queue_free()
+
+
+func _skinned_fixture_scene() -> Node3D:
+	var root := Node3D.new()
+	root.name = "SkinnedFixture"
+	var skeleton := _fixture_skeleton()
+	root.add_child(skeleton)
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Body"
+	mesh.mesh = BoxMesh.new()
+	root.add_child(mesh)
+	mesh.skin = skeleton.create_skin_from_rest_transforms()
+	mesh.skeleton = mesh.get_path_to(skeleton)
+	return root
+
+
+func _strip_mesh_from_gltf(path: String) -> void:
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not parsed is Dictionary:
+		return
+	var data: Dictionary = parsed
+	for key in ["meshes", "materials", "textures", "images", "samplers"]:
+		data.erase(key)
+	for node in data.get("nodes", []):
+		if node is Dictionary:
+			(node as Dictionary).erase("mesh")
+	_write_bytes(path, JSON.stringify(data).to_utf8_buffer())
+
+
+func _fixture_skeleton() -> Skeleton3D:
+	var skeleton := Skeleton3D.new()
+	skeleton.name = "Skeleton3D"
+	skeleton.add_bone("Hip")
+	skeleton.set_bone_rest(0, Transform3D(Basis.IDENTITY, Vector3.ZERO))
+	skeleton.add_bone("Knee")
+	skeleton.set_bone_parent(1, 0)
+	skeleton.set_bone_rest(1, Transform3D(Basis.IDENTITY, Vector3(0, 0.8, 0)))
+	skeleton.reset_bone_poses()
+	return skeleton
+
+
+func _write_scene_fixture(path: String, scene: Node) -> bool:
+	var gltf := GLTFDocument.new()
+	var state := GLTFState.new()
+	var err := gltf.append_from_scene(scene, state)
+	if err == OK:
+		err = gltf.write_to_filesystem(state, path)
+	scene.free()
+	return err == OK
 
 
 # -------------------------------------------------------------------------

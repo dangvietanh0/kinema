@@ -1532,6 +1532,8 @@ func adopt_imported_skeleton(object_id: String, node: Node) -> bool:
 	_rigs.append(rig)
 	_active_rig = object_id
 	_emit_rigs()
+	if _document != null and _document.has_signal("rig_adopted"):
+		_document.rig_adopted.emit(object_id, bones.size())
 	return true
 
 
