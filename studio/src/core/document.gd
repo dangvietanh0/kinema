@@ -46,13 +46,14 @@ const SpeedCurve = preload("res://src/core/speed_curve.gd")
 const AnimationSystemScript = preload("res://src/core/animation_system.gd")
 const MediaSystemScript = preload("res://src/core/media_system.gd")
 const RigSystemScript = preload("res://src/core/rig_system.gd")
+const MaterialSystemScript = preload("res://src/core/material_system.gd")
 const TRACK_TYPES := {
 	"position": Animation.TYPE_POSITION_3D,
 	"rotation": Animation.TYPE_ROTATION_3D,
 	"scale": Animation.TYPE_SCALE_3D,
 }
 const ANIMATION_NAME := "Take 01"
-const FORMAT_VERSION := 2
+const FORMAT_VERSION := 3
 
 var project_id := ""
 var project_dir := ""
@@ -79,6 +80,7 @@ var markers_hidden := false
 var animation_system
 var media_system
 var rig_system
+var material_system
 
 var _dirty := false
 var _edit_snapshot: Dictionary = {}
@@ -97,8 +99,11 @@ func _init() -> void:
 	media_system.setup(self)
 	rig_system = RigSystemScript.new()
 	rig_system.setup(self)
+	material_system = MaterialSystemScript.new()
+	material_system.setup(self)
 	imported_scene_ready.connect(animation_system.on_imported_scene)
 	imported_scene_ready.connect(rig_system.adopt_imported_skeleton)
+	imported_scene_ready.connect(_on_imported_scene_materials)
 
 func _ready() -> void:
 	process_priority = 100
@@ -236,6 +241,7 @@ func to_data() -> Dictionary:
 	var anim_data: Dictionary = animation_system.to_data() if animation_system != null else {}
 	var rig_data: Dictionary = rig_system.to_data() if rig_system != null else {}
 	var media_data: Dictionary = media_system.to_data() if media_system != null else {}
+	var material_data: Dictionary = material_system.to_data() if material_system != null else {}
 	var clips: Array = anim_data.get("clips", [])
 	var data := {
 		"format": FORMAT_VERSION,
@@ -255,6 +261,7 @@ func to_data() -> Dictionary:
 		"layers": anim_data.get("layers", []),
 		"rigs": rig_data.get("rigs", []),
 		"media": media_data.get("media", {}),
+		"materials": material_data.get("materials", []),
 	}
 	if anim_data.has("active_clip"):
 		data["active_clip"] = anim_data["active_clip"]
@@ -284,6 +291,10 @@ func _apply_data(data: Dictionary) -> void:
 	selected_part_object_id = str(data.get("selected_part_object_id", ""))
 	selected_part_path = str(data.get("selected_part_path", ""))
 	_next_id = 1
+	# Materials must exist before objects spawn so the first frame resolves
+	# every assignment instead of flashing legacy colours.
+	if material_system != null:
+		material_system.load_data(data)
 
 	objects.clear()
 	var raw_objects: Array = data.get("objects", [])
@@ -342,7 +353,24 @@ func _normalize_object(raw: Dictionary) -> Dictionary:
 	obj["camera_fov"] = float(raw.get("camera_fov", 45.0))
 	obj["model"] = str(raw.get("model", ""))
 	obj["part_visibility"] = _normalize_part_visibility(raw.get("part_visibility", {}))
+	obj["material_id"] = str(raw.get("material_id", "")) if raw.get("material_id", "") is String else ""
+	obj["part_materials"] = _normalize_assignment_map(raw.get("part_materials", {}))
+	obj["part_surface_materials"] = _normalize_assignment_map(raw.get("part_surface_materials", {}))
 	return obj
+
+
+func _normalize_assignment_map(raw: Variant) -> Dictionary:
+	var result := {}
+	if not (raw is Dictionary):
+		return result
+	for key in raw.keys():
+		if not (key is String):
+			continue
+		var value: Variant = raw[key]
+		if not (value is String) or str(value) == "":
+			continue
+		result[str(key)] = str(value)
+	return result
 
 
 func _normalize_part_visibility(raw: Variant) -> Dictionary:
@@ -380,6 +408,9 @@ func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 		"camera_fov": 45.0,
 		"model": "",
 		"part_visibility": {},
+		"material_id": "",
+		"part_materials": {},
+		"part_surface_materials": {},
 	}
 
 func _build_blank() -> void:
@@ -489,6 +520,8 @@ func _clear_runtime() -> void:
 		media_system.reset()
 	if rig_system != null:
 		rig_system.reset()
+	if material_system != null:
+		material_system.reset()
 	for child in get_children():
 		remove_child(child)
 		child.queue_free()
@@ -543,6 +576,8 @@ func _spawn_object(obj: Dictionary) -> void:
 		_sync_sun_sky_mode()
 	if rig_system != null:
 		rig_system.on_object_spawned(obj, node)
+	if material_system != null:
+		material_system.apply_object(id)
 	object_spawned.emit(id, node)
 
 func _spawn_refresh(id: String) -> void:
@@ -1037,6 +1072,16 @@ func _add_light_data(p_name: String, kind: String, at: Vector3, rotation_euler: 
 	if notify:
 		scene_changed.emit()
 	return obj
+
+func _on_imported_scene_materials(object_id: String, node: Node) -> void:
+	# Import-only. Load and undo spawn objects without emitting this signal, so
+	# adoption can never duplicate the library on a project open.
+	if material_system == null or node == null:
+		return
+	var obj := get_object(object_id)
+	var model_name := str(obj.get("name", "Model"))
+	material_system.adopt_import(object_id, node, model_name)
+
 
 func add_imported(model_rel_path: String, p_name: String, at: Vector3 = Vector3.ZERO) -> String:
 	begin_edit("Import model")

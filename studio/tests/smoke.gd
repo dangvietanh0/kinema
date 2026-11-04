@@ -294,9 +294,9 @@ func _ready() -> void:
 	if doc.rig_system != null:
 		_check(doc.rig_system._document == doc, "rig subsystem is owned by the document")
 	var contract_data: Dictionary = doc.to_data()
-	_check(int(contract_data.get("format", 0)) == 2, "documents serialize as format 2")
-	for key in ["clips", "layers", "rigs", "media"]:
-		_check(contract_data.has(key), "format 2 carries %s" % key)
+	_check(int(contract_data.get("format", 0)) == 3, "documents serialize as format 3")
+	for key in ["clips", "layers", "rigs", "media", "materials"]:
+		_check(contract_data.has(key), "format 3 carries %s" % key)
 	_check(is_equal_approx(doc.sequence_duration(), doc.duration), "sequence duration falls back to the active clip")
 	_check(is_equal_approx(doc.sequence_time(), doc.current_time), "sequence time falls back to the clip time")
 	_check(not doc.is_sequence_playing(), "sequence is stopped by default")
@@ -782,6 +782,65 @@ func _ready() -> void:
 	_check(swatch_checked, "the colour sheet exposes a control-edged swatch")
 	editor._overlay.close_modal(true)
 	await get_tree().process_frame
+
+	print("SMOKE STEP: material sheets")
+	var smoke_target_id: String = doc.selected_id
+	var smoke_material: String = doc.material_system.create_material("Smoke Paint", "matte")
+	editor._open_material_sheet({"object_id": smoke_target_id, "part_path": "", "surface": -1})
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "the material library sheet opens")
+	var library_sheet = editor._material_sheet
+	_check(library_sheet != null and library_sheet.row_count() > 0,
+		"the material library lists real records")
+	_check(library_sheet.row_height(smoke_material) >= 44.0, "a material row is 44 dp tall")
+	_check(library_sheet.assign_button(smoke_material).custom_minimum_size.y >= 44.0,
+		"Assign is 44 dp tall")
+	library_sheet.assign_material(smoke_material)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not editor._overlay.has_modal(), "Assign closes the library sheet")
+	_check(str(doc.get_object(smoke_target_id).get("material_id", "")) == smoke_material,
+		"Assign writes the sheet target")
+
+	editor._open_material_editor(smoke_material, {"object_id": smoke_target_id, "part_path": "", "surface": -1})
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "the material editor sheet opens")
+	var editor_sheet = editor._material_editor_sheet
+	_check(editor_sheet != null \
+		and editor_sheet.texture_filter() == "*.png, *.jpg, *.jpeg, *.webp;Images",
+		"the editor sheet carries the texture filter")
+	for model in ["pbr", "unlit", "toon", "rim"]:
+		_check(editor_sheet.shading_button(model).custom_minimum_size.y >= 44.0,
+			"the %s segment is 44 dp tall" % model)
+	editor._overlay.close_modal(true)
+	await get_tree().process_frame
+
+	var color_capture: Dictionary = {}
+	editor.open_color_sheet(
+		{"kind": "material", "id": smoke_material},
+		"albedo_color",
+		Color(0.2, 0.4, 0.6),
+		func(color: Color) -> void: color_capture["color"] = color
+	)
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "the generalized colour sheet opens")
+	editor._set_color_value(Color(0.12, 0.34, 0.56))
+	_check((color_capture.get("color", Color.BLACK) as Color).is_equal_approx(Color(0.12, 0.34, 0.56)),
+		"the generalized colour sheet commits through the callback")
+	editor._overlay.close_modal(true)
+	await get_tree().process_frame
+	editor._open_color_sheet("color")
+	for _i in 4:
+		await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "the object colour caller still opens")
+	editor._overlay.close_modal(true)
+	await get_tree().process_frame
+	doc.material_system.delete_material(smoke_material)
+	await get_tree().process_frame
+
 	var view_before: float = editor._view.size.x
 	editor._toggle_drawer("inspector")
 	for _i in 4:
@@ -3151,8 +3210,10 @@ func _button_with_text(root: Node, text_value: String) -> Button:
 	return null
 
 func _finish() -> void:
+	var status := "PASS" if _failures.is_empty() else "FAIL"
 	if _failures.is_empty():
 		print("SMOKE RESULT: PASS")
 	else:
 		printerr("SMOKE RESULT: %d FAILURE(S)" % _failures.size())
+	print("SUITE RESULT: " + status)
 	get_tree().quit(0 if _failures.is_empty() else 1)

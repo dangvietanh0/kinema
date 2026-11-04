@@ -588,6 +588,73 @@ func _write_bytes(path: String, bytes: PackedByteArray) -> bool:
 	return error == OK
 
 # -------------------------------------------------------------------------
+# Imported textures
+# -------------------------------------------------------------------------
+
+func import_texture(uri: String, project_dir: String, fallback_name: String = "Texture") -> Dictionary:
+	if project_dir == "":
+		return {"ok": false, "error": "No destination project is open."}
+	var extension := uri.get_extension().to_lower()
+	if not ["png", "jpg", "jpeg", "webp"].has(extension):
+		return {"ok": false, "error": "Kinema imports PNG, JPEG and WebP textures."}
+	var image: Image = Image.load_from_file(uri)
+	if image == null or image.is_empty():
+		return {"ok": false, "error": "This image could not be read."}
+
+	var textures_dir := project_dir.path_join("textures")
+	DirAccess.make_dir_recursive_absolute(textures_dir)
+	var slug := _safe_slug(fallback_name, "texture")
+	var folder_name := _unique_dir_name(textures_dir, slug)
+	var folder := textures_dir.path_join(folder_name)
+	if DirAccess.make_dir_recursive_absolute(folder) != OK:
+		return {"ok": false, "error": "Kinema could not create a folder for this texture."}
+
+	var width := image.get_width()
+	var height := image.get_height()
+	var largest := maxi(width, height)
+	var stored_width := width
+	var stored_height := height
+	var resized_from := ""
+	var destination := ""
+
+	if largest <= 4096:
+		var original := _safe_file_name(_uri_file_name(uri), folder_name + "." + extension)
+		if original.get_extension().to_lower() == "":
+			original += "." + extension
+		var bytes := _read_uri_bytes(uri)
+		if bytes.is_empty():
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "This image could not be read."}
+		destination = folder.path_join(original)
+		if not _write_bytes(destination, bytes):
+			if FileAccess.file_exists(destination):
+				DirAccess.remove_absolute(destination)
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "Kinema could not copy the texture into this project."}
+	else:
+		var factor := 4096.0 / float(largest)
+		stored_width = maxi(1, int(round(float(width) * factor)))
+		stored_height = maxi(1, int(round(float(height) * factor)))
+		var stored: Image = image.duplicate()
+		stored.resize(stored_width, stored_height, Image.INTERPOLATE_BILINEAR)
+		destination = folder.path_join(folder_name + ".png")
+		var save_error := stored.save_png(destination)
+		if save_error != OK or not FileAccess.file_exists(destination):
+			if FileAccess.file_exists(destination):
+				DirAccess.remove_absolute(destination)
+			_remove_dir_recursive(folder)
+			return {"ok": false, "error": "Kinema could not save the resized texture."}
+		resized_from = "%dx%d" % [width, height]
+
+	return {
+		"ok": true,
+		"rel_path": "textures/" + folder_name + "/" + destination.get_file(),
+		"width": stored_width,
+		"height": stored_height,
+		"resized_from": resized_from,
+	}
+
+# -------------------------------------------------------------------------
 # Recent list and filesystem helpers
 # -------------------------------------------------------------------------
 

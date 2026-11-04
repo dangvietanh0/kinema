@@ -1,0 +1,840 @@
+extends RefCounted
+## Project material library: records, resources, texture cache and assignments.
+##
+## Document owns one instance. The library is serialized with the document, so
+## undo snapshots carry it too. Texture files are never versioned or deleted by
+## undo; only the record paths are.
+
+signal materials_changed
+
+const SHADING_MODELS := ["pbr", "unlit", "toon", "rim"]
+const PRESETS := ["matte", "satin", "metal", "plastic", "emissive", "toon", "unlit"]
+const TEXTURE_KEYS := [
+	"albedo_texture", "normal_texture", "orm_texture", "roughness_texture",
+	"metallic_texture", "ao_texture", "emission_texture",
+]
+const PATH_ERROR := "Texture paths must stay inside the project."
+
+var last_error := ""
+var _document = null
+var _materials: Array[Dictionary] = []
+var _next_material_id := 1
+var _resources: Dictionary = {}
+var _textures: Dictionary = {}
+var _missing_textures: Array[String] = []
+var _missing_set: Dictionary = {}
+
+
+func setup(document) -> void:
+	_document = document
+
+
+func reset() -> void:
+	last_error = ""
+	_materials.clear()
+	_next_material_id = 1
+	clear_texture_cache()
+
+
+# -------------------------------------------------------------------------
+# Serialization
+# -------------------------------------------------------------------------
+
+func to_data() -> Dictionary:
+	var out: Array = []
+	for record in _materials:
+		out.append(record.duplicate(true))
+	return {"materials": out}
+
+
+func load_data(raw: Dictionary) -> void:
+	_materials.clear()
+	_next_material_id = 1
+	clear_texture_cache()
+	if raw == null:
+		return
+	var records: Variant = raw.get("materials", [])
+	if not (records is Array):
+		return
+	for raw_record in records:
+		if not (raw_record is Dictionary):
+			continue
+		var record := _record_from_json(raw_record)
+		if record.is_empty():
+			continue
+		_materials.append(record)
+		_next_material_id = maxi(_next_material_id, _id_number(str(record.get("id", ""))) + 1)
+
+
+func _record_from_json(raw: Dictionary) -> Dictionary:
+	var record := _default_record(str(raw.get("id", "")), str(raw.get("name", "Material")))
+	for key in record.keys():
+		if key == "id":
+			continue
+		if raw.has(key):
+			record[key] = _coerce_value(key, raw[key])
+	record["id"] = str(raw.get("id", ""))
+	record["name"] = str(raw.get("name", "Material"))
+	if str(record["id"]) == "":
+		record["id"] = _next_id()
+	return record
+
+
+func _id_number(id: String) -> int:
+	if not id.begins_with("mat_"):
+		return 0
+	return int(id.substr(4))
+
+
+func _next_id() -> String:
+	var id := "mat_%d" % _next_material_id
+	_next_material_id += 1
+	return id
+
+
+# -------------------------------------------------------------------------
+# Records and CRUD
+# -------------------------------------------------------------------------
+
+func _default_record(id: String, p_name: String) -> Dictionary:
+	return {
+		"id": id,
+		"name": p_name,
+		"shading": "pbr",
+		"albedo_color": "#B8BCC2",
+		"albedo_texture": "",
+		"normal_texture": "",
+		"normal_scale": 1.0,
+		"orm_texture": "",
+		"roughness_texture": "",
+		"roughness_texture_channel": 1,
+		"metallic_texture": "",
+		"metallic_texture_channel": 2,
+		"ao_texture": "",
+		"ao_texture_channel": 0,
+		"emission_color": "#000000",
+		"emission_energy": 0.0,
+		"emission_texture": "",
+		"roughness": 0.42,
+		"metallic": 0.0,
+		"metallic_specular": 0.5,
+		"rim": 1.0,
+		"rim_tint": 0.5,
+		"uv1_scale": [1.0, 1.0],
+		"uv1_offset": [0.0, 0.0],
+		"texture_filter": 3,
+		"texture_repeat": true,
+		"notes": [],
+	}
+
+
+func material_ids() -> PackedStringArray:
+	var ids := PackedStringArray()
+	for record in _materials:
+		ids.append(str(record.get("id", "")))
+	return ids
+
+
+func get_material(id: String) -> Dictionary:
+	var record := _find(id)
+	return record.duplicate(true) if not record.is_empty() else {}
+
+
+func _find(id: String) -> Dictionary:
+	for record in _materials:
+		if str(record.get("id", "")) == id:
+			return record
+	return {}
+
+
+func has_material(id: String) -> bool:
+	return not _find(id).is_empty()
+
+
+func create_material(p_name := "Material", preset := "matte") -> String:
+	last_error = ""
+	var clean := p_name.strip_edges()
+	if clean == "":
+		clean = "Material"
+	var id := _next_id()
+	var record := _default_record(id, clean)
+	_apply_preset(record, preset)
+	_materials.append(record)
+	materials_changed.emit()
+	return id
+
+
+func _apply_preset(record: Dictionary, preset: String) -> void:
+	match preset:
+		"satin":
+			record["roughness"] = 0.4
+			record["metallic_specular"] = 0.55
+		"metal":
+			record["roughness"] = 0.26
+			record["metallic"] = 1.0
+			record["metallic_specular"] = 0.6
+			record["albedo_color"] = "#C8CCD2"
+		"plastic":
+			record["roughness"] = 0.3
+			record["metallic_specular"] = 0.72
+		"emissive":
+			record["emission_color"] = "#FFFFFF"
+			record["emission_energy"] = 2.0
+		"toon":
+			record["shading"] = "toon"
+			record["roughness"] = 0.5
+		"unlit":
+			record["shading"] = "unlit"
+		_:
+			record["roughness"] = 0.72
+			record["metallic_specular"] = 0.35
+
+
+func duplicate_material(id: String) -> String:
+	last_error = ""
+	var source := _find(id)
+	if source.is_empty():
+		last_error = "Choose a material first."
+		return ""
+	var copy: Dictionary = source.duplicate(true)
+	copy["id"] = _next_id()
+	copy["name"] = str(source.get("name", "Material")) + " Copy"
+	_materials.append(copy)
+	materials_changed.emit()
+	return str(copy["id"])
+
+
+func delete_material(id: String) -> bool:
+	last_error = ""
+	var record := _find(id)
+	if record.is_empty():
+		last_error = "Choose a material first."
+		return false
+	_materials.erase(record)
+	_resources.erase(id)
+	if _document != null and _document.has_method("get_object"):
+		for obj in _document.objects:
+			var changed := false
+			if str(obj.get("material_id", "")) == id:
+				obj["material_id"] = ""
+				changed = true
+			for map_key in ["part_materials", "part_surface_materials"]:
+				var assignments: Dictionary = obj.get(map_key, {})
+				if not (assignments is Dictionary):
+					continue
+				for path in assignments.keys():
+					if str(assignments[path]) == id:
+						assignments.erase(path)
+						changed = true
+			if changed:
+				apply_object(str(obj.get("id", "")))
+	materials_changed.emit()
+	return true
+
+
+func update_material(id: String, patch: Dictionary) -> bool:
+	last_error = ""
+	var record := _find(id)
+	if record.is_empty():
+		last_error = "Choose a material first."
+		return false
+	if not (patch is Dictionary):
+		last_error = "The material change is invalid."
+		return false
+	# Validate the whole patch before writing anything.
+	for key in patch.keys():
+		if key == "shading" and not SHADING_MODELS.has(str(patch[key])):
+			last_error = "Choose PBR, Unlit, Toon or Rim."
+			return false
+		if key in TEXTURE_KEYS:
+			var path := str(patch[key])
+			if path != "" and not _valid_texture_path(path):
+				last_error = PATH_ERROR
+				return false
+	for key in patch.keys():
+		if key == "id":
+			continue
+		if key == "notes":
+			var notes: Variant = patch[key]
+			record["notes"] = (notes as Array).duplicate() if notes is Array else []
+			continue
+		if record.has(key):
+			record[key] = _coerce_value(key, patch[key])
+	_resources.erase(id)
+	if _document != null:
+		apply_all()
+	materials_changed.emit()
+	return true
+
+
+func _valid_texture_path(path: String) -> bool:
+	if path.is_absolute_path():
+		return false
+	if path.begins_with("/") or path.begins_with("\\"):
+		return false
+	if path.contains("\\"):
+		return false
+	if path.contains("://"):
+		return false
+	for part in path.split("/", false):
+		if part == "..":
+			return false
+	return true
+
+
+func _coerce_value(key: String, value: Variant) -> Variant:	match key:
+		"name":
+			return str(value)
+		"shading":
+			return str(value) if SHADING_MODELS.has(str(value)) else "pbr"
+		"albedo_color", "emission_color":
+			return str(value)
+		"roughness", "metallic", "metallic_specular", "rim", "rim_tint":
+			return clampf(float(value), 0.0, 1.0)
+		"normal_scale":
+			return maxf(0.0, float(value))
+		"emission_energy":
+			return clampf(float(value), 0.0, 10.0)
+		"roughness_texture_channel", "metallic_texture_channel", "ao_texture_channel":
+			return clampi(int(value), 0, 2)
+		"texture_filter":
+			return clampi(int(value), 0, 5)
+		"texture_repeat":
+			return bool(value)
+		"uv1_scale", "uv1_offset":
+			if value is Array and (value as Array).size() >= 2:
+				return [float(value[0]), float(value[1])]
+			if value is Vector2:
+				return [value.x, value.y]
+			return [1.0, 1.0] if key == "uv1_scale" else [0.0, 0.0]
+		_:
+			return value
+
+
+# -------------------------------------------------------------------------
+# Construction and texture cache
+# -------------------------------------------------------------------------
+
+func missing_textures() -> Array[String]:
+	var out: Array[String] = []
+	out.assign(_missing_textures)
+	return out
+
+
+func clear_texture_cache() -> void:
+	_textures.clear()
+	_resources.clear()
+	_missing_textures.clear()
+	_missing_set.clear()
+
+
+func resource_for(material_id: String) -> BaseMaterial3D:
+	if _resources.has(material_id) and is_instance_valid(_resources[material_id]):
+		return _resources[material_id]
+	var record := _find(material_id)
+	if record.is_empty():
+		return null
+	var resource := build_material(record)
+	_resources[material_id] = resource
+	return resource
+
+
+func build_material(record: Dictionary) -> BaseMaterial3D:
+	var orm_path := str(record.get("orm_texture", ""))
+	var material: BaseMaterial3D
+	if orm_path != "":
+		material = ORMMaterial3D.new()
+	else:
+		material = StandardMaterial3D.new()
+	material.resource_name = str(record.get("name", "Material"))
+
+	match str(record.get("shading", "pbr")):
+		"unlit":
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		"toon":
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+			material.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
+			material.specular_mode = BaseMaterial3D.SPECULAR_TOON
+		"rim":
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+			material.rim_enabled = true
+			material.rim = clampf(float(record.get("rim", 1.0)), 0.0, 1.0)
+			material.rim_tint = clampf(float(record.get("rim_tint", 0.5)), 0.0, 1.0)
+		_:
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+
+	material.albedo_color = Color.from_string(str(record.get("albedo_color", "#B8BCC2")), Color(0.72, 0.74, 0.76))
+	var albedo := _load_texture(str(record.get("albedo_texture", "")))
+	if albedo != null:
+		material.albedo_texture = albedo
+
+	var normal := _load_texture(str(record.get("normal_texture", "")), true)
+	material.normal_enabled = normal != null
+	if normal != null:
+		material.normal_texture = normal
+		material.normal_scale = maxf(0.0, float(record.get("normal_scale", 1.0)))
+	else:
+		material.normal_texture = null
+
+	if orm_path != "":
+		var packed := _load_texture(orm_path)
+		if packed != null and material is ORMMaterial3D:
+			(material as ORMMaterial3D).orm_texture = packed
+	else:
+		var roughness_texture := _load_texture(str(record.get("roughness_texture", "")))
+		material.roughness_texture = roughness_texture
+		material.roughness_texture_channel = clampi(int(record.get("roughness_texture_channel", 1)), 0, 2)
+		var metallic_texture := _load_texture(str(record.get("metallic_texture", "")))
+		material.metallic_texture = metallic_texture
+		material.metallic_texture_channel = clampi(int(record.get("metallic_texture_channel", 2)), 0, 2)
+		var ao := _load_texture(str(record.get("ao_texture", "")))
+		material.ao_enabled = ao != null
+		if ao != null:
+			material.ao_texture = ao
+			material.ao_texture_channel = clampi(int(record.get("ao_texture_channel", 0)), 0, 2)
+		else:
+			material.ao_texture = null
+
+	var emission_energy := clampf(float(record.get("emission_energy", 0.0)), 0.0, 10.0)
+	material.emission_enabled = emission_energy > 0.0
+	material.emission = Color.from_string(str(record.get("emission_color", "#000000")), Color.BLACK)
+	material.emission_energy_multiplier = emission_energy
+	var emission_texture := _load_texture(str(record.get("emission_texture", "")))
+	material.emission_texture = emission_texture
+
+	material.roughness = clampf(float(record.get("roughness", 0.42)), 0.0, 1.0)
+	material.metallic = clampf(float(record.get("metallic", 0.0)), 0.0, 1.0)
+	material.metallic_specular = clampf(float(record.get("metallic_specular", 0.5)), 0.0, 1.0)
+
+	var scale_pair: Array = record.get("uv1_scale", [1.0, 1.0])
+	var offset_pair: Array = record.get("uv1_offset", [0.0, 0.0])
+	material.uv1_scale = Vector3(float(scale_pair[0]), float(scale_pair[1]), 1.0)
+	material.uv1_offset = Vector3(float(offset_pair[0]), float(offset_pair[1]), 0.0)
+	material.texture_filter = clampi(int(record.get("texture_filter", 3)), 0, 5)
+	material.texture_repeat = bool(record.get("texture_repeat", true))
+	return material
+
+
+func _load_texture(rel_path: String, normal_map: bool = false) -> Texture2D:
+	if rel_path == "":
+		return null
+	if _textures.has(rel_path) and is_instance_valid(_textures[rel_path]):
+		return _textures[rel_path]
+	if _document == null or str(_document.project_dir) == "":
+		_track_missing(rel_path)
+		return null
+	var absolute := str(_document.project_dir).path_join(rel_path)
+	var bytes := FileAccess.get_file_as_bytes(absolute)
+	if bytes.is_empty():
+		_track_missing(rel_path)
+		return null
+	var image := Image.new()
+	var error := ERR_FILE_UNRECOGNIZED
+	match rel_path.get_extension().to_lower():
+		"png":
+			error = image.load_png_from_buffer(bytes)
+		"jpg", "jpeg":
+			error = image.load_jpg_from_buffer(bytes)
+		"webp":
+			error = image.load_webp_from_buffer(bytes)
+	if error != OK or image.is_empty():
+		_track_missing(rel_path)
+		return null
+	if normal_map:
+		image.generate_mipmaps()
+	var texture := ImageTexture.create_from_image(image)
+	_textures[rel_path] = texture
+	return texture
+
+
+func _track_missing(rel_path: String) -> void:
+	if _missing_set.has(rel_path):
+		return
+	_missing_set[rel_path] = true
+	_missing_textures.append(rel_path)
+
+
+# -------------------------------------------------------------------------
+# Imported material adoption
+# -------------------------------------------------------------------------
+
+const MAX_ADOPTED_MATERIALS := 32
+const MAX_ADOPTED_TEXTURES := 64
+
+var _adopt_texture_count := 0
+var _adopt_texture_capped := false
+
+
+func adopt_import(object_id: String, generated: Node, model_name: String) -> Dictionary:
+	last_error = ""
+	if _document == null or generated == null:
+		last_error = "Choose a model first."
+		return {"ok": false, "error": "Choose a model first."}
+	var obj: Dictionary = _document.get_object(object_id)
+	if obj.is_empty():
+		last_error = "Choose an object first."
+		return {"ok": false, "error": "Choose an object first."}
+
+	var groups: Array = []
+	var index_by_instance: Dictionary = {}
+	var meshes: Array[Node] = []
+	var stack: Array[Node] = [generated]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+			meshes.append(node)
+	for node in meshes:
+		var mesh_instance := node as MeshInstance3D
+		var part_path := str(generated.get_path_to(mesh_instance))
+		for surface in range(mesh_instance.mesh.get_surface_count()):
+			var material := _surface_material(mesh_instance, surface)
+			if material == null:
+				continue
+			var key := material.get_instance_id()
+			if not index_by_instance.has(key):
+				index_by_instance[key] = groups.size()
+				groups.append({"material": material, "surfaces": []})
+			var entry: Dictionary = groups[int(index_by_instance[key])]
+			(entry["surfaces"] as Array).append({
+				"part": part_path,
+				"surface": surface,
+			})
+
+	var total := groups.size()
+	if total == 0:
+		return {"ok": true, "adopted": 0, "capped": false, "notice": "", "materials": 0, "textures": 0}
+
+	_adopt_texture_count = 0
+	_adopt_texture_capped = false
+	var adopt_count := mini(total, MAX_ADOPTED_MATERIALS)
+	var model_slug := _model_slug(model_name)
+	var surface_map: Dictionary = obj.get("part_surface_materials", {})
+	var adopted := 0
+	for index in range(adopt_count):
+		var group: Dictionary = groups[index]
+		var source: BaseMaterial3D = group["material"]
+		var display_name := source.resource_name.strip_edges()
+		if display_name == "":
+			display_name = "Material %d" % (index + 1)
+		var material_id := create_material("%s · %s" % [model_name, display_name], "matte")
+		var notes: Array = []
+		var patch := _adoption_patch(source, model_slug, index + 1, notes)
+		if not notes.is_empty():
+			patch["notes"] = notes
+		update_material(material_id, patch)
+		adopted += 1
+		for surface_entry in group["surfaces"]:
+			var key := "%s#%d" % [str(surface_entry["part"]), int(surface_entry["surface"])]
+			surface_map[key] = material_id
+	obj["part_surface_materials"] = surface_map
+	apply_object(object_id)
+
+	var capped := total > MAX_ADOPTED_MATERIALS or _adopt_texture_capped
+	var notice := ""
+	if total > MAX_ADOPTED_MATERIALS:
+		notice = "Adopted %d of %d materials; the rest keep their embedded materials." % [
+			MAX_ADOPTED_MATERIALS, total,
+		]
+	return {
+		"ok": true,
+		"adopted": adopted,
+		"capped": capped,
+		"notice": notice,
+		"materials": adopted,
+		"textures": _adopt_texture_count,
+	}
+
+
+func _surface_material(mesh_instance: MeshInstance3D, surface: int) -> BaseMaterial3D:
+	var material := mesh_instance.get_surface_override_material(surface)
+	if not (material is BaseMaterial3D):
+		material = mesh_instance.get_active_material(surface)
+	if not (material is BaseMaterial3D):
+		material = mesh_instance.mesh.surface_get_material(surface)
+	if material is BaseMaterial3D:
+		return material as BaseMaterial3D
+	return null
+
+
+func _adoption_patch(source: BaseMaterial3D, model_slug: String, number: int, notes: Array) -> Dictionary:
+	var shading := "pbr"
+	if source.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED:
+		shading = "unlit"
+	elif source.diffuse_mode == BaseMaterial3D.DIFFUSE_TOON or source.specular_mode == BaseMaterial3D.SPECULAR_TOON:
+		shading = "toon"
+	elif source.rim_enabled:
+		shading = "rim"
+	var patch := {
+		"shading": shading,
+		"albedo_color": "#" + source.albedo_color.to_html(false),
+		"roughness": clampf(source.roughness, 0.0, 1.0),
+		"metallic": clampf(source.metallic, 0.0, 1.0),
+		"metallic_specular": clampf(source.metallic_specular, 0.0, 1.0),
+		"normal_scale": maxf(0.0, source.normal_scale),
+		"uv1_scale": [source.uv1_scale.x, source.uv1_scale.y],
+		"uv1_offset": [source.uv1_offset.x, source.uv1_offset.y],
+		"texture_filter": int(source.texture_filter),
+		"texture_repeat": source.texture_repeat,
+		"emission_color": "#" + source.emission.to_html(false),
+		"emission_energy": clampf(source.emission_energy_multiplier, 0.0, 10.0) if source.emission_enabled else 0.0,
+		"rim": clampf(source.rim, 0.0, 1.0),
+		"rim_tint": clampf(source.rim_tint, 0.0, 1.0),
+	}
+	var albedo := _adopt_texture(source.albedo_texture, model_slug, number, "albedo", notes)
+	if albedo != "":
+		patch["albedo_texture"] = albedo
+	var normal := _adopt_texture(source.normal_texture, model_slug, number, "normal", notes)
+	if normal != "":
+		patch["normal_texture"] = normal
+	var emission := _adopt_texture(source.emission_texture, model_slug, number, "emission", notes)
+	if emission != "":
+		patch["emission_texture"] = emission
+	if source is ORMMaterial3D:
+		var packed := _adopt_texture((source as ORMMaterial3D).orm_texture, model_slug, number, "orm", notes)
+		if packed != "":
+			patch["orm_texture"] = packed
+	else:
+		var roughness := _adopt_texture(source.roughness_texture, model_slug, number, "roughness", notes)
+		if roughness != "":
+			patch["roughness_texture"] = roughness
+			patch["roughness_texture_channel"] = int(source.roughness_texture_channel)
+		var metallic := _adopt_texture(source.metallic_texture, model_slug, number, "metallic", notes)
+		if metallic != "":
+			patch["metallic_texture"] = metallic
+			patch["metallic_texture_channel"] = int(source.metallic_texture_channel)
+		var ao := _adopt_texture(source.ao_texture, model_slug, number, "ao", notes)
+		if ao != "":
+			patch["ao_texture"] = ao
+			patch["ao_texture_channel"] = int(source.ao_texture_channel)
+	return patch
+
+
+func _adopt_texture(texture: Texture2D, model_slug: String, number: int, slot: String, notes: Array) -> String:
+	if texture == null:
+		return ""
+	if _adopt_texture_count >= MAX_ADOPTED_TEXTURES:
+		_adopt_texture_capped = true
+		return ""
+	var image := texture.get_image()
+	if image == null or image.is_empty():
+		notes.append("%s texture could not be extracted from the model." % slot.capitalize())
+		return ""
+	if _document == null or str(_document.project_dir) == "":
+		notes.append("%s texture needs a saved project folder." % slot.capitalize())
+		return ""
+	var folder := str(_document.project_dir).path_join("textures/imported")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var rel_path := "textures/imported/%s-%d-%s.png" % [model_slug, number, slot]
+	var absolute := str(_document.project_dir).path_join(rel_path)
+	if image.save_png(absolute) != OK:
+		notes.append("%s texture could not be written." % slot.capitalize())
+		return ""
+	_adopt_texture_count += 1
+	return rel_path
+
+
+func _model_slug(value: String) -> String:
+	var out := ""
+	for index in range(value.length()):
+		var ch := value.substr(index, 1).to_lower()
+		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9"):
+			out += ch
+		elif ch == "-" or ch == "_" or ch == " " or ch == ".":
+			out += "-"
+	while out.begins_with("-"):
+		out = out.substr(1)
+	while out.ends_with("-"):
+		out = out.substr(0, out.length() - 1)
+	return out if out != "" else "model"
+
+
+# -------------------------------------------------------------------------
+# Assignment and rendering
+# -------------------------------------------------------------------------
+
+func can_assign_part(object_id: String, part_path: String) -> bool:
+	last_error = ""
+	if _document == null:
+		return false
+	var root: Node3D = _document.nodes.get(object_id)
+	if root == null:
+		return false
+	if part_path == "":
+		return true
+	var node := root.get_node_or_null(NodePath(part_path))
+	return node is MeshInstance3D and (node as MeshInstance3D).mesh != null
+
+
+func assign_material(object_id: String, material_id: String, part_path := "", surface := -1) -> bool:
+	last_error = ""
+	if _document == null:
+		return false
+	if not has_material(material_id):
+		last_error = "Choose a material first."
+		return false
+	var target := _validated_target(object_id, part_path, surface)
+	if target.is_empty():
+		return false
+	var obj: Dictionary = target["obj"]
+	if surface < 0:
+		if part_path == "":
+			obj["material_id"] = material_id
+		else:
+			var part_map: Dictionary = obj.get("part_materials", {})
+			part_map[part_path] = material_id
+			obj["part_materials"] = part_map
+	else:
+		var key := "%s#%d" % [part_path, surface]
+		var surface_map: Dictionary = obj.get("part_surface_materials", {})
+		surface_map[key] = material_id
+		obj["part_surface_materials"] = surface_map
+	apply_object(object_id)
+	return true
+
+
+func clear_material(object_id: String, part_path := "", surface := -1) -> bool:
+	last_error = ""
+	if _document == null:
+		return false
+	var target := _validated_target(object_id, part_path, surface)
+	if target.is_empty():
+		return false
+	var obj: Dictionary = target["obj"]
+	if surface < 0:
+		if part_path == "":
+			obj["material_id"] = ""
+		else:
+			var part_map: Dictionary = obj.get("part_materials", {})
+			part_map.erase(part_path)
+			obj["part_materials"] = part_map
+	else:
+		var key := "%s#%d" % [part_path, surface]
+		var surface_map: Dictionary = obj.get("part_surface_materials", {})
+		surface_map.erase(key)
+		obj["part_surface_materials"] = surface_map
+	apply_object(object_id)
+	return true
+
+
+func resolve_assignment(object_id: String, part_path := "", surface := -1) -> String:
+	if _document == null:
+		return ""
+	var obj: Dictionary = _document.get_object(object_id)
+	if obj.is_empty():
+		return ""
+	if surface >= 0:
+		var surface_map: Dictionary = obj.get("part_surface_materials", {})
+		var surface_id := str(surface_map.get("%s#%d" % [part_path, surface], ""))
+		if surface_id != "" and has_material(surface_id):
+			return surface_id
+	if part_path != "":
+		var part_map: Dictionary = obj.get("part_materials", {})
+		var part_id := str(part_map.get(part_path, ""))
+		if part_id != "" and has_material(part_id):
+			return part_id
+		var object_surface: Dictionary = obj.get("part_surface_materials", {})
+		var object_surface_id := str(object_surface.get("#%d" % surface, "")) if surface >= 0 else ""
+		if object_surface_id != "" and has_material(object_surface_id):
+			return object_surface_id
+	var object_id_value := str(obj.get("material_id", ""))
+	if object_id_value != "" and has_material(object_id_value):
+		return object_id_value
+	return ""
+
+
+func _validated_target(object_id: String, part_path: String, surface: int) -> Dictionary:
+	if _document == null:
+		last_error = "Choose an object first."
+		return {}
+	var obj: Dictionary = _document.get_object(object_id)
+	var root: Node3D = _document.nodes.get(object_id)
+	if obj.is_empty() or root == null:
+		last_error = "Choose an object first."
+		return {}
+	var mesh: Mesh = null
+	if part_path != "":
+		var node := root.get_node_or_null(NodePath(part_path))
+		if node == null or not (node is MeshInstance3D) or (node as MeshInstance3D).mesh == null:
+			last_error = "This part has no mesh to shade."
+			return {}
+		mesh = (node as MeshInstance3D).mesh
+	elif surface >= 0:
+		var first := _first_mesh(root)
+		if first != null:
+			mesh = first.mesh
+	if surface >= 0:
+		if mesh == null or surface >= mesh.get_surface_count():
+			last_error = "Surface %d is out of range." % surface
+			return {}
+	return {"obj": obj}
+
+
+func _first_mesh(root: Node) -> MeshInstance3D:
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+			return node as MeshInstance3D
+	return null
+
+
+func apply_object(object_id: String) -> void:
+	if _document == null:
+		return
+	var obj: Dictionary = _document.get_object(object_id)
+	if obj.is_empty():
+		return
+	var root: Node3D = _document.nodes.get(object_id)
+	if root == null:
+		return
+	var kind := str(obj.get("kind", "mesh"))
+	var meshes: Array[MeshInstance3D] = []
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+			meshes.append(node as MeshInstance3D)
+	for mesh_instance in meshes:
+		var part_path := str(root.get_path_to(mesh_instance))
+		var surface_count := mesh_instance.mesh.get_surface_count()
+		var assigned: Array = []
+		for surface in range(surface_count):
+			var material_id := resolve_assignment(object_id, part_path, surface)
+			if material_id != "":
+				mesh_instance.set_surface_override_material(surface, resource_for(material_id))
+				assigned.append(surface)
+			else:
+				mesh_instance.set_surface_override_material(surface, null)
+		if kind == "mesh" and part_path == "Mesh":
+			if assigned.is_empty():
+				if mesh_instance.material_override == null:
+					mesh_instance.material_override = _legacy_material(obj)
+			else:
+				mesh_instance.material_override = null
+				# A partially assigned primitive keeps its legacy look on the
+				# surfaces that have no library material.
+				if assigned.size() < surface_count:
+					var legacy := _legacy_material(obj)
+					for surface in range(surface_count):
+						if not assigned.has(surface):
+							mesh_instance.set_surface_override_material(surface, legacy)
+
+
+func _legacy_material(obj: Dictionary) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color.from_string(str(obj.get("color", "#AAB2BF")), Color(0.66, 0.66, 0.66))
+	material.roughness = clampf(float(obj.get("roughness", 0.48)), 0.0, 1.0)
+	material.metallic = clampf(float(obj.get("metallic", 0.0)), 0.0, 1.0)
+	material.metallic_specular = 0.5
+	material.rim_enabled = false
+	return material
+
+
+func apply_all() -> void:
+	if _document == null:
+		return
+	for obj in _document.objects:
+		apply_object(str(obj.get("id", "")))

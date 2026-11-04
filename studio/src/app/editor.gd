@@ -44,6 +44,8 @@ const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overla
 const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
 const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
 const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
+const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
+const MaterialEditorSheetScript = preload("res://src/ui/material_editor_sheet.gd")
 const VideoReferencePanelScript = preload("res://src/ui/video_reference_panel.gd")
 const SequenceRendererScript = preload("res://src/core/sequence_renderer.gd")
 const CameraExportScript = preload("res://src/core/camera_export.gd")
@@ -207,8 +209,10 @@ var _media_export: Control
 
 var _color_sheet_active := false
 var _color_id := ""
+var _color_target: Dictionary = {}
 var _color_property := ""
 var _color_value := Color(0.6, 0.6, 0.6)
+var _color_commit := Callable()
 var _color_preview: PanelContainer
 var _color_preview_label: Label
 var _color_hex: LineEdit
@@ -238,6 +242,9 @@ var _preset_buttons: Array[Button] = []
 var _renderer_pending := ""
 var _settings_panel: Control = null
 var _workspace_sheet: Control = null
+## The material library and editor sheets, kept for smoke/test inspection.
+var _material_sheet: Control = null
+var _material_editor_sheet: Control = null
 ## Real-time render preview. The viewport plays the document at full quality
 ## with editing chrome removed; this flag owns the editor-side lifecycle.
 var _render_mode := false
@@ -898,6 +905,8 @@ func _build_dock() -> void:
 	_inspector = InspectorScript.new()
 	_inspector.add_requested.connect(_open_add_sheet)
 	_inspector.color_requested.connect(_open_color_sheet)
+	_inspector.choose_material_requested.connect(_open_material_sheet)
+	_inspector.edit_material_requested.connect(_open_material_editor_for_target)
 	_inspector.look_through_requested.connect(_enter_look_through)
 	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("inspector", collapsed)
@@ -4216,6 +4225,109 @@ func _total_keys() -> int:
 	return count
 
 # -------------------------------------------------------------------------
+# Material sheets
+# -------------------------------------------------------------------------
+
+func _open_material_sheet(target: Dictionary) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	var sheet = MaterialSheetScript.new()
+	_material_sheet = sheet
+	sheet.setup(doc, target)
+	sheet.changed.connect(_on_material_sheet_changed)
+	sheet.assigned.connect(_on_material_assigned)
+	sheet.delete_requested.connect(_confirm_delete_material)
+	_overlay.show_sheet(
+		"Materials",
+		"Assign a library material to this target.",
+		sheet,
+		[{"text": "Close", "compact": true}]
+	)
+
+
+func _open_material_editor_for_target(target: Dictionary) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	var material_id: String = doc.material_system.resolve_assignment(
+		str(target.get("object_id", "")),
+		str(target.get("part_path", "")),
+		int(target.get("surface", -1))
+	)
+	if material_id == "":
+		return
+	_open_material_editor(material_id, target)
+
+
+func _open_material_editor(material_id: String, target: Dictionary = {}) -> void:
+	if doc == null or doc.material_system == null or material_id == "":
+		return
+	var sheet = MaterialEditorSheetScript.new()
+	_material_editor_sheet = sheet
+	sheet.setup(doc, material_id)
+	sheet.set_target(target)
+	sheet.changed.connect(_on_material_sheet_changed)
+	sheet.delete_requested.connect(_confirm_delete_material)
+	sheet.color_requested.connect(_on_material_color_requested.bind(material_id))
+	_overlay.show_sheet(
+		"Material",
+		"Name, shading, maps and UVs.",
+		sheet,
+		[{"text": "Close", "compact": true}]
+	)
+
+
+func _on_material_sheet_changed(_material_id: String) -> void:
+	if _inspector != null:
+		_inspector._rebuild()
+
+
+func _on_material_assigned(_material_id: String) -> void:
+	if _overlay != null:
+		_overlay.close_modal()
+	_on_material_sheet_changed(_material_id)
+
+
+func _on_material_color_requested(property: String, current: Color, material_id: String) -> void:
+	var target_material := material_id
+	open_color_sheet(
+		{"kind": "material", "id": target_material},
+		property,
+		current,
+		func(color: Color) -> void:
+			if doc != null and doc.material_system != null:
+				doc.material_system.update_material(
+					target_material, {property: "#" + color.to_html(false)}
+				)
+	)
+
+
+func _confirm_delete_material(material_id: String) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	var record: Dictionary = doc.material_system.get_material(material_id)
+	if record.is_empty():
+		return
+	var label := str(record.get("name", "this material"))
+	_overlay.confirm(
+		"Delete material?",
+		"Delete %s? Objects keep their shapes but lose this material." % label,
+		"Delete",
+		func() -> void: _delete_material(material_id)
+	)
+
+
+func _delete_material(material_id: String) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	doc.begin_edit("Delete material")
+	var ok: bool = doc.material_system.delete_material(material_id)
+	doc.end_edit()
+	if ok:
+		_on_material_sheet_changed(material_id)
+		_overlay.toast("Material deleted", "trash-2", Kit.TEXT_MUTED)
+
+
+# -------------------------------------------------------------------------
 # Color sheet
 # -------------------------------------------------------------------------
 
@@ -4225,10 +4337,33 @@ func _open_color_sheet(property: String) -> void:
 	var obj: Dictionary = doc.get_selected_object()
 	if obj.is_empty():
 		return
+	var selected := doc.selected_id
+	var current := Color.from_string(str(obj.get(property, "#A8A8A8")), Color(0.6, 0.6, 0.6))
+	var commit := func(color: Color) -> void:
+		if property == "color":
+			doc.set_material_color(selected, color)
+		else:
+			doc.set_light_property(selected, property, "#" + color.to_html(false))
+	open_color_sheet(
+		{"kind": "light" if property != "color" else "object", "id": selected},
+		property,
+		current,
+		commit
+	)
+
+
+## One color surface for every target. The target carries the object, light or
+## material identity; `on_commit` writes the field and the caller owns the edit
+## semantics. The sheet itself owns the undo boundary for the whole change.
+func open_color_sheet(target: Dictionary, property: String, current: Color, on_commit: Callable) -> void:
+	if doc == null:
+		return
 	_color_sheet_active = true
-	_color_id = doc.selected_id
+	_color_target = target.duplicate(true)
+	_color_id = str(_color_target.get("id", ""))
 	_color_property = property
-	_color_value = Color.from_string(str(obj.get(property, "#A8A8A8")), Color(0.6, 0.6, 0.6))
+	_color_value = current
+	_color_commit = on_commit
 	doc.begin_edit("Change color")
 
 	var body := VBoxContainer.new()
@@ -4293,12 +4428,16 @@ func _open_color_sheet(property: String) -> void:
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
 
-	_overlay.show_modal(
-		"Color" if _color_property == "color" else "Light color",
-		"Base color" if _color_property == "color" else "Light tint",
-		body,
-		[{"text": "Done", "primary": true}]
-	)
+	var sheet_title := "Color"
+	var sheet_subtitle := "Base color"
+	match str(_color_target.get("kind", "object")):
+		"light":
+			sheet_title = "Light color"
+			sheet_subtitle = "Light tint"
+		"material":
+			sheet_title = "Material colour"
+			sheet_subtitle = "Base colour"
+	_overlay.show_modal(sheet_title, sheet_subtitle, body, [{"text": "Done", "primary": true}])
 	_sync_color_controls()
 
 func _color_preview_style() -> StyleBoxFlat:
@@ -4311,10 +4450,8 @@ func _set_color_value(color: Color) -> void:
 	if not _color_sheet_active or doc == null:
 		return
 	_color_value = Color(clampf(color.r, 0.0, 1.0), clampf(color.g, 0.0, 1.0), clampf(color.b, 0.0, 1.0), 1.0)
-	if _color_property == "color":
-		doc.set_material_color(_color_id, _color_value)
-	else:
-		doc.set_light_property(_color_id, _color_property, "#" + _color_value.to_html(false))
+	if _color_commit.is_valid():
+		_color_commit.call(_color_value)
 	_sync_color_controls()
 
 func _sync_color_controls() -> void:
@@ -4368,6 +4505,8 @@ func _on_modal_closed() -> void:
 	_color_sheet_active = false
 	if doc != null and is_instance_valid(doc):
 		doc.end_edit()
+	_color_commit = Callable()
+	_color_target.clear()
 	_color_preview = null
 	_color_preview_label = null
 	_color_hex = null
