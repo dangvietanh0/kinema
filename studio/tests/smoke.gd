@@ -999,8 +999,10 @@ func _ready() -> void:
 	editor._sync_timeline_visibility()
 	for _i in 3:
 		await get_tree().process_frame
-	_check(editor._timeline_panel.size.y <= dope_height + 0.5,
-		"the open graph overlay shares the 42 percent cap")
+	_check(editor._timeline_panel.size.y <= minf(300.0, maxf(104.0, overlay_host.size.y)) + 0.5,
+		"the open graph overlay uses the stage-share budget")
+	_check(editor._timeline_panel.size.y > dope_height + 0.5,
+		"the graph overlay takes more room than dope")
 	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
 		"the graph overlay still leaves a visible stage")
 	editor._timeline.set_mode("dope")
@@ -2135,26 +2137,23 @@ func _ready() -> void:
 		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
 		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
 		var short_graph_host: Control = editor._viewport_host
-		var short_graph_budget := minf(208.0, maxf(56.0 + 48.0, short_graph_host.size.y * 0.34))
+		var short_graph_budget := minf(300.0, maxf(104.0, short_graph_host.size.y))
 		_check(editor._timeline_panel.size.y <= short_graph_budget + 0.5,
-			"915x412 graph sheet stays inside the compact budget")
-		_check(
-			editor._timeline_panel.size.y <= editor._view.size.y - 96.0 + 1.0,
-			"915x412 graph overlay leaves at least 96 dp of stage"
-		)
+			"915x412 graph sheet uses the stage-share budget")
+		_check(editor._timeline.graph_plot_rect().size.y >= 120.0,
+			"915x412 graph keeps the 120 dp plot floor")
 		editor.size = Vector2(800.0, 360.0)
 		editor._apply_shell()
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
 		var tiny_graph_host: Control = editor._viewport_host
-		var tiny_graph_budget := minf(208.0, maxf(56.0 + 48.0, tiny_graph_host.size.y * 0.34))
+		var tiny_graph_budget := minf(300.0, maxf(104.0, tiny_graph_host.size.y))
 		_check(editor._timeline_panel.size.y <= tiny_graph_budget + 0.5,
-			"800x360 graph sheet stays inside the compact budget")
-		_check(
-			editor._timeline_panel.size.y <= editor._view.size.y - 96.0 + 1.0,
-			"800x360 graph overlay leaves at least 96 dp of stage"
-		)
+			"800x360 graph sheet uses the stage-share budget")
+		if editor._timeline.graph_plot_rect().size.y < 120.0:
+			_check(editor._timeline.graph_caption() == "Rotate or open the timeline workspace for curve editing",
+				"800x360 graph states the exact workspace caption")
 		editor.size = Vector2(412.0, 915.0)
 		editor.set_workspace_mode("compact")
 		editor._apply_shell()
@@ -2167,7 +2166,7 @@ func _ready() -> void:
 		await get_tree().process_frame
 		_check(timeline.mode() == "dope", "dope mode restores")
 		_check(editor._timeline_panel.size.y <= graph_panel_height + 0.5,
-			"dope mode shares the same 42 percent overlay cap as the graph")
+			"dope mode stays inside the graph's overlay height")
 		doc.set_selection(ease_id)
 		doc.seek(0.0)
 

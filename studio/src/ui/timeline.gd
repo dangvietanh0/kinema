@@ -16,6 +16,10 @@ signal duration_row_changed(open: bool)
 signal duration_confirmation_requested(value: float, message: String)
 ## The compact More control asks the editor for the session-only full state.
 signal more_requested
+## The active channel changed, whether by the graph tab strip or a dope row.
+signal channel_selected(channel: String)
+## The Expand control asked the editor to open the landscape workspace.
+signal workspace_requested
 
 class DopeSheet:
 	extends Control
@@ -76,7 +80,9 @@ var _duration_close_button: Button
 var _duration_open := false
 var _hint_seen := false
 var _more_button: Button
+var _expand_button: Button
 var _more_state := false
+var _workspace_mode := false
 var _prev_button: Button
 var _next_button: Button
 
@@ -137,6 +143,7 @@ var _gesture_active := false
 
 const CHANNEL_EDGE := 1.0
 const GRAPH_TAB_HEIGHT := 44.0
+const GRAPH_SHORT_CAPTION := "Rotate or open the timeline workspace for curve editing"
 const GRAPH_PRESETS := [
 	{"name": "Hold", "value": 0.0},
 	{"name": "Ease out strong", "value": 0.25},
@@ -319,6 +326,14 @@ func _build_transport() -> void:
 	_more_button.pressed.connect(func() -> void: more_requested.emit())
 	row.add_child(_more_button)
 	_transport_buttons.append(_more_button)
+
+	# The landscape workspace is an explicit mode, so its entry stays on the
+	# always-present transport row. The compact header can fold away, but this
+	# 44 dp target remains reachable in every sheet state.
+	_expand_button = Kit.icon_button("maximize", "Open timeline workspace", 44, 18)
+	_expand_button.pressed.connect(func() -> void: workspace_requested.emit())
+	row.add_child(_expand_button)
+	_transport_buttons.append(_expand_button)
 
 	# The sheet can fold without leaving the workbench: the transport stays,
 	# and this control flips between fold and open. Compact uses the bottom
@@ -711,7 +726,7 @@ func _refresh_compact() -> void:
 		measured = minf(measured, _available_width)
 	var narrow := measured < 640.0
 	var narrow_chrome := touch or narrow
-	var show_header := _sheet_open and narrow_chrome and not _header_folded and not _duration_open
+	var show_header := _sheet_open and narrow_chrome and not _header_folded and not _duration_open and not _workspace_mode
 	# A narrow canvas cannot hold every transport control at 44 dp, so the
 	# folded and open states trade AUTO and the fold control rather than
 	# pushing the center column past the canvas edge.
@@ -727,17 +742,26 @@ func _refresh_compact() -> void:
 		_prev_button.visible = key_step_room
 	if _next_button != null:
 		_next_button.visible = key_step_room
-	_snap_button.visible = not narrow_chrome
-	_mode_button.visible = not narrow_chrome
-	_loop_button.visible = not narrow_chrome
-	_delete_button.visible = not narrow_chrome
+	_snap_button.visible = not narrow_chrome and not _workspace_mode
+	_mode_button.visible = not narrow_chrome and not _workspace_mode
+	_loop_button.visible = not narrow_chrome and not _workspace_mode
+	_delete_button.visible = not narrow_chrome and not _workspace_mode
+	if _more_button != null:
+		_more_button.visible = not _workspace_mode
+	if _expand_button != null:
+		_expand_button.visible = _sheet_open and not _workspace_mode
+		var viewport_size := get_viewport_rect().size
+		var can_expand := viewport_size.x >= 720.0 and viewport_size.y >= 360.0
+		_expand_button.disabled = not can_expand
+		_expand_button.tooltip_text = "Open timeline workspace" if can_expand \
+			else "Landscape workspace needs at least 720 × 360 dp"
 	if _fold_button != null:
 		# The header owns folding while the sheet is open; once it is folded
 		# the transport's control is the way back. Touch uses the compact
 		# bottom bar instead, so it never needs the transport control. When
 		# the overlay budget folds the header, the transport control takes
 		# over so the fold action stays reachable.
-		_fold_button.visible = not touch and ((not narrow or not _sheet_open) or _header_folded)
+		_fold_button.visible = not touch and not _workspace_mode and ((not narrow or not _sheet_open) or _header_folded)
 	if _auto_button != null:
 		# A folded narrow sheet swaps AUTO for the fold control: both cannot
 		# hold a 44 dp target on a 320-360 dp canvas. AUTO returns as soon as
@@ -761,8 +785,8 @@ func set_short_layout(value: bool) -> void:
 	if _short_layout == value:
 		return
 	_short_layout = value
-	# The short graph budget is transport 52 + header 48 + sheet 112. The 1 dp
-	# separator would push that over 212, so it collapses on short screens.
+	# The graph owns min(300, stage) now, so the 1 dp separator is no longer a
+	# budget cliff; it still collapses on short screens to keep the chrome flat.
 	if _sheet_rule != null:
 		_sheet_rule.custom_minimum_size.y = 0.0 if _short_layout else 1.0
 	_apply_sheet_height()
@@ -780,8 +804,7 @@ func set_header_folded(value: bool) -> void:
 func _apply_sheet_height() -> void:
 	if _sheet == null:
 		return
-	var graph_min := 112.0 if _short_layout else 160.0
-	_sheet.custom_minimum_size.y = graph_min if _mode == "graph" else 96.0
+	_sheet.custom_minimum_size.y = 120.0 if _mode == "graph" else 96.0
 
 
 ## The overlay owns the total height, so the sheet gets whatever the transport,
@@ -799,7 +822,10 @@ func fit_sheet_height(available: float) -> void:
 	var room := maxf(48.0, available - header_h - rule_h)
 	var preferred := 96.0
 	if _mode == "graph":
-		preferred = 112.0 if _short_layout else 160.0
+		# Graph mode asks for all the room the shell can give; the 120 dp plot
+		# floor is defended by the honest short-window caption, not by shrinking
+		# the sheet into a sliver.
+		preferred = maxf(120.0, available - header_h - rule_h)
 	_sheet.custom_minimum_size.y = maxf(48.0, minf(preferred, room))
 
 
@@ -1220,7 +1246,9 @@ func _geometry(canvas: Control) -> void:
 	if _mode == "graph":
 		_grid_left = 8.0
 		_grid_width = maxf(20.0, canvas.size.x - 16.0)
-		_graph_top = _ruler_h + GRAPH_TAB_HEIGHT + 22.0
+		# Ruler 22 + channel tabs 44 + 12 dp breathing room. The old 22 dp stats
+		# line is gone from the plot; the plot bottom is the sheet minus 28.
+		_graph_top = _ruler_h + GRAPH_TAB_HEIGHT + 12.0
 		_graph_baseline = maxf(_graph_top + 24.0, canvas.size.y - 28.0)
 		return
 	_label_width = 92.0 if canvas.size.x < 500.0 else 112.0
@@ -1389,17 +1417,19 @@ func _draw_graph(canvas: Control, w: float, h: float) -> void:
 		canvas.draw_rect(Rect2(selected_tab.position.x, selected_tab.end.y - 1.0, selected_tab.size.x, 1.0), Kit.TIME)
 	canvas.draw_line(Vector2(0.0, _graph_top), Vector2(w, _graph_top), Kit.BORDER_SOFT, 1.0)
 
+	var plot_height := maxf(0.0, _graph_baseline - _graph_top)
+	if plot_height < 120.0:
+		# The honest short-window state: name the way out instead of drawing a
+		# 24 dp sliver and calling it a curve editor.
+		canvas.draw_string(Kit.font_for(400),
+			Vector2(_grid_left + 12.0, _graph_top + plot_height * 0.5 + 4.0),
+			GRAPH_SHORT_CAPTION, HORIZONTAL_ALIGNMENT_LEFT,
+			maxf(0.0, w - _grid_left - 24.0), Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+		_draw_graph_playhead(canvas, h)
+		return
+
 	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel) if doc.selected_id != "" else []
-	var channel_peak := _channel_peak(doc.selected_id, _selected_channel, GRAPH_CHANNEL_SAMPLES) if not keys.is_empty() else 0.0
 	var has_segment := _selected_index >= 0 and _selected_index < keys.size() - 1 and _selected_data_id == doc.selected_id
-	var stats_y := _ruler_h + GRAPH_TAB_HEIGHT + 15.0
-	var stats_text := "PEAK %.1f · Tap a segment to shape easing" % channel_peak
-	if has_segment:
-		var stat_t0 := float(keys[_selected_index]["time"])
-		var stat_t1 := float(keys[_selected_index + 1]["time"])
-		var stat_transition := doc.get_key_transition(doc.selected_id, _selected_channel, _selected_index)
-		stats_text = "PEAK %.1f · SEG %.1f–%.1fs · %.2f× %s" % [channel_peak, stat_t0, stat_t1, stat_transition, _ease_short_name(stat_transition)]
-	canvas.draw_string(Kit.font_mono, Vector2(8.0, stats_y), stats_text, HORIZONTAL_ALIGNMENT_LEFT, maxf(0.0, w - 16.0), Kit.TYPE_MONO, Kit.TEXT_MUTED)
 
 	var graph_h := maxf(8.0, _graph_baseline - _graph_top)
 	canvas.draw_line(Vector2(_grid_left, _graph_baseline), Vector2(w - 8.0, _graph_baseline), Kit.BORDER, 1.0)
@@ -1549,12 +1579,21 @@ func channel_tab_rects() -> Array:
 	return rects
 
 func graph_plot_rect() -> Rect2:
-	## Plot area between the tab strip/stats line and the key diamond strip.
+	## Plot area between the channel tab strip and the key diamond strip.
 	if _sheet != null:
 		_geometry(_sheet)
-	var top := _ruler_h + GRAPH_TAB_HEIGHT + 22.0
+	var top := _graph_top
 	var bottom := maxf(top + 8.0, _graph_baseline)
 	return Rect2(_grid_left, top, _grid_width, bottom - top)
+
+
+func graph_caption() -> String:
+	## The exact honest caption drawn when the sheet cannot afford 120 dp.
+	if _mode != "graph":
+		return ""
+	if graph_plot_rect().size.y < 120.0:
+		return GRAPH_SHORT_CAPTION
+	return ""
 
 func graph_height_hint() -> float:
 	return 64.0 if _mode == "graph" else 0.0
@@ -1562,6 +1601,7 @@ func graph_height_hint() -> float:
 func set_channel(channel: String) -> void:
 	if doc == null or not (channel in doc.CHANNELS):
 		return
+	var changed := channel != _selected_channel
 	_selected_channel = channel
 	_selected_index = -1
 	_selected_data_id = ""
@@ -1573,6 +1613,41 @@ func set_channel(channel: String) -> void:
 	_key_hits.clear()
 	_graph_max_speed = 0.0
 	_refresh_transport(doc.current_time, doc.is_playing)
+	if _sheet != null:
+		_sheet.queue_redraw()
+	if changed:
+		channel_selected.emit(channel)
+
+
+func channel() -> String:
+	return _selected_channel
+
+
+## The Expand control in the transport row, for shell/tests layout checks.
+func expand_button() -> Button:
+	return _expand_button
+
+
+func workspace_mode() -> bool:
+	return _workspace_mode
+
+
+## The landscape workspace owns the sheet for its lifetime: dope only, no mode
+## tabs, no More, no second transport. The editor restores the normal chrome
+## when the workspace closes.
+func set_workspace_mode(enabled: bool) -> void:
+	if _workspace_mode == enabled:
+		_refresh_compact()
+		return
+	_workspace_mode = enabled
+	if enabled:
+		set_mode("dope")
+		if _duration_open:
+			close_duration_row()
+		_dismiss_gesture_hint()
+		if _compact_header != null:
+			_compact_header.visible = false
+	_refresh_compact()
 	if _sheet != null:
 		_sheet.queue_redraw()
 
@@ -1939,8 +2014,13 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_geometry(canvas)
 	# The scrollbar band owns its thumb drag and its track tap while there is
 	# something to pan. Keys keep a chance to win first so a diamond at the
-	# bottom row stays grabbable.
-	if _view_pannable() and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
+	# bottom row stays grabbable. The ruler and the graph tab strip always win:
+	# on a 48 dp sheet the 44 dp hit band overlaps them, and a touch on the
+	# ruler must scrub (and pause) rather than silently pan the window.
+	var chrome_top := _ruler_h
+	if _mode == "graph":
+		chrome_top += GRAPH_TAB_HEIGHT
+	if _view_pannable() and pos.y > chrome_top and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
 		var thumb: Rect2 = scrollbar_thumb_rect()
 		if pos.x >= thumb.position.x - 8.0 and pos.x <= thumb.end.x + 8.0:
 			_scroll_dragging = true
@@ -2008,10 +2088,8 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		if pos.y > _ruler_h and pos.x < _label_width:
 			var ci := int(floor((pos.y - _ruler_h) / maxf(1.0, _row_h)))
 			if ci >= 0 and ci < doc.CHANNELS.size():
-				_selected_channel = str(doc.CHANNELS[ci])
-				_selected_index = -1
-				_refresh_transport(doc.current_time, doc.is_playing)
-				canvas.queue_redraw()
+				# The full 44 dp channel row is the target, not just the label.
+				set_channel(str(doc.CHANNELS[ci]))
 			return
 		_scrubbing = true
 		if doc.is_playing:
@@ -2033,7 +2111,7 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		return
 	var ci := int(floor((pos.y - _ruler_h) / maxf(1.0, _row_h)))
 	if ci >= 0 and ci < doc.CHANNELS.size():
-		_selected_channel = str(doc.CHANNELS[ci])
+		set_channel(str(doc.CHANNELS[ci]))
 	_selected_index = -1
 	_refresh_transport(doc.current_time, doc.is_playing)
 	_scrubbing = true

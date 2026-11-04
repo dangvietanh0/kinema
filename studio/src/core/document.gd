@@ -42,6 +42,7 @@ const CHANNEL_ICONS := {
 	"scale": "tool-scale",
 }
 const ObjImporter = preload("res://src/core/obj_importer.gd")
+const SpeedCurve = preload("res://src/core/speed_curve.gd")
 const AnimationSystemScript = preload("res://src/core/animation_system.gd")
 const MediaSystemScript = preload("res://src/core/media_system.gd")
 const RigSystemScript = preload("res://src/core/rig_system.gd")
@@ -1429,6 +1430,186 @@ func set_channel_transition(id: String, channel: String, value: float) -> void:
 	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
+
+func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit keys") -> Dictionary:
+	## Apply a batch of key edits against the pre-edit track in one undo entry.
+	## Each edit refers to an index in the current track or inserts with -1.
+	## Indices in the result point at the edited keys after the time sort.
+	if not (channel in CHANNELS):
+		return {"ok": false, "error": "Unknown channel.", "indices": []}
+	var track := get_track(id, channel)
+	var snapshot: Array = []
+	if track >= 0:
+		for ki in range(animation.track_get_key_count(track)):
+			snapshot.append({
+				"time": float(animation.track_get_key_time(track, ki)),
+				"value": animation.track_get_key_value(track, ki),
+				"transition": float(animation.track_get_key_transition(track, ki)),
+			})
+	var entries: Array = []
+	for si in range(snapshot.size()):
+		var raw: Dictionary = snapshot[si]
+		entries.append({
+			"time": float(raw["time"]),
+			"value": raw["value"],
+			"transition": float(raw["transition"]),
+			"deleted": false,
+			"token": si,
+		})
+	var inserts: Array = []
+	var edit_tokens: Array = []
+	var next_token := snapshot.size()
+	for edit in edits:
+		if not (edit is Dictionary):
+			return {"ok": false, "error": "Key edits must be dictionaries.", "indices": []}
+		var change: Dictionary = edit
+		var index := int(change.get("index", -1))
+		if index < -1 or index >= entries.size():
+			return {"ok": false, "error": "Key index %d is out of range." % index, "indices": []}
+		if index < 0:
+			var insert_time := float(change.get("time", current_time))
+			var insert_value: Variant = change.get("value", null)
+			if insert_value == null:
+				insert_value = sample_channel(id, channel, insert_time)
+			inserts.append({
+				"time": insert_time,
+				"value": insert_value,
+				"transition": float(change.get("transition", 1.0)),
+				"deleted": false,
+				"token": next_token,
+			})
+			edit_tokens.append(next_token)
+			next_token += 1
+			continue
+		var entry: Dictionary = entries[index]
+		if bool(change.get("delete", false)):
+			entry["deleted"] = true
+			continue
+		if change.has("time"):
+			entry["time"] = float(change["time"])
+		if change.has("value"):
+			entry["value"] = change["value"]
+		if change.has("transition"):
+			entry["transition"] = float(change["transition"])
+		edit_tokens.append(int(entry["token"]))
+	var live: Array = []
+	for entry in entries:
+		if not bool(entry["deleted"]):
+			live.append(entry)
+	live.append_array(inserts)
+	live.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if is_equal_approx(float(a["time"]), float(b["time"])):
+			return int(a["token"]) < int(b["token"])
+		return float(a["time"]) < float(b["time"])
+	)
+	var final_indices_by_token := {}
+	for fi in range(live.size()):
+		final_indices_by_token[int(live[fi]["token"])] = fi
+	begin_edit(label)
+	if track < 0 and not live.is_empty():
+		track = _ensure_track(id, channel)
+	if track >= 0:
+		for ki in range(animation.track_get_key_count(track) - 1, -1, -1):
+			animation.track_remove_key(track, ki)
+		if live.is_empty():
+			animation.remove_track(track)
+		else:
+			for entry in live:
+				var new_index := _insert_track_value(track, channel, float(entry["time"]), entry["value"])
+				if new_index >= 0:
+					animation.track_set_key_transition(track, new_index, clampf(float(entry["transition"]), 0.0, 4.0))
+	end_edit()
+	var result_indices: Array = []
+	for token in edit_tokens:
+		if final_indices_by_token.has(int(token)):
+			result_indices.append(int(final_indices_by_token[int(token)]))
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
+	scene_changed.emit()
+	if anim_player != null:
+		anim_player.seek(current_time, true)
+	return {"ok": true, "error": "", "indices": result_indices}
+
+
+func bake_curve_segment(id: String, channel: String, key_index: int, curve_id: String) -> Dictionary:
+	## Replace one selected→next segment with real sampled keys. The endpoints
+	## keep their values and the whole bake is a single undo entry.
+	var track := get_track(id, channel)
+	if track < 0:
+		return {"ok": false, "inserted": 0, "reason": "The channel has no keys.", "message": "The channel has no keys."}
+	var count := animation.track_get_key_count(track)
+	if key_index < 0 or key_index >= count:
+		return {"ok": false, "inserted": 0, "reason": "The selected key is out of range.", "message": "The selected key is out of range."}
+	if key_index >= count - 1:
+		return {
+			"ok": false,
+			"inserted": 0,
+			"reason": "The last key has no following segment.",
+			"message": "The last key has no following segment.",
+		}
+	var t0 := float(animation.track_get_key_time(track, key_index))
+	var t1 := float(animation.track_get_key_time(track, key_index + 1))
+	var v0: Variant = animation.track_get_key_value(track, key_index)
+	var v1: Variant = animation.track_get_key_value(track, key_index + 1)
+	var span := maxf(0.0, t1 - t0)
+	var frames := span * float(fps)
+	var edits: Array = []
+	if frames < 2.0:
+		edits.append({
+			"index": -1,
+			"time": (t0 + t1) * 0.5,
+			"value": _curve_value(channel, v0, v1, SpeedCurve.evaluate(curve_id, 0.5)),
+			"transition": 1.0,
+		})
+		var short_result := apply_key_edits(id, channel, edits, "Bake curve")
+		return {
+			"ok": bool(short_result.get("ok", false)),
+			"inserted": 1 if bool(short_result.get("ok", false)) else 0,
+			"reason": "Segment is shorter than two frames; baked one midpoint." if bool(short_result.get("ok", false)) else str(short_result.get("error", "")),
+			"message": "Segment is shorter than two frames; baked one midpoint." if bool(short_result.get("ok", false)) else str(short_result.get("error", "")),
+		}
+	var n := clampi(int(round(frames)), 8, 48)
+	for u in range(1, n):
+		var fraction := float(u) / float(n)
+		edits.append({
+			"index": -1,
+			"time": t0 + fraction * span,
+			"value": _curve_value(channel, v0, v1, SpeedCurve.evaluate(curve_id, fraction)),
+			"transition": 1.0,
+		})
+	var result := apply_key_edits(id, channel, edits, "Bake curve")
+	var inserted := int(edits.size()) if bool(result.get("ok", false)) else 0
+	var message := "%s baked · %d keys" % [SpeedCurve.family_label(curve_id), inserted]
+	return {
+		"ok": bool(result.get("ok", false)),
+		"inserted": inserted,
+		"reason": "" if bool(result.get("ok", false)) else str(result.get("error", "")),
+		"message": message if bool(result.get("ok", false)) else str(result.get("error", "")),
+	}
+
+
+func _curve_value(channel: String, v0: Variant, v1: Variant, fraction: float) -> Variant:
+	if channel == "rotation":
+		var q0: Quaternion = _as_quat(v0).normalized()
+		var q1: Quaternion = _as_quat(v1).normalized()
+		var delta := q1 * q0.inverse()
+		delta = delta.normalized()
+		var angle := 2.0 * acos(clampf(delta.w, -1.0, 1.0))
+		if angle > PI:
+			angle -= TAU
+		var axis := Vector3(delta.x, delta.y, delta.z)
+		if axis.length_squared() < 0.0000001:
+			return q0
+		return (Quaternion(axis.normalized(), angle * fraction) * q0).normalized()
+	if channel == "position" or channel == "scale":
+		var a: Vector3 = _as_vec3(v0)
+		var b: Vector3 = _as_vec3(v1)
+		return a.lerp(b, fraction)
+	if v0 is float or v0 is int:
+		return lerpf(float(v0), float(v1), fraction)
+	return v0
+
 
 func sample_channel(id: String, channel: String, time: float) -> Variant:
 	## Interpolated value at an arbitrary time, straight from the animation
