@@ -66,6 +66,7 @@ func _ready() -> void:
 	await _test_ik()
 	await _test_pose_and_bone_keys()
 	await _test_imported_adoption()
+	await _test_gltf_external_buffers()
 	await _test_ui()
 	await _test_overlay()
 	await _test_overlay_hit_transform()
@@ -825,6 +826,169 @@ func _test_imported_adoption() -> void:
 			_check((doc.rig_system.get_rig(object_id).get("bones", []) as Array).size() == bones_before, "pressing Add bone on an imported rig changes nothing")
 	panel.queue_free()
 	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# C2c — glTF external buffers and textures
+# -------------------------------------------------------------------------
+
+const GLTF_MISSING := "This .gltf references files that are not next to it. Move the .gltf, its .bin and its textures into one folder, or export a .glb."
+const GLTF_ESCAPE := "This .gltf references a file outside its folder. Export it as a .glb or keep every file in one folder."
+
+
+func _test_gltf_external_buffers() -> void:
+	print("RIG STEP: glTF external resources")
+	var source_dir := _tmp_dir.path_join("gltf_source")
+	_rmrf(source_dir)
+	DirAccess.make_dir_recursive_absolute(source_dir)
+	var bin_bytes := _gltf_bin_bytes()
+
+	var valid_path := source_dir.path_join("mesh.gltf")
+	_write_bytes(valid_path, _gltf_json("mesh.bin", true).to_utf8_buffer())
+	_write_bytes(source_dir.path_join("mesh.bin"), bin_bytes)
+	var valid: Dictionary = Store.import_model(valid_path, _tmp_dir, "Tri")
+	_check(bool(valid.get("ok", false)), "a .gltf with its .bin imports")
+	var rel_path := str(valid.get("rel_path", ""))
+	_check(rel_path == "models/mesh/mesh.gltf", "the .gltf keeps a per-model folder: %s" % rel_path)
+	_check(FileAccess.file_exists(_tmp_dir.path_join(rel_path)), "the copied .gltf exists in the project")
+	_check(FileAccess.file_exists(_tmp_dir.path_join("models/mesh/mesh.bin")), "the sibling .bin is copied next to the .gltf")
+	var copied: Array = _list_files(_tmp_dir.path_join("models/mesh"))
+	_check(copied.size() == 2, "a data: URI is skipped and creates no file: %s" % str(copied))
+
+	var doc := _new_doc("glTF Import")
+	var object_id: String = doc.add_imported(rel_path, "Tri")
+	var generated := _find_mesh_instance(doc.nodes.get(object_id))
+	_check(generated != null and generated.mesh != null, "the imported .gltf spawns a node with a real mesh")
+	doc.queue_free()
+
+	var missing_path := source_dir.path_join("missing.gltf")
+	_write_bytes(missing_path, _gltf_json("missing.bin", false).to_utf8_buffer())
+	var missing: Dictionary = Store.import_model(missing_path, _tmp_dir, "Missing")
+	_check(not bool(missing.get("ok", true)), "a .gltf with a missing sibling is rejected")
+	_check(str(missing.get("error", "")) == GLTF_MISSING, "the missing-sibling refusal is exact")
+	_check(not DirAccess.dir_exists_absolute(_tmp_dir.path_join("models/missing")), "a rejected import leaves no partial model folder")
+
+	var escape_path := source_dir.path_join("escape.gltf")
+	_write_bytes(escape_path, _gltf_json("../escape.bin", false).to_utf8_buffer())
+	_write_bytes(_tmp_dir.path_join("escape.bin"), bin_bytes)
+	var escaped: Dictionary = Store.import_model(escape_path, _tmp_dir, "Escape")
+	_check(not bool(escaped.get("ok", true)), "a path that escapes the source folder is rejected")
+	_check(str(escaped.get("error", "")) == GLTF_ESCAPE, "the escaping-path refusal is exact")
+	_check(not DirAccess.dir_exists_absolute(_tmp_dir.path_join("models/escape")), "an escaping import writes nothing")
+
+	var glb_path := source_dir.path_join("cube.glb")
+	_write_bytes(glb_path, _glb_bytes(_gltf_glb_json()))
+	var glb: Dictionary = Store.import_model(glb_path, _tmp_dir, "Cube")
+	_check(bool(glb.get("ok", false)) and str(glb.get("extension", "")) == "glb", "a .glb still imports unchanged")
+
+	var obj_path := source_dir.path_join("triangle.obj")
+	_write_bytes(obj_path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n".to_utf8_buffer())
+	var obj: Dictionary = Store.import_model(obj_path, _tmp_dir, "Triangle")
+	_check(bool(obj.get("ok", false)) and str(obj.get("extension", "")) == "obj", "an .obj still imports unchanged")
+	_rmrf(source_dir)
+
+
+func _gltf_json(buffer_uri: String, include_data_image: bool = false) -> String:
+	var data := {
+		"asset": {"version": "2.0"},
+		"scene": 0,
+		"scenes": [{"nodes": [0]}],
+		"nodes": [{"mesh": 0}],
+		"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "mode": 4}]}],
+		"buffers": [{"uri": buffer_uri, "byteLength": 42}],
+		"bufferViews": [
+			{"buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962},
+			{"buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963},
+		],
+		"accessors": [
+			{
+				"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+				"min": [0, 0, 0], "max": [1, 1, 0],
+			},
+			{"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"},
+		],
+	}
+	if include_data_image:
+		data["images"] = [{
+			"uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+		}]
+	return JSON.stringify(data)
+
+
+func _gltf_glb_json() -> Dictionary:
+	var data: Dictionary = JSON.parse_string(_gltf_json("", false))
+	var buffer: Dictionary = (data["buffers"] as Array)[0]
+	buffer.erase("uri")
+	buffer["byteLength"] = 42
+	return data
+
+
+func _gltf_bin_bytes() -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(42)
+	var positions := [
+		Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0),
+	]
+	for i in range(positions.size()):
+		var p: Vector3 = positions[i]
+		bytes.encode_float(i * 12, p.x)
+		bytes.encode_float(i * 12 + 4, p.y)
+		bytes.encode_float(i * 12 + 8, p.z)
+	bytes.encode_u16(36, 0)
+	bytes.encode_u16(38, 1)
+	bytes.encode_u16(40, 2)
+	return bytes
+
+
+func _glb_bytes(json_data: Dictionary) -> PackedByteArray:
+	var json_bytes := JSON.stringify(json_data).to_utf8_buffer()
+	while json_bytes.size() % 4 != 0:
+		json_bytes.append(0x20)
+	var bin_bytes := _gltf_bin_bytes()
+	while bin_bytes.size() % 4 != 0:
+		bin_bytes.append(0)
+	var stream := StreamPeerBuffer.new()
+	stream.big_endian = false
+	stream.put_data("glTF".to_utf8_buffer())
+	stream.put_u32(2)
+	stream.put_u32(12 + 8 + json_bytes.size() + 8 + bin_bytes.size())
+	stream.put_u32(json_bytes.size())
+	stream.put_u32(0x4E4F534A)
+	stream.put_data(json_bytes)
+	stream.put_u32(bin_bytes.size())
+	stream.put_u32(0x004E4942)
+	stream.put_data(bin_bytes)
+	return stream.data_array
+
+
+func _write_bytes(path: String, bytes: PackedByteArray) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_buffer(bytes)
+	file.close()
+
+
+func _list_files(path: String) -> Array:
+	var out: Array = []
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return out
+	for name in dir.get_files():
+		out.append(name)
+	return out
+
+
+func _find_mesh_instance(node: Node) -> MeshInstance3D:
+	if node == null:
+		return null
+	if node is MeshInstance3D:
+		return node as MeshInstance3D
+	for child in node.get_children():
+		var found := _find_mesh_instance(child)
+		if found != null:
+			return found
+	return null
 
 
 # -------------------------------------------------------------------------
