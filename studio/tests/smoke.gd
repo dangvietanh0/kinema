@@ -294,9 +294,9 @@ func _ready() -> void:
 	if doc.rig_system != null:
 		_check(doc.rig_system._document == doc, "rig subsystem is owned by the document")
 	var contract_data: Dictionary = doc.to_data()
-	_check(int(contract_data.get("format", 0)) == 2, "documents serialize as format 2")
-	for key in ["clips", "layers", "rigs", "media"]:
-		_check(contract_data.has(key), "format 2 carries %s" % key)
+	_check(int(contract_data.get("format", 0)) == 3, "documents serialize as format 3")
+	for key in ["clips", "layers", "rigs", "media", "materials"]:
+		_check(contract_data.has(key), "format 3 carries %s" % key)
 	_check(is_equal_approx(doc.sequence_duration(), doc.duration), "sequence duration falls back to the active clip")
 	_check(is_equal_approx(doc.sequence_time(), doc.current_time), "sequence time falls back to the clip time")
 	_check(not doc.is_sequence_playing(), "sequence is stopped by default")
