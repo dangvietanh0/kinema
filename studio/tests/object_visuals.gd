@@ -54,6 +54,7 @@ func _ready() -> void:
 		_finish()
 		return
 	await _test_editing_markers()
+	await _test_material_visuals()
 	await _test_marker_bodies()
 	await _test_frustum()
 	await _test_directional_light()
@@ -147,6 +148,52 @@ func _is_mesh(marker: Node) -> bool:
 # -------------------------------------------------------------------------
 # 1. Editing view shows markers; render mode still hides them
 # -------------------------------------------------------------------------
+
+func _test_material_visuals() -> void:
+	print("OBJECT VISUALS STEP: material visuals")
+	var project_dir := ProjectSettings.globalize_path("user://object_visuals_project")
+	var textures_dir := project_dir.path_join("textures")
+	DirAccess.make_dir_recursive_absolute(textures_dir)
+	var albedo := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	albedo.fill(Color(0.2, 0.55, 0.8, 1.0))
+	albedo.save_png(textures_dir.path_join("albedo.png"))
+	var normal := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	normal.fill(Color(0.5, 0.5, 1.0, 1.0))
+	normal.save_png(textures_dir.path_join("normal.png"))
+	_doc.project_dir = project_dir
+
+	var cube_id: String = _doc.add_primitive("box")
+	await get_tree().process_frame
+	var cube_root: Node3D = _doc.nodes.get(cube_id)
+	var cube_mesh: MeshInstance3D = cube_root.get_node("Mesh")
+	var legacy: Material = cube_mesh.get_active_material(0)
+	var material_id: String = _doc.material_system.create_material("Visual Material", "matte")
+	_doc.material_system.update_material(material_id, {
+		"albedo_texture": "textures/albedo.png",
+		"normal_texture": "textures/normal.png",
+		"normal_scale": 0.8,
+		"shading": "pbr",
+	})
+	_doc.material_system.assign_material(cube_id, material_id)
+	await get_tree().process_frame
+	var assigned: Material = cube_mesh.get_active_material(0)
+	_check(assigned != null and legacy != null and assigned != legacy,
+		"a material-assigned primitive uses the library resource")
+	var standard := assigned as StandardMaterial3D
+	_check(standard != null and standard.albedo_texture != null,
+		"the assigned resource carries its albedo texture")
+	_check(standard != null and standard.normal_enabled and standard.normal_texture != null,
+		"the assigned resource enables its normal map")
+	_doc.material_system.update_material(material_id, {"shading": "unlit"})
+	await get_tree().process_frame
+	var unlit := cube_mesh.get_active_material(0) as StandardMaterial3D
+	_check(unlit != null and unlit.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED,
+		"an unlit material resolves to the unshaded shading mode")
+
+	_doc.delete_object(cube_id)
+	_doc.set_selection(_cam_id)
+	await _refresh()
+
 
 func _test_editing_markers() -> void:
 	print("OBJECT VISUALS STEP: editing markers")

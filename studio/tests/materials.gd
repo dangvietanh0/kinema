@@ -9,6 +9,10 @@ extends Node
 const DocumentScript = preload("res://src/core/document.gd")
 const MaterialSystemScript = preload("res://src/core/material_system.gd")
 const ProjectStoreScript = preload("res://src/core/project_store.gd")
+const InspectorScript = preload("res://src/ui/inspector.gd")
+const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
+const MaterialEditorSheetScript = preload("res://src/ui/material_editor_sheet.gd")
+const KitScript = preload("res://src/ui/kit.gd")
 
 const RECORD_KEYS := [
 	"id", "name", "shading", "albedo_color", "albedo_texture", "normal_texture",
@@ -53,6 +57,7 @@ func _ready() -> void:
 	await _test_assignment()
 	await _test_texture_import()
 	await _test_adoption()
+	await _test_material_ui()
 	_finish()
 
 
@@ -832,3 +837,209 @@ func _test_adoption() -> void:
 
 	doc.queue_free()
 	capped_doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 18: inspector, library sheet and editor sheet
+# -------------------------------------------------------------------------
+
+func _test_material_ui() -> void:
+	var doc = _new_document()
+	var object_id: String = doc.add_primitive("box")
+	var root: Node3D = doc.nodes.get(object_id)
+	var mesh_instance: MeshInstance3D = root.get_node("Mesh")
+	mesh_instance.mesh = _two_surface_mesh()
+
+	var inspector = InspectorScript.new()
+	add_child(inspector)
+	inspector.setup(doc)
+	await get_tree().process_frame
+	_check(inspector.object_material_text() == "Legacy colour", "an unassigned object shows the legacy colour")
+	_check(inspector.legacy_visible(), "legacy colour controls appear without a library material")
+	_check(inspector._object_choose != null \
+		and inspector._object_choose.custom_minimum_size == Vector2(96.0, 44.0),
+		"Choose material is 96x44")
+	_check(inspector._object_edit != null and inspector._object_edit.disabled,
+		"Edit material is disabled with no material")
+
+	var captured: Dictionary = {}
+	inspector.choose_material_requested.connect(func(target: Dictionary) -> void:
+		captured["target"] = target
+	)
+	inspector._object_choose.pressed.emit()
+	var object_target: Dictionary = captured.get("target", {})
+	_check(str(object_target.get("object_id", "")) == object_id
+		and str(object_target.get("part_path", "x")) == ""
+		and int(object_target.get("surface", 9)) == -1,
+		"the object section targets the object root at surface -1")
+
+	var material_id: String = doc.material_system.create_material("Painted", "satin")
+	doc.material_system.assign_material(object_id, material_id)
+	inspector._rebuild()
+	await get_tree().process_frame
+	_check(inspector.object_material_text() == "Painted", "the object section shows the assigned material name")
+	_check(not inspector.legacy_visible(), "legacy controls hide once a material is assigned")
+	_check(not inspector._object_edit.disabled, "Edit material enables with a material")
+
+	var builds: int = inspector.section_build_count
+	doc.part_selection_changed.emit(object_id, "")
+	_check(inspector.section_build_count == builds + 1, "the inspector rebuilds on part_selection_changed")
+
+	doc.selected_part_object_id = object_id
+	doc.selected_part_path = "Mesh"
+	inspector._rebuild()
+	await get_tree().process_frame
+	_check(inspector.part_material_text().begins_with("Part · Mesh"),
+		"a mesh part shows its name in the Part material section")
+	var chips: Array = inspector.surface_chips()
+	_check(chips.size() == 3, "a two-surface mesh shows All, 0 and 1")
+	for chip in chips:
+		_check((chip as Button).custom_minimum_size.y >= 44.0, "a surface chip is at least 44 dp tall")
+	chips[0].pressed.emit()
+	await get_tree().process_frame
+	_check(inspector.active_surface() == -1, "the All chip selects surface -1")
+	var surface_chips: Array = inspector.surface_chips()
+	surface_chips[2].pressed.emit()
+	await get_tree().process_frame
+	_check(inspector.active_surface() == 1, "a numbered chip selects that surface")
+	captured.clear()
+	inspector._part_choose.pressed.emit()
+	var part_target: Dictionary = captured.get("target", {})
+	_check(str(part_target.get("part_path", "")) == "Mesh"
+		and int(part_target.get("surface", 9)) == 1,
+		"the part action carries the active surface")
+
+	doc.selected_part_path = "NoSuchPart"
+	inspector._rebuild()
+	await get_tree().process_frame
+	_check(inspector.part_material_text() \
+		== "Part · NoSuchPart · No mesh. Materials apply at the object level.",
+		"a non-mesh part shows the exact no-mesh copy")
+	_check(inspector._part_choose == null, "a non-mesh part exposes no part actions")
+	_check(inspector.object_material_text() == "Painted", "the object section survives a non-mesh part")
+	inspector.queue_free()
+
+	# Library sheet empty state, creation and duplicate.
+	var sheet_doc = _new_document()
+	var sheet_object: String = sheet_doc.add_primitive("box")
+	var sheet = MaterialSheetScript.new()
+	sheet.setup(sheet_doc, {"object_id": sheet_object, "part_path": "", "surface": -1})
+	add_child(sheet)
+	await get_tree().process_frame
+	_check(sheet.row_count() == 0, "an empty library lists no rows")
+	_check(sheet.empty_text() == "No materials yet. Create one to use textures and shading models.",
+		"the empty library copy is exact")
+	_check(sheet._new_button.custom_minimum_size.y >= 44.0, "New material is 44 dp tall")
+	_check(sheet._duplicate_button.custom_minimum_size.y >= 44.0, "Duplicate is 44 dp tall")
+	sheet._on_new()
+	await get_tree().process_frame
+	_check(sheet.row_count() == 1, "New material adds one row")
+	var first_id := sheet.selected_id()
+	_check(first_id != "", "a created material is selected")
+	_check(sheet.row_height(first_id) >= 44.0, "a library row is 44 dp tall")
+	_check(sheet.assign_button(first_id) != null \
+		and sheet.assign_button(first_id).custom_minimum_size == Vector2(96.0, 44.0),
+		"Assign is 96x44")
+	sheet._on_duplicate()
+	await get_tree().process_frame
+	_check(sheet.row_count() == 2, "Duplicate adds one row")
+	var copy_id := sheet.selected_id()
+	_check(copy_id != "" and copy_id != first_id, "Duplicate selects the copy")
+	var assigned: Dictionary = {}
+	sheet.assigned.connect(func(material_id: String) -> void:
+		assigned["id"] = material_id
+	)
+	sheet.assign_material(first_id)
+	var sheet_record: Dictionary = sheet_doc.get_object(sheet_object)
+	_check(str(sheet_record.get("material_id", "")) == first_id,
+		"Assign writes the target object material")
+	_check(str(assigned.get("id", "")) == first_id, "Assign reports the material it assigned")
+	sheet.queue_free()
+
+	# Editor sheet controls, shading, locks and warnings.
+	var edit_doc = _new_document()
+	var edit_object: String = edit_doc.add_primitive("box")
+	var edit_root: Node3D = edit_doc.nodes.get(edit_object)
+	var edit_mesh: MeshInstance3D = edit_root.get_node("Mesh")
+	var edit_id: String = edit_doc.material_system.create_material("Editor", "matte")
+	var editor_sheet = MaterialEditorSheetScript.new()
+	editor_sheet.setup(edit_doc, edit_id)
+	add_child(editor_sheet)
+	await get_tree().process_frame
+	for model in ["pbr", "unlit", "toon", "rim"]:
+		var button: Button = editor_sheet.shading_button(model)
+		_check(button != null and button.custom_minimum_size.y >= 44.0,
+			"the %s shading segment is 44 dp tall" % model)
+	_check(editor_sheet.orm_label_text() == "ORM (R=AO · G=Roughness · B=Metallic)",
+		"the ORM slot label is exact")
+	_check(editor_sheet.texture_filter() == "*.png, *.jpg, *.jpeg, *.webp;Images",
+		"the texture picker filter is exact")
+	_check(not editor_sheet.rim_visible(), "rim fields stay hidden for PBR")
+	_check(editor_sheet.emission_scrub() != null \
+		and is_equal_approx(editor_sheet.emission_scrub().max_value, 10.0),
+		"emission energy scrubs from 0 to 10")
+	_check(editor_sheet.uv_fields().size() == 4, "the editor exposes four UV numeric fields")
+	_check(editor_sheet.map_row_height("normal") >= 44.0, "a map row is 44 dp tall")
+
+	editor_sheet.shading_button("unlit").pressed.emit()
+	await get_tree().process_frame
+	_check(str(edit_doc.material_system.get_material(edit_id).get("shading", "")) == "unlit",
+		"Unlit updates the record")
+	editor_sheet.shading_button("rim").pressed.emit()
+	await get_tree().process_frame
+	_check(editor_sheet.rim_visible(), "rim fields appear for Rim")
+	editor_sheet.shading_button("pbr").pressed.emit()
+	await get_tree().process_frame
+	_check(not editor_sheet.rim_visible(), "rim fields hide again for PBR")
+
+	editor_sheet.set_map("roughness", "textures/rough.png")
+	editor_sheet.set_map("metallic", "textures/metal.png")
+	editor_sheet.set_map("ao", "textures/ao.png")
+	_check(not editor_sheet.slot_disabled("roughness"), "separate maps start enabled")
+	editor_sheet.set_map("orm", "textures/orm.png")
+	_check(editor_sheet.orm_reason_visible(), "the ORM lock explains itself")
+	_check(editor_sheet.orm_reason_text() \
+		== "Packed ORM supplies AO, roughness and metallic. Clear ORM to use separate maps.",
+		"the ORM lock copy is exact")
+	_check(editor_sheet.slot_disabled("roughness") and editor_sheet.slot_disabled("metallic") \
+		and editor_sheet.slot_disabled("ao"),
+		"ORM disables AO, roughness and metallic")
+	var locked_record: Dictionary = edit_doc.material_system.get_material(edit_id)
+	_check(str(locked_record.get("roughness_texture", "")) == "textures/rough.png" \
+		and str(locked_record.get("metallic_texture", "")) == "textures/metal.png" \
+		and str(locked_record.get("ao_texture", "")) == "textures/ao.png",
+		"the separate map files survive the ORM lock")
+	editor_sheet.clear_map("orm")
+	_check(not editor_sheet.slot_disabled("roughness"), "clearing ORM re-enables separate maps")
+	_check(not editor_sheet.orm_reason_visible(), "clearing ORM hides the lock copy")
+
+	editor_sheet.set_map("normal", "textures/missing.png")
+	_check(editor_sheet.slot_state("normal") == "textures/missing.png",
+		"a missing map shows its stored path")
+	_check(editor_sheet.slot_state_color("normal") == KitScript.WARNING,
+		"a missing map is a warning colour")
+
+	var bare_mesh := ArrayMesh.new()
+	var bare_arrays: Array = []
+	bare_arrays.resize(Mesh.ARRAY_MAX)
+	bare_arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
+		Vector3(-0.5, 0.0, 0.0), Vector3(0.5, 0.0, 0.0), Vector3(0.0, 0.5, 0.0),
+	])
+	bare_arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2])
+	bare_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, bare_arrays)
+	edit_mesh.mesh = bare_mesh
+	editor_sheet.set_target({"object_id": edit_object, "part_path": "Mesh", "surface": -1})
+	_check(editor_sheet.uv_warning_visible(), "a mesh without UVs warns about textures")
+	_check(editor_sheet.uv_warning_text() == "This part has no UVs; a texture will sample a single point.",
+		"the no-UV warning copy is exact")
+	_check(editor_sheet.duplicate_button() != null \
+		and editor_sheet.duplicate_button().custom_minimum_size.y >= 44.0,
+		"Duplicate is 44 dp tall in the editor")
+	_check(editor_sheet.delete_button() != null \
+		and editor_sheet.delete_button().custom_minimum_size.y >= 44.0,
+		"Delete is 44 dp tall in the editor")
+	editor_sheet.queue_free()
+
+	doc.queue_free()
+	sheet_doc.queue_free()
+	edit_doc.queue_free()

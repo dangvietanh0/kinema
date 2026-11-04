@@ -7,6 +7,9 @@ extends VBoxContainer
 
 signal add_requested
 signal color_requested(property: String)
+## Material targeting: the payload is {object_id, part_path, surface}.
+signal choose_material_requested(target: Dictionary)
+signal edit_material_requested(target: Dictionary)
 signal collapse_toggled(collapsed: bool)
 ## The Camera section asks the editor to enter look-through for this object.
 signal look_through_requested(camera_id: String)
@@ -36,6 +39,16 @@ var _color_button: Button
 var _key_buttons: Dictionary = {}
 var _swatch_value := Color(0.6, 0.6, 0.6)
 var _field_drag := false
+## Material section state. Surface -1 is the part-level slot ("All").
+var _object_material_label: Label
+var _object_choose: Button
+var _object_edit: Button
+var _part_material_label: Label
+var _part_choose: Button
+var _part_edit: Button
+var _surface_chips: Array[Button] = []
+var _active_surface := -1
+var _legacy_visible := false
 ## The header stays; the fields fold away so the scene list can use the dock.
 var collapsed := false
 ## Section build counter for diagnostics and the smoke suite.
@@ -54,6 +67,9 @@ func setup(document: Node3D) -> void:
 	doc.transform_changed.connect(_on_transform_changed)
 	doc.keyframes_changed.connect(_on_keyframes_changed)
 	doc.scene_changed.connect(_on_scene_changed)
+	doc.part_selection_changed.connect(_on_part_selection_changed)
+	if doc.material_system != null:
+		doc.material_system.materials_changed.connect(_on_materials_changed)
 	_rebuild()
 
 func _build_shell() -> void:
@@ -150,6 +166,16 @@ func _sync_footer_visibility() -> void:
 
 
 func _on_selection_changed(_id: String) -> void:
+	_active_surface = -1
+	_rebuild()
+
+
+func _on_part_selection_changed(_object_id: String, _part_path: String) -> void:
+	_active_surface = -1
+	_rebuild()
+
+
+func _on_materials_changed() -> void:
 	_rebuild()
 
 func _on_scene_changed() -> void:
@@ -199,6 +225,14 @@ func _rebuild() -> void:
 	_key_buttons.clear()
 	_color_button = null
 	_name_edit = null
+	_object_material_label = null
+	_object_choose = null
+	_object_edit = null
+	_part_material_label = null
+	_part_choose = null
+	_part_edit = null
+	_surface_chips.clear()
+	_legacy_visible = false
 	_built_for = ""
 	_badge.text = ""
 	_scroll.scroll_vertical = 0
@@ -325,24 +359,169 @@ func _build_transform_section() -> void:
 func _build_specifics(obj: Dictionary) -> void:
 	var kind := str(obj.get("kind", "mesh"))
 	if kind == "mesh":
-		_build_material(obj)
+		_build_object_material(obj)
+		_build_legacy_material(obj)
+		_build_part_material(obj)
+	elif kind == "import":
+		_build_object_material(obj)
+		_build_part_material(obj)
+		_build_import(obj)
 	elif kind == "light":
 		_build_light(obj)
 	elif kind == "camera":
 		_build_camera(obj)
-	elif kind == "import":
-		_build_import(obj)
 	else:
 		var hint := Kit.label("An empty transform. Use it as a motion anchor for other objects.", 11, Kit.TEXT_DIM)
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_content.add_child(hint)
 	_content.add_child(Kit.vsep())
 
-func _build_material(obj: Dictionary) -> void:
-	_content.add_child(Kit.section_label("Material"))
+func _build_object_material(obj: Dictionary) -> void:
+	_content.add_child(Kit.section_label("Object material"))
+	var id := str(obj.get("material_id", ""))
+	var record: Dictionary = doc.material_system.get_material(id) if doc.material_system != null and id != "" else {}
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	_content.add_child(row)
+	var swatch := PanelContainer.new()
+	swatch.custom_minimum_size = Vector2(22, 22)
+	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var color := Color.from_string(str(record.get("albedo_color", "#3A3A3A")), Kit.SURFACE_3) if not record.is_empty() else Color(0, 0, 0, 0)
+	swatch.add_theme_stylebox_override("panel", Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
+	row.add_child(swatch)
+	_object_material_label = Kit.label(str(record.get("name", "")) if not record.is_empty() else "Legacy colour",
+		12, Kit.TEXT_MUTED)
+	_object_material_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_object_material_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_object_material_label)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 6)
+	_content.add_child(actions)
+	_object_choose = Kit.text_button("Choose material", "", false, false)
+	_object_choose.custom_minimum_size = Vector2(96.0, 44.0)
+	_object_choose.pressed.connect(func() -> void: _request_material(false, "", -1))
+	actions.add_child(_object_choose)
+	_object_edit = Kit.text_button("Edit material", "", false, false)
+	_object_edit.custom_minimum_size = Vector2(96.0, 44.0)
+	_object_edit.disabled = record.is_empty()
+	_object_edit.pressed.connect(func() -> void: _request_material(true, "", -1))
+	actions.add_child(_object_edit)
+	if not record.is_empty():
+		var object_clear := Kit.icon_button("x", "Clear object material", 44, 14)
+		object_clear.pressed.connect(func() -> void: _clear_material("", -1))
+		actions.add_child(object_clear)
+
+func _build_legacy_material(obj: Dictionary) -> void:
+	# Legacy primitive controls only stand in when no library material reaches
+	# the object root. Assigning a material replaces the legacy look.
+	var resolved := ""
+	if doc.material_system != null:
+		resolved = doc.material_system.resolve_assignment(str(obj.get("id", "")), "", -1)
+	if resolved != "":
+		return
+	_legacy_visible = true
+	_content.add_child(Kit.section_label("Legacy look"))
 	_build_color_row("Base color", "color", str(obj.get("color", "#AAB2BF")))
 	_add_scrub("Roughness", "roughness", 0.0, 1.0)
 	_add_scrub("Metallic", "metallic", 0.0, 1.0)
+
+func _build_part_material(obj: Dictionary) -> void:
+	var object_id := str(obj.get("id", ""))
+	if doc.selected_part_object_id != object_id or doc.selected_part_path == "":
+		return
+	var part_path := doc.selected_part_path
+	var part_name := part_path.get_file()
+	_content.add_child(Kit.vsep())
+	_content.add_child(Kit.section_label("Part material"))
+	var root: Node3D = doc.nodes.get(object_id)
+	var node: Node3D = root.get_node_or_null(NodePath(part_path)) if root != null else null
+	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null \
+			and doc.material_system != null and doc.material_system.can_assign_part(object_id, part_path):
+		var mesh_instance := node as MeshInstance3D
+		_part_material_label = Kit.label("Part · " + part_name, 12, Kit.TEXT_MUTED)
+		_content.add_child(_part_material_label)
+		var actions := HBoxContainer.new()
+		actions.add_theme_constant_override("separation", 6)
+		_content.add_child(actions)
+		_part_choose = Kit.text_button("Choose", "", false, false)
+		_part_choose.custom_minimum_size = Vector2(96.0, 44.0)
+		_part_choose.pressed.connect(func() -> void: _request_material(false, part_path, _active_surface))
+		actions.add_child(_part_choose)
+		_part_edit = Kit.text_button("Edit", "", false, false)
+		_part_edit.custom_minimum_size = Vector2(96.0, 44.0)
+		var current: String = doc.material_system.resolve_assignment(object_id, part_path, _active_surface) \
+			if doc.material_system != null else ""
+		_part_edit.disabled = current == ""
+		_part_edit.pressed.connect(func() -> void: _request_material(true, part_path, _active_surface))
+		actions.add_child(_part_edit)
+		if current != "":
+			var part_clear := Kit.icon_button("x", "Clear part material", 44, 14)
+			part_clear.pressed.connect(func() -> void: _clear_material(part_path, _active_surface))
+			actions.add_child(part_clear)
+		if mesh_instance.mesh.get_surface_count() > 1:
+			var chips := HBoxContainer.new()
+			chips.add_theme_constant_override("separation", 6)
+			_content.add_child(chips)
+			_add_surface_chip(chips, "All", -1)
+			for surface in range(mesh_instance.mesh.get_surface_count()):
+				_add_surface_chip(chips, str(surface), surface)
+	else:
+		_part_material_label = Kit.label(
+			"Part · %s · No mesh. Materials apply at the object level." % part_name,
+			11, Kit.TEXT_DIM)
+		_part_material_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_content.add_child(_part_material_label)
+
+func _add_surface_chip(parent: HBoxContainer, text_value: String, surface: int) -> void:
+	var chip := Kit.text_button(text_value, "", false, true)
+	chip.custom_minimum_size = Vector2(44.0, 44.0)
+	chip.toggle_mode = true
+	chip.button_pressed = surface == _active_surface
+	chip.pressed.connect(func() -> void:
+		_active_surface = surface
+		_rebuild()
+	)
+	parent.add_child(chip)
+	_surface_chips.append(chip)
+
+func _request_material(edit: bool, part_path: String, surface: int) -> void:
+	var target := {
+		"object_id": _built_for,
+		"part_path": part_path,
+		"surface": surface,
+	}
+	if edit:
+		edit_material_requested.emit(target)
+	else:
+		choose_material_requested.emit(target)
+
+
+func _clear_material(part_path: String, surface: int) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	doc.begin_edit("Clear material")
+	doc.material_system.clear_material(_built_for, part_path, surface)
+	doc.end_edit()
+	_rebuild()
+
+func part_material_text() -> String:
+	return _part_material_label.text if _part_material_label != null else ""
+
+
+func object_material_text() -> String:
+	return _object_material_label.text if _object_material_label != null else ""
+
+
+func surface_chips() -> Array[Button]:
+	return _surface_chips.duplicate()
+
+
+func active_surface() -> int:
+	return _active_surface
+
+
+func legacy_visible() -> bool:
+	return _legacy_visible
 
 func _build_light(obj: Dictionary) -> void:
 	_content.add_child(Kit.section_label("Light"))
