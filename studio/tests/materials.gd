@@ -49,6 +49,7 @@ func _ready() -> void:
 	await _test_records()
 	await _test_persistence()
 	await _test_document_contract()
+	await _test_construction()
 	_finish()
 
 
@@ -263,3 +264,139 @@ func _test_document_contract() -> void:
 
 	doc.queue_free()
 	v2_doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 15: construction, shading and packed ORM
+# -------------------------------------------------------------------------
+
+func _make_texture(rel: String, color: Color = Color(0.8, 0.7, 0.6, 1.0)) -> String:
+	var path := _project_dir.path_join(rel)
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var image := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	image.fill(color)
+	image.save_png(path)
+	return rel
+
+
+func _test_construction() -> void:
+	var doc = _new_document()
+	var ms = doc.material_system
+	_make_texture("textures/test/albedo.png", Color(0.9, 0.1, 0.2, 1.0))
+	_make_texture("textures/test/normal.png", Color(0.5, 0.5, 1.0, 1.0))
+	_make_texture("textures/test/emission.png", Color(1.0, 0.8, 0.1, 1.0))
+	_make_texture("textures/test/orm.png", Color(0.2, 0.4, 0.6, 1.0))
+	_make_texture("textures/test/rough.png", Color(0.3, 0.3, 0.3, 1.0))
+	_make_texture("textures/test/metal.png", Color(0.4, 0.4, 0.4, 1.0))
+	_make_texture("textures/test/ao.png", Color(0.1, 0.1, 0.1, 1.0))
+
+	var pbr_id: String = ms.create_material("PBR", "satin")
+	ms.update_material(pbr_id, {
+		"albedo_color": "#336699",
+		"albedo_texture": "textures/test/albedo.png",
+		"normal_texture": "textures/test/normal.png",
+		"normal_scale": 0.65,
+		"roughness": 0.33,
+		"metallic": 0.44,
+		"metallic_specular": 0.66,
+		"uv1_scale": [2.5, 3.5],
+		"uv1_offset": [0.25, 0.75],
+		"texture_filter": 1,
+		"texture_repeat": false,
+	})
+	var pbr: BaseMaterial3D = ms.resource_for(pbr_id)
+	_check(pbr is StandardMaterial3D, "a PBR record builds a StandardMaterial3D")
+	_check(pbr.shading_mode == BaseMaterial3D.SHADING_MODE_PER_PIXEL, "PBR uses per-pixel shading")
+	_check(pbr.albedo_color.is_equal_approx(Color.from_string("#336699", Color.WHITE)), "albedo colour maps")
+	_check(_approx(pbr.roughness, 0.33), "roughness maps")
+	_check(_approx(pbr.metallic, 0.44), "metallic maps")
+	_check(_approx(pbr.metallic_specular, 0.66), "metallic specular maps")
+	_check(pbr.albedo_texture != null, "albedo texture loads")
+	_check(pbr.normal_enabled and pbr.normal_texture != null, "normal texture and flag are set")
+	_check(_approx(pbr.normal_scale, 0.65), "normal scale maps")
+	_check(pbr.uv1_scale.is_equal_approx(Vector3(2.5, 3.5, 1.0)), "UV scale maps to Vector3(x, y, 1)")
+	_check(pbr.uv1_offset.is_equal_approx(Vector3(0.25, 0.75, 0.0)), "UV offset maps to Vector3(x, y, 0)")
+	_check(pbr.texture_filter == BaseMaterial3D.TEXTURE_FILTER_LINEAR, "texture filter maps")
+	_check(pbr.texture_repeat == false, "texture repeat maps")
+	_check(ms.resource_for(pbr_id) == pbr, "one resource is reused per material id")
+
+	var unlit_id: String = ms.create_material("Unlit", "unlit")
+	_check(ms.resource_for(unlit_id).shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED,
+		"Unlit builds unshaded shading")
+	var toon_id: String = ms.create_material("Toon", "toon")
+	var toon: BaseMaterial3D = ms.resource_for(toon_id)
+	_check(toon.diffuse_mode == BaseMaterial3D.DIFFUSE_TOON, "Toon selects toon diffuse")
+	_check(toon.specular_mode == BaseMaterial3D.SPECULAR_TOON, "Toon selects toon specular")
+	var rim_id: String = ms.create_material("Rim", "matte")
+	ms.update_material(rim_id, {"shading": "rim", "rim": 0.8, "rim_tint": 0.3})
+	var rim: BaseMaterial3D = ms.resource_for(rim_id)
+	_check(rim.rim_enabled, "Rim enables the rim term")
+	_check(_approx(rim.rim, 0.8) and _approx(rim.rim_tint, 0.3), "Rim strength and tint map")
+
+	var emissive_id: String = ms.create_material("Glow", "matte")
+	var off: BaseMaterial3D = ms.resource_for(emissive_id)
+	_check(not off.emission_enabled, "zero emission energy disables emission")
+	ms.update_material(emissive_id, {
+		"emission_color": "#FF8800",
+		"emission_energy": 4.5,
+		"emission_texture": "textures/test/emission.png",
+	})
+	var glow: BaseMaterial3D = ms.resource_for(emissive_id)
+	_check(glow.emission_enabled, "positive emission energy enables emission")
+	_check(glow.emission.is_equal_approx(Color.from_string("#FF8800", Color.WHITE)), "emission colour maps")
+	_check(_approx(glow.emission_energy_multiplier, 4.5), "emission energy maps")
+	_check(glow.emission_texture != null, "emission texture maps")
+
+	var ao_id: String = ms.create_material("AO", "matte")
+	ms.update_material(ao_id, {"ao_texture": "textures/test/ao.png", "ao_texture_channel": 2})
+	var ao: BaseMaterial3D = ms.resource_for(ao_id)
+	_check(ao.ao_enabled and ao.ao_texture != null, "AO texture and flag are set")
+	_check(ao.ao_texture_channel == BaseMaterial3D.TEXTURE_CHANNEL_BLUE, "AO channel maps")
+
+	var orm_id: String = ms.create_material("Packed", "matte")
+	ms.update_material(orm_id, {
+		"orm_texture": "textures/test/orm.png",
+		"roughness_texture": "textures/test/rough.png",
+		"metallic_texture": "textures/test/metal.png",
+		"ao_texture": "textures/test/ao.png",
+		"roughness_texture_channel": 1,
+		"metallic_texture_channel": 2,
+	})
+	var orm: BaseMaterial3D = ms.resource_for(orm_id)
+	_check(orm is ORMMaterial3D, "a set ORM map builds an ORMMaterial3D")
+	_check(orm.orm_texture != null, "the packed ORM map is attached")
+	_check(orm.roughness_texture == null and orm.metallic_texture == null,
+		"separate roughness and metallic maps are suppressed while ORM is set")
+	_check(not orm.ao_enabled, "the separate AO map is suppressed while ORM is set")
+
+	ms.update_material(orm_id, {"orm_texture": ""})
+	var separate: BaseMaterial3D = ms.resource_for(orm_id)
+	_check(separate is StandardMaterial3D, "clearing ORM rebuilds a StandardMaterial3D")
+	_check(separate.roughness_texture != null and separate.metallic_texture != null,
+		"clearing ORM re-applies the separate maps")
+	_check(separate.ao_enabled and separate.ao_texture != null, "clearing ORM re-enables the AO map")
+
+	var missing_id: String = ms.create_material("Missing", "matte")
+	ms.update_material(missing_id, {
+		"normal_texture": "textures/test/absent-normal.png",
+		"albedo_texture": "textures/test/absent-albedo.png",
+	})
+	var missing: BaseMaterial3D = ms.resource_for(missing_id)
+	_check(missing != null, "a missing texture does not crash construction")
+	_check(not missing.normal_enabled and missing.normal_texture == null,
+		"a missing normal map stays disabled")
+	_check(missing.albedo_texture == null, "a missing albedo map stays empty")
+	_check(ms.missing_textures().has("textures/test/absent-normal.png"),
+		"missing_textures reports the missing normal map")
+	_check(ms.missing_textures().has("textures/test/absent-albedo.png"),
+		"missing_textures reports the missing albedo map")
+
+	var cache_before: BaseMaterial3D = ms.resource_for(pbr_id)
+	ms.clear_texture_cache()
+	var cache_after: BaseMaterial3D = ms.resource_for(pbr_id)
+	_check(cache_before != cache_after, "clear_texture_cache rebuilds resources")
+	ms.update_material(pbr_id, {"albedo_texture": "textures/test/emission.png"})
+	var replaced: BaseMaterial3D = ms.resource_for(pbr_id)
+	_check(replaced != cache_after, "a texture replacement rebuilds that material")
+
+	doc.queue_free()

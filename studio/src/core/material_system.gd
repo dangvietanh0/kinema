@@ -19,6 +19,10 @@ var last_error := ""
 var _document = null
 var _materials: Array[Dictionary] = []
 var _next_material_id := 1
+var _resources: Dictionary = {}
+var _textures: Dictionary = {}
+var _missing_textures: Array[String] = []
+var _missing_set: Dictionary = {}
 
 
 func setup(document) -> void:
@@ -29,6 +33,7 @@ func reset() -> void:
 	last_error = ""
 	_materials.clear()
 	_next_material_id = 1
+	clear_texture_cache()
 
 
 # -------------------------------------------------------------------------
@@ -45,6 +50,7 @@ func to_data() -> Dictionary:
 func load_data(raw: Dictionary) -> void:
 	_materials.clear()
 	_next_material_id = 1
+	clear_texture_cache()
 	if raw == null:
 		return
 	var records: Variant = raw.get("materials", [])
@@ -205,6 +211,7 @@ func delete_material(id: String) -> bool:
 		last_error = "Choose a material first."
 		return false
 	_materials.erase(record)
+	_resources.erase(id)
 	if _document != null and _document.has_method("get_object"):
 		for obj in _document.objects:
 			var changed := false
@@ -253,6 +260,9 @@ func update_material(id: String, patch: Dictionary) -> bool:
 			continue
 		if record.has(key):
 			record[key] = _coerce_value(key, patch[key])
+	_resources.erase(id)
+	if _document != null:
+		apply_all()
 	materials_changed.emit()
 	return true
 
@@ -302,6 +312,149 @@ func _coerce_value(key: String, value: Variant) -> Variant:	match key:
 
 
 # -------------------------------------------------------------------------
+# Construction and texture cache
+# -------------------------------------------------------------------------
+
+func missing_textures() -> Array[String]:
+	var out: Array[String] = []
+	out.assign(_missing_textures)
+	return out
+
+
+func clear_texture_cache() -> void:
+	_textures.clear()
+	_resources.clear()
+	_missing_textures.clear()
+	_missing_set.clear()
+
+
+func resource_for(material_id: String) -> BaseMaterial3D:
+	if _resources.has(material_id) and is_instance_valid(_resources[material_id]):
+		return _resources[material_id]
+	var record := _find(material_id)
+	if record.is_empty():
+		return null
+	var resource := build_material(record)
+	_resources[material_id] = resource
+	return resource
+
+
+func build_material(record: Dictionary) -> BaseMaterial3D:
+	var orm_path := str(record.get("orm_texture", ""))
+	var material: BaseMaterial3D
+	if orm_path != "":
+		material = ORMMaterial3D.new()
+	else:
+		material = StandardMaterial3D.new()
+	material.resource_name = str(record.get("name", "Material"))
+
+	match str(record.get("shading", "pbr")):
+		"unlit":
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		"toon":
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+			material.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
+			material.specular_mode = BaseMaterial3D.SPECULAR_TOON
+		"rim":
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+			material.rim_enabled = true
+			material.rim = clampf(float(record.get("rim", 1.0)), 0.0, 1.0)
+			material.rim_tint = clampf(float(record.get("rim_tint", 0.5)), 0.0, 1.0)
+		_:
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+
+	material.albedo_color = Color.from_string(str(record.get("albedo_color", "#B8BCC2")), Color(0.72, 0.74, 0.76))
+	var albedo := _load_texture(str(record.get("albedo_texture", "")))
+	if albedo != null:
+		material.albedo_texture = albedo
+
+	var normal := _load_texture(str(record.get("normal_texture", "")), true)
+	material.normal_enabled = normal != null
+	if normal != null:
+		material.normal_texture = normal
+		material.normal_scale = maxf(0.0, float(record.get("normal_scale", 1.0)))
+	else:
+		material.normal_texture = null
+
+	if orm_path != "":
+		var packed := _load_texture(orm_path)
+		if packed != null and material is ORMMaterial3D:
+			(material as ORMMaterial3D).orm_texture = packed
+	else:
+		var roughness_texture := _load_texture(str(record.get("roughness_texture", "")))
+		material.roughness_texture = roughness_texture
+		material.roughness_texture_channel = clampi(int(record.get("roughness_texture_channel", 1)), 0, 2)
+		var metallic_texture := _load_texture(str(record.get("metallic_texture", "")))
+		material.metallic_texture = metallic_texture
+		material.metallic_texture_channel = clampi(int(record.get("metallic_texture_channel", 2)), 0, 2)
+		var ao := _load_texture(str(record.get("ao_texture", "")))
+		material.ao_enabled = ao != null
+		if ao != null:
+			material.ao_texture = ao
+			material.ao_texture_channel = clampi(int(record.get("ao_texture_channel", 0)), 0, 2)
+		else:
+			material.ao_texture = null
+
+	var emission_energy := clampf(float(record.get("emission_energy", 0.0)), 0.0, 10.0)
+	material.emission_enabled = emission_energy > 0.0
+	material.emission = Color.from_string(str(record.get("emission_color", "#000000")), Color.BLACK)
+	material.emission_energy_multiplier = emission_energy
+	var emission_texture := _load_texture(str(record.get("emission_texture", "")))
+	material.emission_texture = emission_texture
+
+	material.roughness = clampf(float(record.get("roughness", 0.42)), 0.0, 1.0)
+	material.metallic = clampf(float(record.get("metallic", 0.0)), 0.0, 1.0)
+	material.metallic_specular = clampf(float(record.get("metallic_specular", 0.5)), 0.0, 1.0)
+
+	var scale_pair: Array = record.get("uv1_scale", [1.0, 1.0])
+	var offset_pair: Array = record.get("uv1_offset", [0.0, 0.0])
+	material.uv1_scale = Vector3(float(scale_pair[0]), float(scale_pair[1]), 1.0)
+	material.uv1_offset = Vector3(float(offset_pair[0]), float(offset_pair[1]), 0.0)
+	material.texture_filter = clampi(int(record.get("texture_filter", 3)), 0, 5)
+	material.texture_repeat = bool(record.get("texture_repeat", true))
+	return material
+
+
+func _load_texture(rel_path: String, normal_map: bool = false) -> Texture2D:
+	if rel_path == "":
+		return null
+	if _textures.has(rel_path) and is_instance_valid(_textures[rel_path]):
+		return _textures[rel_path]
+	if _document == null or str(_document.project_dir) == "":
+		_track_missing(rel_path)
+		return null
+	var absolute := str(_document.project_dir).path_join(rel_path)
+	var bytes := FileAccess.get_file_as_bytes(absolute)
+	if bytes.is_empty():
+		_track_missing(rel_path)
+		return null
+	var image := Image.new()
+	var error := ERR_FILE_UNRECOGNIZED
+	match rel_path.get_extension().to_lower():
+		"png":
+			error = image.load_png_from_buffer(bytes)
+		"jpg", "jpeg":
+			error = image.load_jpg_from_buffer(bytes)
+		"webp":
+			error = image.load_webp_from_buffer(bytes)
+	if error != OK or image.is_empty():
+		_track_missing(rel_path)
+		return null
+	if normal_map:
+		image.generate_mipmaps()
+	var texture := ImageTexture.create_from_image(image)
+	_textures[rel_path] = texture
+	return texture
+
+
+func _track_missing(rel_path: String) -> void:
+	if _missing_set.has(rel_path):
+		return
+	_missing_set[rel_path] = true
+	_missing_textures.append(rel_path)
+
+
+# -------------------------------------------------------------------------
 # Assignment and rendering (filled in by the assignment task)
 # -------------------------------------------------------------------------
 
@@ -309,3 +462,10 @@ func apply_object(_object_id: String) -> void:
 	# Task 16 owns the real walk; before assignments exist there is nothing to
 	# apply and legacy visuals stay untouched.
 	pass
+
+
+func apply_all() -> void:
+	if _document == null:
+		return
+	for obj in _document.objects:
+		apply_object(str(obj.get("id", "")))
