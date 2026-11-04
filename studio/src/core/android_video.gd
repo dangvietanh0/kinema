@@ -15,6 +15,17 @@ const ENCODE_TIMEOUT_BASE := 120.0
 const ENCODE_TIMEOUT_PER_FRAME := 0.5
 const ENCODE_TIMEOUT_FLOOR := 300.0
 
+## `OS.get_name()` reports "Android" with a capital A. Every Android gate goes
+## through these two helpers so no caller can compare against a lowercase
+## spelling the engine never returns.
+static func is_android(platform: String = OS.get_name()) -> bool:
+	return platform == "Android"
+
+
+static func video_reference_supported(platform: String = OS.get_name()) -> bool:
+	return is_android(platform)
+
+
 var _encoder = null
 var _frames = null
 var _checked := false
@@ -28,7 +39,7 @@ func available() -> bool:
 	_checked = true
 	_available = false
 	_reason = REASON
-	if OS.get_name() != "android":
+	if not is_android():
 		return false
 	if not Engine.has_singleton("JavaClassWrapper"):
 		_reason = "The Android Java bridge is not available in this runtime."
@@ -54,7 +65,7 @@ func reason() -> String:
 
 
 func frames_available() -> bool:
-	if OS.get_name() != "android":
+	if not is_android():
 		return false
 	if _frames == null:
 		if not Engine.has_singleton("JavaClassWrapper"):

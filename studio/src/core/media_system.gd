@@ -8,6 +8,7 @@ extends RefCounted
 
 const AudioLibrary = preload("res://src/core/audio_library.gd")
 const VideoReference = preload("res://src/core/video_reference.gd")
+const AndroidVideoScript = preload("res://src/core/android_video.gd")
 
 const AUDIO_DEFAULTS := {
 	"start": 0.0,
@@ -344,7 +345,7 @@ func import_video_reference(uri: String, options: Dictionary = {}) -> Dictionary
 		return {"ok": false, "error": "Video file not found: %s" % uri}
 	if kind == "ogv":
 		return _import_ogv(uri)
-	if OS.get_name() != "android":
+	if not AndroidVideoScript.video_reference_supported():
 		return {"ok": false, "error": "Video frame extraction uses the Android MediaCodec backend. Build the Android APK to import MP4/MOV references."}
 	var backend_script = load("res://src/core/android_video.gd")
 	if backend_script == null:
