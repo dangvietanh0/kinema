@@ -51,6 +51,8 @@ func _ready() -> void:
 	await _test_document_contract()
 	await _test_construction()
 	await _test_assignment()
+	await _test_texture_import()
+	await _test_adoption()
 	_finish()
 
 
@@ -542,3 +544,291 @@ func _test_assignment() -> void:
 			"a duplicate shares the surface material id")
 
 	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 17: texture import and imported material adoption
+# -------------------------------------------------------------------------
+
+func _test_texture_import() -> void:
+	var sources := _tmp_dir.path_join("sources")
+	_rmrf(sources)
+	DirAccess.make_dir_recursive_absolute(sources)
+	var bad := FileAccess.open(sources.path_join("bad.gif"), FileAccess.WRITE)
+	bad.store_buffer(PackedByteArray([1, 2, 3]))
+	bad.close()
+	var unsupported: Dictionary = Store.import_texture(sources.path_join("bad.gif"), _project_dir, "Bad")
+	_check(not bool(unsupported.get("ok", true)), "an unsupported extension is refused")
+	_check(str(unsupported.get("error", "")) == "Kinema imports PNG, JPEG and WebP textures.",
+		"the unsupported extension error is exact")
+
+	var broken := FileAccess.open(sources.path_join("broken.png"), FileAccess.WRITE)
+	broken.store_string("not an image")
+	broken.close()
+	var unreadable: Dictionary = Store.import_texture(sources.path_join("broken.png"), _project_dir, "Broken")
+	_check(not bool(unreadable.get("ok", true)), "an unreadable image is refused")
+	_check(str(unreadable.get("error", "")) == "This image could not be read.",
+		"the unreadable image error is exact")
+
+	for extension in ["png", "jpg", "webp"]:
+		var source := sources.path_join("small." + extension)
+		var image := Image.create(16, 12, false, Image.FORMAT_RGBA8)
+		image.fill(Color(0.2, 0.6, 0.9, 1.0))
+		match extension:
+			"png":
+				image.save_png(source)
+			"jpg":
+				image.save_jpg(source)
+			"webp":
+				image.save_webp(source)
+		var original_bytes := FileAccess.get_file_as_bytes(source)
+		var result: Dictionary = Store.import_texture(source, _project_dir, "Small " + extension)
+		_check(bool(result.get("ok", false)), "%s imports inside the cap" % extension)
+		_check(int(result.get("width", 0)) == 16 and int(result.get("height", 0)) == 12,
+			"%s reports the real dimensions" % extension)
+		_check(str(result.get("resized_from", "x")) == "", "%s is not resized" % extension)
+		var rel := str(result.get("rel_path", ""))
+		_check(rel.begins_with("textures/") and rel.ends_with("." + extension),
+			"%s keeps its original extension" % extension)
+		var stored := _project_dir.path_join(rel)
+		_check(FileAccess.file_exists(stored), "%s is copied into the project" % extension)
+		_check(FileAccess.get_file_as_bytes(stored) == original_bytes,
+			"%s copies the original bytes unchanged" % extension)
+
+	var alias_source := sources.path_join("alias.jpeg")
+	var alias_image := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	alias_image.fill(Color(0.8, 0.8, 0.2, 1.0))
+	alias_image.save_jpg(alias_source)
+	var alias_result: Dictionary = Store.import_texture(alias_source, _project_dir, "Alias")
+	_check(bool(alias_result.get("ok", false)), ".jpeg is accepted")
+
+	var huge_source := sources.path_join("huge.jpg")
+	var huge := Image.create(4100, 8, false, Image.FORMAT_RGBA8)
+	huge.fill(Color(0.4, 0.4, 0.4, 1.0))
+	huge.save_jpg(huge_source)
+	var resized: Dictionary = Store.import_texture(huge_source, _project_dir, "Huge")
+	_check(bool(resized.get("ok", false)), "an oversized image imports")
+	_check(int(resized.get("width", 0)) == 4096, "the oversized image is 4096 wide")
+	_check(str(resized.get("resized_from", "")) == "4100x8", "resized_from uses WxH with an ASCII x")
+	var resized_rel := str(resized.get("rel_path", ""))
+	_check(resized_rel.ends_with(".png"), "an oversized JPEG is stored as PNG")
+	var resized_folder := _project_dir.path_join(resized_rel).get_base_dir()
+	var resized_files := DirAccess.get_files_at(resized_folder)
+	_check(resized_files.size() == 1, "an oversized image stores only the downscaled file")
+	if resized_files.size() == 1:
+		_check(str(resized_files[0]) == resized_rel.get_file(), "the downscaled file uses the slug name")
+	_check(not FileAccess.file_exists(resized_folder.path_join("huge.jpg")),
+		"an oversized image keeps no original copy")
+
+	var import_files := _find_extension(_project_dir.path_join("textures"), "import")
+	_check(import_files.is_empty(), "texture import creates no .import file")
+
+	var blocked := _tmp_dir.path_join("blocked_project")
+	_rmrf(blocked)
+	var blocked_file := FileAccess.open(blocked, FileAccess.WRITE)
+	blocked_file.store_string("not a directory")
+	blocked_file.close()
+	var failed: Dictionary = Store.import_texture(sources.path_join("small.png"), blocked, "Blocked")
+	_check(not bool(failed.get("ok", true)), "a write failure is reported")
+
+	# No .import file in the successful project folder either.
+	var leftovers := _find_extension(_project_dir, "import")
+	_check(leftovers.is_empty(), "no editor import pipeline file exists anywhere in the project")
+
+
+func _find_extension(root: String, extension: String) -> Array:
+	var found: Array = []
+	var dir := DirAccess.open(root)
+	if dir == null:
+		return found
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			var child := root.path_join(entry)
+			if dir.current_is_dir():
+				found.append_array(_find_extension(child, extension))
+			elif entry.get_extension().to_lower() == extension:
+				found.append(child)
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return found
+
+
+func _image_texture(color: Color = Color(0.7, 0.2, 0.2, 1.0)) -> ImageTexture:
+	var image := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	image.fill(color)
+	return ImageTexture.create_from_image(image)
+
+
+func _test_adoption() -> void:
+	var doc = _new_document()
+	var ms = doc.material_system
+	var object_id: String = doc.add_primitive("box")
+
+	# A shared StandardMaterial3D on two surfaces dedupes to one entry.
+	var generated := Node3D.new()
+	generated.name = "Model"
+	var body := MeshInstance3D.new()
+	body.name = "Body"
+	body.mesh = _two_surface_mesh()
+	generated.add_child(body)
+	add_child(generated)
+	var source := StandardMaterial3D.new()
+	source.resource_name = "Painted"
+	source.albedo_color = Color(0.15, 0.55, 0.25)
+	source.roughness = 0.25
+	source.metallic = 0.75
+	source.metallic_specular = 0.6
+	source.albedo_texture = _image_texture()
+	source.normal_enabled = true
+	source.normal_texture = _image_texture(Color(0.5, 0.5, 1.0))
+	source.normal_scale = 0.7
+	source.uv1_scale = Vector3(2.0, 3.0, 1.0)
+	source.uv1_offset = Vector3(0.1, 0.2, 0.0)
+	source.texture_repeat = false
+	source.emission_enabled = true
+	source.emission = Color(1.0, 0.5, 0.0)
+	source.emission_energy_multiplier = 1.5
+	source.emission_texture = _image_texture(Color(1.0, 0.8, 0.1))
+	body.set_surface_override_material(0, source)
+	body.set_surface_override_material(1, source)
+
+	var adopted: Dictionary = ms.adopt_import(object_id, generated, "Robot")
+	_check(bool(adopted.get("ok", false)), "adoption succeeds")
+	_check(int(adopted.get("materials", 0)) == 1, "a shared resource dedupes to one material")
+	_check(int(adopted.get("textures", 0)) == 3, "albedo, normal and emission textures persist")
+	var assigned: Dictionary = doc.get_object(object_id).get("part_surface_materials", {})
+	_check(assigned.has("Body#0") and assigned.has("Body#1"), "both surfaces are assigned")
+	var adopted_id := str(assigned.get("Body#0", ""))
+	_check(str(assigned.get("Body#1", "")) == adopted_id, "both surfaces share the adopted id")
+	var record: Dictionary = ms.get_material(adopted_id)
+	_check(str(record.get("name", "")).begins_with("Robot · "), "the adopted name carries the model prefix")
+	_check(str(record.get("shading", "")) == "pbr", "a Standard material adopts as PBR")
+	_check(_approx(float(record.get("roughness", 0.0)), 0.25), "adoption copies roughness")
+	_check(_approx(float(record.get("metallic", 0.0)), 0.75), "adoption copies metallic")
+	_check(_approx(float(record.get("emission_energy", 0.0)), 1.5), "adoption copies emission energy")
+	var albedo_path := str(record.get("albedo_texture", ""))
+	_check(albedo_path.begins_with("textures/imported/robot-1-albedo"),
+		"the albedo texture is saved under textures/imported")
+	_check(FileAccess.file_exists(_project_dir.path_join(albedo_path)), "the adopted texture file exists")
+	var built: BaseMaterial3D = ms.resource_for(adopted_id)
+	_check(built.albedo_texture != null and built.normal_enabled, "the adopted resource loads its maps")
+
+	# An imported ORMMaterial3D keeps the packed map.
+	var orm_root := Node3D.new()
+	orm_root.name = "Model"
+	var arm := MeshInstance3D.new()
+	arm.name = "Arm"
+	arm.mesh = BoxMesh.new()
+	orm_root.add_child(arm)
+	add_child(orm_root)
+	var orm_source := ORMMaterial3D.new()
+	orm_source.resource_name = "Packed"
+	orm_source.orm_texture = _image_texture(Color(0.3, 0.4, 0.5))
+	arm.set_surface_override_material(0, orm_source)
+	var orm_adopted: Dictionary = ms.adopt_import(object_id, orm_root, "Robot")
+	_check(bool(orm_adopted.get("ok", false)), "an ORM material adopts")
+	var orm_id := str(doc.get_object(object_id).get("part_surface_materials", {}).get("Arm#0", ""))
+	var orm_record: Dictionary = ms.get_material(orm_id)
+	_check(str(orm_record.get("orm_texture", "")).begins_with("textures/imported/"),
+		"the packed ORM map persists")
+	var orm_resource: BaseMaterial3D = ms.resource_for(orm_id)
+	_check(orm_resource is ORMMaterial3D, "the adopted ORM record builds an ORMMaterial3D")
+
+	# A texture with no extractable image leaves the slot empty but keeps scalars.
+	var placeholder_root := Node3D.new()
+	placeholder_root.name = "Model"
+	var head := MeshInstance3D.new()
+	head.name = "Head"
+	head.mesh = BoxMesh.new()
+	placeholder_root.add_child(head)
+	add_child(placeholder_root)
+	var placeholder_material := StandardMaterial3D.new()
+	placeholder_material.resource_name = "Compressed"
+	placeholder_material.roughness = 0.9
+	placeholder_material.albedo_texture = PlaceholderTexture2D.new()
+	head.set_surface_override_material(0, placeholder_material)
+	var placeholder: Dictionary = ms.adopt_import(object_id, placeholder_root, "Robot")
+	_check(bool(placeholder.get("ok", false)), "a compressed material still adopts")
+	var placeholder_id := str(doc.get_object(object_id).get("part_surface_materials", {}).get("Head#0", ""))
+	var placeholder_record: Dictionary = ms.get_material(placeholder_id)
+	_check(str(placeholder_record.get("albedo_texture", "x")) == "",
+		"a null texture image leaves the slot empty")
+	_check(not (placeholder_record.get("notes", []) as Array).is_empty(),
+		"a null texture image records a note")
+	_check(_approx(float(placeholder_record.get("roughness", 0.0)), 0.9),
+		"the scalar fallback still applies")
+
+	generated.queue_free()
+	orm_root.queue_free()
+	placeholder_root.queue_free()
+
+	# The material cap leaves the remaining surfaces embedded.
+	var capped_doc = _new_document()
+	var capped_ms = capped_doc.material_system
+	var capped_object: String = capped_doc.add_primitive("box")
+	var capped_root := Node3D.new()
+	capped_root.name = "Model"
+	add_child(capped_root)
+	for index in range(33):
+		var part := MeshInstance3D.new()
+		part.name = "Part%d" % index
+		part.mesh = BoxMesh.new()
+		capped_root.add_child(part)
+		var part_material := StandardMaterial3D.new()
+		part_material.resource_name = "Unique %d" % index
+		part_material.albedo_color = Color(0.1 * float(index % 5), 0.2, 0.3)
+		part.set_surface_override_material(0, part_material)
+	var capped: Dictionary = capped_ms.adopt_import(capped_object, capped_root, "Big")
+	_check(int(capped.get("materials", 0)) == 32, "adoption caps at 32 materials")
+	_check(bool(capped.get("capped", false)), "the cap is reported")
+	_check(str(capped.get("notice", "")) == "Adopted 32 of 33 materials; the rest keep their embedded materials.",
+		"the cap notice is exact")
+	_check(capped_ms.material_ids().size() == 32, "the library holds 32 adopted materials")
+	var capped_map: Dictionary = capped_doc.get_object(capped_object).get("part_surface_materials", {})
+	_check(capped_map.size() == 32, "adoption assigns exactly the capped surfaces")
+	capped_root.queue_free()
+
+	# Real glTF import adoption, then a project load that must not adopt again.
+	var glb_root := Node3D.new()
+	glb_root.name = "Fixture"
+	var glb_mesh := MeshInstance3D.new()
+	glb_mesh.name = "Body"
+	var box := BoxMesh.new()
+	var box_material := StandardMaterial3D.new()
+	box_material.albedo_color = Color(0.2, 0.4, 0.8)
+	box_material.roughness = 0.31
+	box.surface_set_material(0, box_material)
+	glb_mesh.mesh = box
+	glb_root.add_child(glb_mesh)
+	add_child(glb_root)
+	await get_tree().process_frame
+	var models_dir := _project_dir.path_join("models")
+	DirAccess.make_dir_recursive_absolute(models_dir)
+	var glb_path := models_dir.path_join("adopted_model.glb")
+	var gltf := GLTFDocument.new()
+	var state := GLTFState.new()
+	var glb_error := gltf.append_from_scene(glb_root, state)
+	if glb_error == OK:
+		glb_error = gltf.write_to_filesystem(state, glb_path)
+	glb_root.queue_free()
+	await get_tree().process_frame
+	_check(glb_error == OK, "the adoption GLB fixture is written")
+	if glb_error == OK:
+		var import_doc = _new_document()
+		var imported_id: String = import_doc.add_imported("models/adopted_model.glb", "Adopted", Vector3.ZERO)
+		await get_tree().process_frame
+		var import_count: int = import_doc.material_system.material_ids().size()
+		_check(import_count > 0, "a new model import adopts its material")
+		_check(import_doc.get_object(imported_id).size() > 0, "the imported object exists")
+		var data: Dictionary = import_doc.to_data()
+		var reopen = _new_document()
+		reopen.load_project(data, _project_dir)
+		_check(reopen.material_system.material_ids().size() == import_count,
+			"loading a project never adopts the model again")
+		import_doc.queue_free()
+		reopen.queue_free()
+
+	doc.queue_free()
+	capped_doc.queue_free()

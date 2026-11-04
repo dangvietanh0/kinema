@@ -101,6 +101,7 @@ func _init() -> void:
 	material_system.setup(self)
 	imported_scene_ready.connect(animation_system.on_imported_scene)
 	imported_scene_ready.connect(rig_system.adopt_imported_skeleton)
+	imported_scene_ready.connect(_on_imported_scene_materials)
 
 func _ready() -> void:
 	process_priority = 100
@@ -1069,6 +1070,16 @@ func _add_light_data(p_name: String, kind: String, at: Vector3, rotation_euler: 
 	if notify:
 		scene_changed.emit()
 	return obj
+
+func _on_imported_scene_materials(object_id: String, node: Node) -> void:
+	# Import-only. Load and undo spawn objects without emitting this signal, so
+	# adoption can never duplicate the library on a project open.
+	if material_system == null or node == null:
+		return
+	var obj := get_object(object_id)
+	var model_name := str(obj.get("name", "Model"))
+	material_system.adopt_import(object_id, node, model_name)
+
 
 func add_imported(model_rel_path: String, p_name: String, at: Vector3 = Vector3.ZERO) -> String:
 	begin_edit("Import model")

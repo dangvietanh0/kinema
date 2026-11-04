@@ -455,6 +455,201 @@ func _track_missing(rel_path: String) -> void:
 
 
 # -------------------------------------------------------------------------
+# Imported material adoption
+# -------------------------------------------------------------------------
+
+const MAX_ADOPTED_MATERIALS := 32
+const MAX_ADOPTED_TEXTURES := 64
+
+var _adopt_texture_count := 0
+var _adopt_texture_capped := false
+
+
+func adopt_import(object_id: String, generated: Node, model_name: String) -> Dictionary:
+	last_error = ""
+	if _document == null or generated == null:
+		last_error = "Choose a model first."
+		return {"ok": false, "error": "Choose a model first."}
+	var obj: Dictionary = _document.get_object(object_id)
+	if obj.is_empty():
+		last_error = "Choose an object first."
+		return {"ok": false, "error": "Choose an object first."}
+
+	var groups: Array = []
+	var index_by_instance: Dictionary = {}
+	var meshes: Array[Node] = []
+	var stack: Array[Node] = [generated]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+			meshes.append(node)
+	for node in meshes:
+		var mesh_instance := node as MeshInstance3D
+		var part_path := str(generated.get_path_to(mesh_instance))
+		for surface in range(mesh_instance.mesh.get_surface_count()):
+			var material := _surface_material(mesh_instance, surface)
+			if material == null:
+				continue
+			var key := material.get_instance_id()
+			if not index_by_instance.has(key):
+				index_by_instance[key] = groups.size()
+				groups.append({"material": material, "surfaces": []})
+			var entry: Dictionary = groups[int(index_by_instance[key])]
+			(entry["surfaces"] as Array).append({
+				"part": part_path,
+				"surface": surface,
+			})
+
+	var total := groups.size()
+	if total == 0:
+		return {"ok": true, "adopted": 0, "capped": false, "notice": "", "materials": 0, "textures": 0}
+
+	_adopt_texture_count = 0
+	_adopt_texture_capped = false
+	var adopt_count := mini(total, MAX_ADOPTED_MATERIALS)
+	var model_slug := _model_slug(model_name)
+	var surface_map: Dictionary = obj.get("part_surface_materials", {})
+	var adopted := 0
+	for index in range(adopt_count):
+		var group: Dictionary = groups[index]
+		var source: BaseMaterial3D = group["material"]
+		var display_name := source.resource_name.strip_edges()
+		if display_name == "":
+			display_name = "Material %d" % (index + 1)
+		var material_id := create_material("%s · %s" % [model_name, display_name], "matte")
+		var notes: Array = []
+		var patch := _adoption_patch(source, model_slug, index + 1, notes)
+		if not notes.is_empty():
+			patch["notes"] = notes
+		update_material(material_id, patch)
+		adopted += 1
+		for surface_entry in group["surfaces"]:
+			var key := "%s#%d" % [str(surface_entry["part"]), int(surface_entry["surface"])]
+			surface_map[key] = material_id
+	obj["part_surface_materials"] = surface_map
+	apply_object(object_id)
+
+	var capped := total > MAX_ADOPTED_MATERIALS or _adopt_texture_capped
+	var notice := ""
+	if total > MAX_ADOPTED_MATERIALS:
+		notice = "Adopted %d of %d materials; the rest keep their embedded materials." % [
+			MAX_ADOPTED_MATERIALS, total,
+		]
+	return {
+		"ok": true,
+		"adopted": adopted,
+		"capped": capped,
+		"notice": notice,
+		"materials": adopted,
+		"textures": _adopt_texture_count,
+	}
+
+
+func _surface_material(mesh_instance: MeshInstance3D, surface: int) -> BaseMaterial3D:
+	var material := mesh_instance.get_surface_override_material(surface)
+	if not (material is BaseMaterial3D):
+		material = mesh_instance.get_active_material(surface)
+	if not (material is BaseMaterial3D):
+		material = mesh_instance.mesh.surface_get_material(surface)
+	if material is BaseMaterial3D:
+		return material as BaseMaterial3D
+	return null
+
+
+func _adoption_patch(source: BaseMaterial3D, model_slug: String, number: int, notes: Array) -> Dictionary:
+	var shading := "pbr"
+	if source.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED:
+		shading = "unlit"
+	elif source.diffuse_mode == BaseMaterial3D.DIFFUSE_TOON or source.specular_mode == BaseMaterial3D.SPECULAR_TOON:
+		shading = "toon"
+	elif source.rim_enabled:
+		shading = "rim"
+	var patch := {
+		"shading": shading,
+		"albedo_color": "#" + source.albedo_color.to_html(false),
+		"roughness": clampf(source.roughness, 0.0, 1.0),
+		"metallic": clampf(source.metallic, 0.0, 1.0),
+		"metallic_specular": clampf(source.metallic_specular, 0.0, 1.0),
+		"normal_scale": maxf(0.0, source.normal_scale),
+		"uv1_scale": [source.uv1_scale.x, source.uv1_scale.y],
+		"uv1_offset": [source.uv1_offset.x, source.uv1_offset.y],
+		"texture_filter": int(source.texture_filter),
+		"texture_repeat": source.texture_repeat,
+		"emission_color": "#" + source.emission.to_html(false),
+		"emission_energy": clampf(source.emission_energy_multiplier, 0.0, 10.0) if source.emission_enabled else 0.0,
+		"rim": clampf(source.rim, 0.0, 1.0),
+		"rim_tint": clampf(source.rim_tint, 0.0, 1.0),
+	}
+	var albedo := _adopt_texture(source.albedo_texture, model_slug, number, "albedo", notes)
+	if albedo != "":
+		patch["albedo_texture"] = albedo
+	var normal := _adopt_texture(source.normal_texture, model_slug, number, "normal", notes)
+	if normal != "":
+		patch["normal_texture"] = normal
+	var emission := _adopt_texture(source.emission_texture, model_slug, number, "emission", notes)
+	if emission != "":
+		patch["emission_texture"] = emission
+	if source is ORMMaterial3D:
+		var packed := _adopt_texture((source as ORMMaterial3D).orm_texture, model_slug, number, "orm", notes)
+		if packed != "":
+			patch["orm_texture"] = packed
+	else:
+		var roughness := _adopt_texture(source.roughness_texture, model_slug, number, "roughness", notes)
+		if roughness != "":
+			patch["roughness_texture"] = roughness
+			patch["roughness_texture_channel"] = int(source.roughness_texture_channel)
+		var metallic := _adopt_texture(source.metallic_texture, model_slug, number, "metallic", notes)
+		if metallic != "":
+			patch["metallic_texture"] = metallic
+			patch["metallic_texture_channel"] = int(source.metallic_texture_channel)
+		var ao := _adopt_texture(source.ao_texture, model_slug, number, "ao", notes)
+		if ao != "":
+			patch["ao_texture"] = ao
+			patch["ao_texture_channel"] = int(source.ao_texture_channel)
+	return patch
+
+
+func _adopt_texture(texture: Texture2D, model_slug: String, number: int, slot: String, notes: Array) -> String:
+	if texture == null:
+		return ""
+	if _adopt_texture_count >= MAX_ADOPTED_TEXTURES:
+		_adopt_texture_capped = true
+		return ""
+	var image := texture.get_image()
+	if image == null or image.is_empty():
+		notes.append("%s texture could not be extracted from the model." % slot.capitalize())
+		return ""
+	if _document == null or str(_document.project_dir) == "":
+		notes.append("%s texture needs a saved project folder." % slot.capitalize())
+		return ""
+	var folder := str(_document.project_dir).path_join("textures/imported")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var rel_path := "textures/imported/%s-%d-%s.png" % [model_slug, number, slot]
+	var absolute := str(_document.project_dir).path_join(rel_path)
+	if image.save_png(absolute) != OK:
+		notes.append("%s texture could not be written." % slot.capitalize())
+		return ""
+	_adopt_texture_count += 1
+	return rel_path
+
+
+func _model_slug(value: String) -> String:
+	var out := ""
+	for index in range(value.length()):
+		var ch := value.substr(index, 1).to_lower()
+		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9"):
+			out += ch
+		elif ch == "-" or ch == "_" or ch == " " or ch == ".":
+			out += "-"
+	while out.begins_with("-"):
+		out = out.substr(1)
+	while out.ends_with("-"):
+		out = out.substr(0, out.length() - 1)
+	return out if out != "" else "model"
+
+
+# -------------------------------------------------------------------------
 # Assignment and rendering
 # -------------------------------------------------------------------------
 
