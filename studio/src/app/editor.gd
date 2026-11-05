@@ -26,6 +26,7 @@ const SpeedGraphScript = preload("res://src/ui/speed_graph.gd")
 const OverlayScript = preload("res://src/ui/overlay.gd")
 const TopBarScript = preload("res://src/ui/components/top_bar.gd")
 const WorkspaceBarScript = preload("res://src/ui/components/workspace_bar.gd")
+const ContextBarScript = preload("res://src/ui/components/context_bar.gd")
 const MenuPanelScript = preload("res://src/ui/components/menu_panel.gd")
 const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
 const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
@@ -37,6 +38,7 @@ const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
 const WorkspaceSheetScript = preload("res://src/ui/workspace_sheet.gd")
 const LayoutMathScript = preload("res://src/app/layout_math.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
+const PoseLibrary = preload("res://src/core/pose_library.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
 const ClipLaneScript = preload("res://src/ui/clip_lane.gd")
 const MediaLanesScript = preload("res://src/ui/media_lanes.gd")
@@ -126,8 +128,13 @@ var _project_meta: Dictionary = {}
 var _layout: VBoxContainer
 var _top_bar: PanelContainer
 var _workspace_bar: PanelContainer
+var _context_bar: PanelContainer
+var _transport_bar: PanelContainer
 var _workspace_menu: Control
 var _project_menu: Control
+var _view_menu: Control
+var _rig_axis_menu: Control
+var _camera_menu: Control
 var _status_bar: PanelContainer
 var _bottom_bar: PanelContainer
 
@@ -206,6 +213,7 @@ var layout_info: Dictionary = {}
 var _layout_preset := "studio"
 var _workspace := "scene"
 var _workspace_menu_open := false
+var _context_workspace := ""
 var _timeline_visible := false
 ## Session-only "More" state: raises the overlay budget to the full cap until
 ## the sheet is closed or reopened. It is never persisted.
@@ -287,6 +295,7 @@ func _ready() -> void:
 	add_child(_layout)
 
 	_build_top_bar()
+	_build_context_bar()
 	_build_body()
 	_build_status_bar()
 	_build_bottom_bar()
@@ -316,6 +325,19 @@ func _ready() -> void:
 	_project_menu.row_selected.connect(_on_project_menu_row)
 	add_child(_project_menu)
 
+	_view_menu = MenuPanelScript.new()
+	_view_menu.name = "ViewMenu"
+	_view_menu.row_selected.connect(_on_view_menu_row)
+	add_child(_view_menu)
+	_rig_axis_menu = MenuPanelScript.new()
+	_rig_axis_menu.name = "RigAxisMenu"
+	_rig_axis_menu.row_selected.connect(_on_rig_axis_menu_row)
+	add_child(_rig_axis_menu)
+	_camera_menu = MenuPanelScript.new()
+	_camera_menu.name = "CameraMenu"
+	_camera_menu.row_selected.connect(_on_camera_menu_row)
+	add_child(_camera_menu)
+
 	_autosave = Timer.new()
 	_autosave.wait_time = _autosave_seconds()
 	_autosave.autostart = _autosave.wait_time > 0.0
@@ -343,6 +365,11 @@ func _build_top_bar() -> void:
 	# Kept as the shell's chrome handle for the existing render/capture paths;
 	# it points at the one WorkspaceBar, not the retired TopBar.
 	_top_bar = _workspace_bar
+
+func _build_context_bar() -> void:
+	_context_bar = ContextBarScript.new()
+	_context_bar.action_requested.connect(_on_context_action)
+	_layout.add_child(_context_bar)
 
 func _build_body() -> void:
 	_body = HBoxContainer.new()
@@ -1128,6 +1155,391 @@ func _on_workspace_changed(_id: String) -> void:
 	_update_header()
 
 
+# -------------------------------------------------------------------------
+# Context row
+# -------------------------------------------------------------------------
+
+func _act(id: String, label: String, icon: String, priority: int,
+		text := false, toggle := false, width := 0.0, group := "") -> Dictionary:
+	return {
+		"id": id,
+		"label": label,
+		"icon": icon,
+		"priority": priority,
+		"text": text,
+		"toggle": toggle,
+		"menu": [],
+		"disabled_reason": "",
+		"width": width,
+		"group": group,
+	}
+
+
+func _context_actions(id: String) -> Array:
+	match id:
+		"scene":
+			return [
+				_act("select", "Select", "tool-select", 100, false, true),
+				_act("move", "Move", "tool-move", 90, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 80, false, true),
+				_act("scale", "Scale", "tool-scale", 70, false, true),
+				_act("add", "Add", "plus", 60, true),
+				_act("camera_view", "Camera", "camera", 50),
+				_act("scene_tree", "Scene tree", "layers", 40, false, true),
+				_act("inspector", "Properties", "sliders-horizontal", 30, false, true),
+				_act("frame", "Frame selection", "focus", 20),
+				_act("grid", "Grid", "grid-3x3", 10, false, true),
+				_act("view", "View", "orbit", 5),
+			]
+		"shading":
+			return [
+				_act("assign", "Assign", "check", 100, true),
+				_act("material_new", "New", "plus", 90, true),
+				_act("light_add", "Add light", "lightbulb", 80),
+				_act("panel", "Materials panel", "panel-right", 70),
+				_act("frame", "Frame selection", "focus", 60),
+				_act("grid", "Grid", "grid-3x3", 50, false, true),
+				_act("view", "View", "orbit", 40),
+				_act("camera_view", "Camera", "camera", 30),
+			]
+		"rig":
+			return [
+				_act("pose", "Pose", "", 100, true, false, 60.0, "rig_mode"),
+				_act("edit", "Edit", "", 95, true, false, 60.0, "rig_mode"),
+				_act("rig_rotate", "Rotate", "tool-rotate", 90, false, true),
+				_act("rig_move", "Move", "tool-move", 85, false, true),
+				_act("rig_axis", "Free", "", 80, true),
+				_act("rig_add", "Add bone", "plus", 70, true),
+				_act("rig_reset", "Reset pose", "rotate-ccw", 60),
+				_act("rig_done", "Done", "check", 50, true),
+				_act("frame", "Frame selection", "focus", 40),
+				_act("panel", "Rig panel", "panel-right", 30),
+			]
+		"animate":
+			# W1 scope only; W3 inserts dope/graph/stage_toggle here.
+			return [
+				_act("fit", "Fit", "focus", 100),
+			]
+		"render":
+			return [
+				_act("preview", "Preview", "eye", 100, true),
+				_act("render", "Render", "clapperboard", 90, true),
+				_act("still", "Still", "image", 80, true),
+				_act("panel", "Render panel", "panel-right", 70),
+				_act("camera_view", "Camera", "camera", 60),
+				_act("frame", "Frame selection", "focus", 50),
+				_act("grid", "Grid", "grid-3x3", 40, false, true),
+				_act("view", "View", "orbit", 30),
+			]
+	return []
+
+
+func _sync_context_actions(force := false) -> void:
+	if _context_bar == null:
+		return
+	if force or _context_workspace != _workspace:
+		_context_bar.set_actions(_context_actions(_workspace))
+		_context_workspace = _workspace
+	_sync_context_state()
+
+
+## Reads the document and the shell back into the row. It never changes either;
+## hidden controls keep their real disabled state for the overflow popup.
+func _sync_context_state() -> void:
+	if _context_bar == null:
+		return
+	for tool in ["select", "move", "rotate", "scale"]:
+		_context_bar.set_action_active(tool, _tool == tool)
+	if _view != null:
+		_context_bar.set_action_active("grid", _view.grid_enabled())
+	_context_bar.set_action_active(
+		"scene_tree", _scene_panel_enabled() and _scene_is_expanded())
+	_context_bar.set_action_active(
+		"inspector", _drawer_open and _compact_tab == "inspector")
+
+	var selected := doc.selected_id if doc != null else ""
+	_context_bar.set_action_enabled(
+		"assign",
+		selected != "" and doc != null and doc.material_system != null,
+		"Select an object with a material to assign.")
+
+	var rig_id := ""
+	var imported := false
+	var mode := "pose"
+	var transform_mode := "rotate"
+	var axis := "free"
+	if doc != null and doc.rig_system != null:
+		rig_id = doc.rig_system.active_rig_id()
+		if rig_id != "":
+			imported = bool(doc.rig_system.get_rig(rig_id).get("imported", false))
+	if _rig_overlay != null:
+		mode = _rig_overlay.mode()
+		transform_mode = _rig_overlay.transform_mode()
+		axis = _rig_overlay.axis_mode()
+	_context_bar.set_action_active("pose", mode == "pose")
+	_context_bar.set_action_active("edit", mode == "edit")
+	_context_bar.set_action_active("rig_rotate", transform_mode == "rotate")
+	_context_bar.set_action_active("rig_move", transform_mode == "move")
+	_context_bar.set_action_enabled("edit", not imported,
+		"Imported skeletons keep their rest pose; pose and IK still work.")
+	for id in ["rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done"]:
+		_context_bar.set_action_enabled(id, rig_id != "", "There is no rig in this project.")
+	var axis_button: Button = _context_bar.action_button("rig_axis")
+	if axis_button != null:
+		axis_button.text = "Free" if axis == "free" else axis.to_upper()
+
+
+func _on_context_action(id: String) -> void:
+	match id:
+		"select", "move", "rotate", "scale":
+			_select_tool(id)
+		"add":
+			_open_add_sheet()
+		"camera_view":
+			_open_camera_menu()
+		"scene_tree":
+			_toggle_scene_panel("scene")
+		"inspector":
+			_toggle_scene_panel("inspector")
+		"frame":
+			_focus_selection()
+		"grid":
+			if _view != null:
+				_view.toggle_grid()
+		"view":
+			_open_view_menu(_context_bar.action_button("view"))
+		"panel":
+			_toggle_workspace_panel()
+		"assign", "material_new":
+			_open_material_sheet(_context_material_target())
+		"light_add":
+			_open_add_sheet()
+		"pose", "edit", "rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done":
+			_on_rig_context_action(id)
+		"preview":
+			_enter_render_mode()
+		"render", "still":
+			_open_render_sheet()
+		"fit":
+			_fit_animate_pane()
+	_sync_context_state()
+
+
+func _context_material_target() -> Dictionary:
+	var object_id := doc.selected_id if doc != null else ""
+	return {"object_id": object_id, "part_path": "", "surface": -1}
+
+
+func _toggle_workspace_panel() -> void:
+	# Until the shared Stage host lands, the dock pages are the workspace
+	# panel. Shading/Render have no page yet, so they fall back to Properties.
+	var page := _compact_tab
+	if page not in ["scene", "inspector", "rig"]:
+		page = "inspector"
+	_toggle_drawer(page)
+
+
+func _open_view_menu(anchor: Control) -> void:
+	if _view_menu == null or _view == null:
+		return
+	_view_menu.set_layout_mode(layout_mode())
+	_view_menu.set_empty_text("")
+	_view_menu.open_menu(anchor, "View", "Camera preset", layout_mode() != "desktop")
+	var presets := [
+		["Persp", "orbit"],
+		["Front", "scan"],
+		["Right", "rotate-3d"],
+		["Top", "panel-top"],
+	]
+	for pair in presets:
+		_view_menu.add_row(
+			str(pair[0]), str(pair[0]), str(pair[1]), "",
+			_view.view_preset() == str(pair[0]), true, "", 44.0
+		)
+
+
+func _on_view_menu_row(id: String) -> void:
+	if _view != null:
+		_view.set_view_preset(id)
+	_sync_context_state()
+
+
+func _open_rig_axis_menu(anchor: Control) -> void:
+	if _rig_axis_menu == null or _rig_overlay == null:
+		return
+	_rig_axis_menu.set_layout_mode(layout_mode())
+	_rig_axis_menu.set_empty_text("")
+	_rig_axis_menu.open_menu(anchor, "Axis", "Rotation axis", layout_mode() != "desktop")
+	for axis in ["free", "x", "y", "z"]:
+		var label: String = "Free" if axis == "free" else axis.to_upper()
+		_rig_axis_menu.add_row(
+			axis, label, "", "",
+			_rig_overlay.axis_mode() == axis, true, "", 44.0
+		)
+
+
+func _on_rig_axis_menu_row(id: String) -> void:
+	if _rig_overlay != null:
+		_rig_overlay.set_axis_mode(id)
+	_sync_context_state()
+
+
+func _on_rig_context_action(id: String) -> void:
+	match id:
+		"pose", "edit":
+			_rig_mode = true
+			if doc != null and doc.rig_system != null and _rig_overlay != null:
+				var rig_id: String = doc.rig_system.active_rig_id()
+				if rig_id != "":
+					_rig_overlay.set_rig(rig_id)
+				_rig_overlay.set_mode(id)
+				if _rig_panel != null:
+					_rig_panel.set_mode(_rig_overlay.mode())
+			_sync_rig_overlay()
+		"rig_rotate":
+			if _rig_overlay != null:
+				_rig_overlay.set_transform_mode("rotate")
+		"rig_move":
+			if _rig_overlay != null:
+				_rig_overlay.set_transform_mode("move")
+		"rig_axis":
+			_open_rig_axis_menu(_context_bar.action_button("rig_axis"))
+		"rig_add":
+			_on_rig_add_bone()
+		"rig_reset":
+			_confirm_reset_pose()
+		"rig_done":
+			_on_rig_done()
+			set_workspace("scene")
+
+
+## Reset is a document change, so it asks first. With nothing posed it does
+## nothing at all instead of showing a confirmation with no effect.
+func _confirm_reset_pose() -> void:
+	if doc == null or doc.rig_system == null or _overlay == null:
+		return
+	var rig_id: String = doc.rig_system.active_rig_id()
+	if rig_id == "":
+		return
+	var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+	if not _rig_has_rest_offset(rig):
+		return
+	_overlay.confirm(
+		"Reset pose?",
+		"Every posed bone returns to the rig's rest pose. Undo keeps the previous pose.",
+		"Reset pose",
+		func() -> void:
+			doc.rig_system.reset_all_poses(rig_id)
+			if _rig_overlay != null:
+				_rig_overlay.set_rig(rig_id)
+			if _rig_panel != null:
+				_rig_panel.refresh()
+			_sync_rig_overlay()
+	)
+
+
+func _rig_has_rest_offset(rig: Dictionary) -> bool:
+	if rig.is_empty():
+		return false
+	var pose: Dictionary = rig.get("pose", {})
+	var posed: Dictionary = pose.get("bones", {}) if pose.has("bones") else pose
+	if posed.is_empty():
+		return false
+	var rest: Dictionary = {}
+	for bone in rig.get("bones", []):
+		rest[str(bone.get("name", ""))] = bone
+	for bone_name in posed.keys():
+		if not rest.has(bone_name):
+			continue
+		var entry: Dictionary = posed[bone_name]
+		var rest_bone: Dictionary = rest[bone_name]
+		if entry.has("p"):
+			if PoseLibrary.array_to_vec3(entry["p"]).distance_to(
+					rest_bone.get("p", Vector3.ZERO)) > 0.0001:
+				return true
+		if entry.has("r"):
+			var posed_rotation: Quaternion = PoseLibrary.array_to_quat(entry["r"])
+			var rest_rotation: Quaternion = rest_bone.get("r", Quaternion.IDENTITY)
+			if absf(posed_rotation.angle_to(rest_rotation)) > 0.0001:
+				return true
+		if entry.has("s"):
+			if PoseLibrary.array_to_vec3(entry["s"]).distance_to(
+					rest_bone.get("s", Vector3.ONE)) > 0.0001:
+				return true
+	return false
+
+
+func _fit_animate_pane() -> void:
+	if doc == null or _timeline == null:
+		return
+	_timeline.set_time_view(0.0, maxf(doc.duration, 0.1))
+
+
+func _visible_shell_action_ids() -> PackedStringArray:
+	var ids := PackedStringArray()
+	for bar in [_workspace_bar, _context_bar, _transport_bar]:
+		if bar == null:
+			continue
+		for id in bar.visible_action_ids():
+			ids.append(id)
+	return ids
+
+
+func _shell_action_icon(id: String) -> String:
+	for bar in [_workspace_bar, _context_bar, _transport_bar]:
+		if bar == null:
+			continue
+		var button: Button = bar.action_button(id)
+		if button != null:
+			return str(button.get_meta("action_icon", ""))
+	return ""
+
+
+## The camera menu is the Scene/Render look-through entry point. It lists the
+## document cameras; switching and the camera chip are added with the camera
+## view task.
+func _open_camera_menu() -> void:
+	if doc == null or _camera_menu == null:
+		return
+	_camera_menu.set_layout_mode(layout_mode())
+	_camera_menu.set_empty_text("")
+	var anchor: Control = _context_bar.action_button("camera_view") \
+		if _context_bar != null else _workspace_bar.workspace_chip()
+	_camera_menu.open_menu(anchor, "Camera", "", layout_mode() != "desktop")
+	var cameras: Array = []
+	for obj in doc.objects:
+		if str(obj.get("kind", "")) == "camera":
+			cameras.append(obj)
+	cameras.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.get("name", "")) < str(b.get("name", ""))
+	)
+	for obj in cameras:
+		var camera_id := str(obj.get("id", ""))
+		var visible := bool(obj.get("visible", true))
+		_camera_menu.add_row(
+			camera_id, str(obj.get("name", camera_id)), "camera", "",
+			camera_id == _look_camera_id, visible,
+			"" if visible else "Camera is hidden.", 44.0
+		)
+	_camera_menu.set_empty_text(
+		"No scene cameras. Add one to look through it." if cameras.is_empty() else "")
+	_camera_menu.add_action(
+		"add_camera", "Add camera…", "plus", not _look_through,
+		"Exit camera view to add a camera.")
+	if _look_through:
+		_camera_menu.add_action("exit_camera", "Exit camera view", "x")
+
+
+func _on_camera_menu_row(id: String) -> void:
+	if id == "add_camera":
+		_add_camera()
+	elif id == "exit_camera":
+		_exit_look_through()
+	else:
+		_enter_look_through(id)
+
+
+
 
 ## User intent. Persists the preference and, when the shell is hosted by Main,
 ## asks it to re-resolve; without a host the mode is resolved here so pure
@@ -1750,6 +2162,9 @@ func _apply_shell() -> void:
 	_workspace_bar.set_layout_mode(layout_mode())
 	_workspace_bar.set_available_width(size.x)
 	_workspace_bar.set_workspace(_workspace)
+	_context_bar.set_layout_mode(layout_mode())
+	_context_bar.set_available_width(size.x)
+	_sync_context_actions()
 	_rail.set_mode(layout_mode())
 	_rail.set_available_height(size.y)
 	_view_header.set_mode(layout_mode())
@@ -1944,7 +2359,10 @@ func _set_scene_expanded_from_ui(expanded: bool) -> void:
 	set_scene_panel_expanded(expanded, size.x >= SCENE_EXPANDED_MIN_WIDTH)
 
 
-func _toggle_scene_panel() -> void:
+func _toggle_scene_panel(page := "scene") -> void:
+	if page == "inspector":
+		_toggle_drawer("inspector")
+		return
 	if not _scene_panel_enabled():
 		return
 	if _drawer_open:
@@ -2464,6 +2882,8 @@ func _select_tool(tool_id: String) -> void:
 		_view.set_tool(_tool)
 	if _rail != null:
 		_rail.set_tool(_tool)
+	if _context_bar != null:
+		_sync_context_state()
 
 func _focus_selection() -> void:
 	if _view != null:
@@ -2480,6 +2900,8 @@ func _on_view_changed(label: String) -> void:
 func _on_view_grid_changed(enabled: bool) -> void:
 	if _view_header != null:
 		_view_header.set_grid(enabled)
+	if _context_bar != null:
+		_sync_context_state()
 
 func _on_view_header_grid_toggled(enabled: bool) -> void:
 	if _view != null:

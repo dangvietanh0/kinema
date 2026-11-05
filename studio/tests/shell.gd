@@ -32,6 +32,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await _test_layout_and_workspace_api()
 	await _test_workspace_bar_and_menu()
+	await _test_context_bar_overflow_and_icons()
 	_finish()
 
 
@@ -127,6 +128,50 @@ func _test_workspace_bar_and_menu() -> void:
 		_check(project.row_button(id) != null, "project menu row %s exists" % id)
 	_check(not project.row_button("instrumentation").visible,
 		"the instrumentation strip row is hidden in touch layouts")
+
+
+func _test_context_bar_overflow_and_icons() -> void:
+	var main = await _boot_main(360, 640)
+	var editor = main._editor
+	var bar = editor._context_bar
+	_check(bar.size.y >= 43.5 and bar.size.y <= 44.5, "touch context row is 44 dp")
+
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	var visible: PackedStringArray = bar.visible_action_ids()
+	for id in ["select", "move", "rotate", "scale", "add", "more"]:
+		_check(visible.has(id), "scene 360 dp keeps %s visible" % id)
+	for id in ["camera_view", "scene_tree", "inspector", "frame", "grid", "view"]:
+		_check(not visible.has(id), "scene 360 dp moves %s into more" % id)
+	_check(not bar.overflow_visible() or visible.has("more"),
+		"overflow is represented by the more button")
+
+	editor.set_workspace("rig")
+	await get_tree().process_frame
+	for id in ["pose", "edit", "rig_rotate", "rig_move", "more"]:
+		_check(bar.visible_action_ids().has(id), "rig 360 dp keeps %s visible" % id)
+
+	editor.set_workspace("render")
+	await get_tree().process_frame
+	_check(bar.visible_action_ids().has("render"), "render keeps its primary action")
+
+	# Icon contract: no two visible action ids share an icon in one workspace,
+	# and every referenced icon file exists.
+	for workspace_id in editor.WORKSPACES:
+		editor.set_workspace(workspace_id)
+		await get_tree().process_frame
+		var icons := {}
+		for id in editor._visible_shell_action_ids():
+			var icon_name: String = editor._shell_action_icon(id)
+			if icon_name == "":
+				# Text-only actions (Pose, Edit, Dope, Graph) carry no glyph.
+				continue
+			_check(FileAccess.file_exists("res://assets/icons/%s.svg" % icon_name),
+				"%s/%s icon file exists" % [workspace_id, icon_name])
+			_check(not icons.has(icon_name),
+				"%s: %s and %s do not share the %s icon" %
+				[workspace_id, icons.get(icon_name, ""), id, icon_name])
+			icons[icon_name] = id
 
 
 func _finish() -> void:
