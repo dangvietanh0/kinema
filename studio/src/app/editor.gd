@@ -25,6 +25,8 @@ const TimelineScript = preload("res://src/ui/timeline.gd")
 const SpeedGraphScript = preload("res://src/ui/speed_graph.gd")
 const OverlayScript = preload("res://src/ui/overlay.gd")
 const TopBarScript = preload("res://src/ui/components/top_bar.gd")
+const WorkspaceBarScript = preload("res://src/ui/components/workspace_bar.gd")
+const MenuPanelScript = preload("res://src/ui/components/menu_panel.gd")
 const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
 const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
 const StatusBarScript = preload("res://src/ui/components/status_bar.gd")
@@ -123,6 +125,9 @@ var doc: DocumentScript = null
 var _project_meta: Dictionary = {}
 var _layout: VBoxContainer
 var _top_bar: PanelContainer
+var _workspace_bar: PanelContainer
+var _workspace_menu: Control
+var _project_menu: Control
 var _status_bar: PanelContainer
 var _bottom_bar: PanelContainer
 
@@ -298,6 +303,19 @@ func _ready() -> void:
 	_overlay.modal_opened.connect(_on_modal_opened)
 	_overlay.set_toast_anchor(_viewport_host)
 
+	# The two shell menus are persistent nodes so their rows and scrim do not
+	# have to be rebuilt on every open. They paint above the workbench and below
+	# the modal overlay (z 100).
+	_workspace_menu = MenuPanelScript.new()
+	_workspace_menu.name = "WorkspaceMenu"
+	_workspace_menu.row_selected.connect(_on_workspace_menu_row)
+	_workspace_menu.closed.connect(func() -> void: _workspace_menu_open = false)
+	add_child(_workspace_menu)
+	_project_menu = MenuPanelScript.new()
+	_project_menu.name = "ProjectMenu"
+	_project_menu.row_selected.connect(_on_project_menu_row)
+	add_child(_project_menu)
+
 	_autosave = Timer.new()
 	_autosave.wait_time = _autosave_seconds()
 	_autosave.autostart = _autosave.wait_time > 0.0
@@ -305,6 +323,7 @@ func _ready() -> void:
 	add_child(_autosave)
 
 	Perf.sample_updated.connect(_on_perf_sample)
+	workspace_changed.connect(_on_workspace_changed)
 	_apply_editor_preferences()
 	_apply_perf_preferences()
 
@@ -316,10 +335,14 @@ func _ready() -> void:
 # -------------------------------------------------------------------------
 
 func _build_top_bar() -> void:
-	_top_bar = TopBarScript.new()
-	_top_bar.action_requested.connect(_on_chrome_action)
-	_top_bar.layout_requested.connect(_open_workspace_sheet)
-	_layout.add_child(_top_bar)
+	_workspace_bar = WorkspaceBarScript.new()
+	_workspace_bar.action_requested.connect(_on_chrome_action)
+	_workspace_bar.workspace_requested.connect(_toggle_workspace_menu)
+	_workspace_bar.camera_exit_requested.connect(_exit_look_through)
+	_layout.add_child(_workspace_bar)
+	# Kept as the shell's chrome handle for the existing render/capture paths;
+	# it points at the one WorkspaceBar, not the retired TopBar.
+	_top_bar = _workspace_bar
 
 func _build_body() -> void:
 	_body = HBoxContainer.new()
@@ -1057,6 +1080,55 @@ func workspace_menu_open() -> bool:
 	return _workspace_menu_open
 
 
+## One dropdown for the five workspaces. The chip owns the only permanent
+## workspace name, so the menu header carries the project title instead.
+func _toggle_workspace_menu() -> void:
+	if doc == null or _workspace_menu == null or _workspace_bar == null:
+		return
+	if _workspace_menu_open:
+		_workspace_menu.close()
+		_workspace_menu_open = false
+		return
+	if _project_menu != null:
+		_project_menu.close()
+	var descriptions := {
+		"scene": ["Objects, transforms and the scene tree", "box"],
+		"shading": ["Materials, textures and lights", "palette"],
+		"rig": ["Skeletons, poses and IK", "bone"],
+		"animate": ["Timeline, keys and curves", "chart-spline"],
+		"render": ["Stills, video, camera tracks and GLB", "clapperboard"],
+	}
+	_workspace_menu.set_layout_mode(layout_mode())
+	_workspace_menu.set_empty_text("")
+	_workspace_menu.open_menu(
+		_workspace_bar.workspace_chip(),
+		"Workspace",
+		doc.title if doc != null else "Untitled",
+		layout_mode() != "desktop"
+	)
+	for id in WORKSPACES:
+		var copy: Array = descriptions.get(id, ["", ""])
+		_workspace_menu.add_row(
+			id,
+			str(WORKSPACE_LABELS.get(id, id)),
+			str(copy[1]),
+			str(copy[0]),
+			id == _workspace
+		)
+	_workspace_menu_open = true
+
+
+func _on_workspace_menu_row(id: String) -> void:
+	_workspace_menu_open = false
+	set_workspace(id)
+	_update_header()
+
+
+func _on_workspace_changed(_id: String) -> void:
+	_update_header()
+
+
+
 ## User intent. Persists the preference and, when the shell is hosted by Main,
 ## asks it to re-resolve; without a host the mode is resolved here so pure
 ## scenes and tests behave identically.
@@ -1079,8 +1151,6 @@ func apply_fit_info(fit_percent: float, user_scale_enabled: bool, clamped: bool)
 	_fit_percent = clampf(fit_percent, 1.0, 100.0)
 	_fit_user_scale_enabled = user_scale_enabled
 	_fit_clamped = clamped
-	if _top_bar != null:
-		_top_bar.set_fit(_fit_percent, _fit_percent < 60.0)
 	if _status_bar != null:
 		_update_chrome_sample()
 	if _settings_panel != null and is_instance_valid(_settings_panel) and _settings_panel.has_method("refresh_fit"):
@@ -1325,19 +1395,20 @@ func _on_document_history_changed() -> void:
 # -------------------------------------------------------------------------
 
 func _update_header() -> void:
-	if _top_bar == null:
+	if _workspace_bar == null:
 		return
+	_workspace_bar.set_workspace(_workspace)
 	if doc == null:
-		_top_bar.set_project("Untitled", false, false)
+		_workspace_bar.set_project("Untitled", false)
 		return
-	_top_bar.set_project(doc.title, doc.is_dirty(), true)
+	_workspace_bar.set_project(doc.title, doc.is_dirty())
 
 func _update_history_buttons() -> void:
-	if _top_bar == null:
+	if _workspace_bar == null:
 		return
 	var has_undo := doc != null and doc.can_undo()
 	var has_redo := doc != null and doc.can_redo()
-	_top_bar.set_history(has_undo, has_redo)
+	_workspace_bar.set_history(has_undo, has_redo)
 
 ## Reports the renderer the engine is actually running. Godot selects a
 ## renderer when the process starts; the chips request one for the next launch
@@ -1676,8 +1747,9 @@ func _apply_shell() -> void:
 	# fold/open choice is respected until the next mode switch.
 	if _short != was_short and not _timeline_user_override:
 		_timeline_visible = _default_timeline_visible()
-	_top_bar.set_mode(layout_mode())
-	_top_bar.set_available_width(size.x)
+	_workspace_bar.set_layout_mode(layout_mode())
+	_workspace_bar.set_available_width(size.x)
+	_workspace_bar.set_workspace(_workspace)
 	_rail.set_mode(layout_mode())
 	_rail.set_available_height(size.y)
 	_view_header.set_mode(layout_mode())
@@ -1743,12 +1815,6 @@ func _apply_shell() -> void:
 	if _drawer_rig_tab != null:
 		_drawer_rig_tab.visible = tabbed
 	_dock_close_button.visible = true
-	if _top_bar != null:
-		# The rail replaced the old narrow-Studio top-bar toggle. A shell below
-		# the Studio minimum width falls back to it instead of squeezing the
-		# stage with two rails.
-		_top_bar.set_panels_button_visible(rail_fallback)
-		_top_bar.set_panels_open(_drawer_open)
 	# One page at a time: the flyout is not the old stacked wide dock. The
 	# outliner is only a dock page when the scene column does not own it.
 	if _outliner_panel.get_parent() == _dock_box:
@@ -1807,9 +1873,9 @@ func _apply_shell() -> void:
 	dock_width = minf(dock_width, maxf(available, content_min))
 	_dock.offset_left = -(dock_width + rail_inset)
 	_dock.offset_right = -rail_inset
-	_dock.offset_top = _top_bar.custom_minimum_size.y
+	_dock.offset_top = _workspace_bar.custom_minimum_size.y
 	_dock.offset_bottom = -bottom_inset
-	_drawer_scrim.offset_top = _top_bar.custom_minimum_size.y
+	_drawer_scrim.offset_top = _workspace_bar.custom_minimum_size.y
 	_drawer_scrim.offset_bottom = -(_bottom_bar.custom_minimum_size.y if _bottom_bar.visible else 0.0)
 	_sync_timeline_visibility()
 	_update_bottom_bar()
@@ -2290,8 +2356,6 @@ func _update_drawer_tabs() -> void:
 			_panel_rail.set_page(_compact_tab, true)
 		else:
 			_panel_rail.set_page("scene", _scene_panel_enabled() and _scene_is_expanded())
-	if _top_bar != null:
-		_top_bar.set_panels_open(_drawer_open)
 
 
 func _panel_page_title(page: String) -> String:
@@ -2324,50 +2388,22 @@ func _on_bottom_action(action: String) -> void:
 
 func _on_chrome_action(action: String) -> void:
 	match action:
-		TopBarScript.ACTION_BACK:
+		"back":
 			request_close()
-		TopBarScript.ACTION_UNDO:
+		"undo":
 			_undo()
-		TopBarScript.ACTION_REDO:
+		"redo":
 			_redo()
-		TopBarScript.ACTION_SAVE:
+		"save":
 			_save_project(true)
-		TopBarScript.ACTION_RENDER:
-			_open_render_sheet()
-		TopBarScript.ACTION_RENDER_STILL:
-			_open_render_sheet()
-		TopBarScript.ACTION_RENDER_SEQUENCE:
-			_open_render_sheet()
-		TopBarScript.ACTION_SETTINGS:
-			_open_settings()
-		TopBarScript.ACTION_PANELS:
-			_toggle_drawer(_compact_tab)
-		TopBarScript.ACTION_TIMELINE:
-			_toggle_timeline()
-		TopBarScript.ACTION_PERFORMANCE:
+		"menu":
+			_open_project_menu(_workspace_bar.action_button("menu"))
+		# The retired status bar still lives until the Stage host replaces it;
+		# keep its two existing entry points working meanwhile.
+		"performance":
 			_open_performance_overlay()
-		TopBarScript.ACTION_IMPORT:
-			_pick_model()
-		TopBarScript.ACTION_FRAME:
-			_focus_selection()
-		TopBarScript.ACTION_FRAME_ALL:
-			if _view != null:
-				_view.frame_all()
-		TopBarScript.ACTION_TOGGLE_GRID:
-			if _view != null:
-				_view.toggle_grid()
-		TopBarScript.ACTION_DUPLICATE:
-			if doc != null:
-				doc.duplicate_selected()
-		TopBarScript.ACTION_DELETE:
-			if doc != null:
-				doc.delete_selected()
-		TopBarScript.ACTION_RESET_LAYOUT:
-			set_layout_mode("auto")
-		TopBarScript.ACTION_ABOUT:
-			_show_about()
-		TopBarScript.ACTION_SHORTCUTS:
-			_open_shortcuts_sheet()
+		"workspace":
+			_open_workspace_sheet()
 
 
 func _toggle_timeline() -> void:
@@ -3695,37 +3731,71 @@ func _keep_zip_internal() -> void:
 # Project menu and settings
 # -------------------------------------------------------------------------
 
-func _menu_button(text_value: String, icon_name: String, action: Callable, danger: bool = false) -> Button:
-	var button := Kit.text_button(text_value, icon_name, false, true)
-	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, Kit.FIELD)
-	if danger:
-		button.add_theme_color_override("font_color", Kit.DANGER)
-		button.add_theme_color_override("icon_normal_color", Kit.DANGER)
-	button.pressed.connect(func() -> void:
-		_overlay.close_modal()
-		action.call()
-	)
-	return button
-
-func _open_project_menu() -> void:
+func _open_project_menu(anchor: Control) -> void:
 	if doc == null:
 		return
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 3)
-	body.add_child(_menu_button("Project settings", "sliders-horizontal", _open_project_settings))
-	body.add_child(_menu_button("Graphics and performance", "gauge", _open_graphics_settings))
-	body.add_child(_menu_button("Import 3D model", "upload", _pick_model))
-	body.add_child(_menu_button("Render and export", "clapperboard", _open_render_sheet))
-	body.add_child(Kit.vsep())
-	body.add_child(_menu_button("Frame selection", "focus", _focus_selection))
-	body.add_child(_menu_button("Show or hide timeline", "panel-bottom", _toggle_timeline))
-	body.add_child(Kit.vsep())
-	body.add_child(_menu_button("Gesture guide and shortcuts", "keyboard", _show_help))
-	body.add_child(_menu_button("About Kinema", "info", _show_about))
-	body.add_child(Kit.vsep())
-	body.add_child(_menu_button("Close project", "chevron-left", request_close))
-	_overlay.show_modal("Project", doc.title, body, [{"text": "Close", "compact": true}])
+	if _project_menu == null:
+		return
+	if _workspace_menu != null:
+		_workspace_menu.close()
+	_workspace_menu_open = false
+	_project_menu.set_layout_mode(layout_mode())
+	_project_menu.open_menu(anchor, "Project", doc.title, layout_mode() != "desktop")
+	_project_menu.add_action("settings", "Project settings", "sliders-horizontal")
+	_project_menu.add_action("import", "Import 3D model", "upload")
+	_project_menu.add_action("graphics", "Graphics and performance", "gauge")
+	_project_menu.add_action("interface", "Interface and scale", "monitor")
+	_project_menu.add_action("performance", "Performance overlay", "timer")
+	var instrumentation: Button = _project_menu.add_action(
+		"instrumentation", "Instrumentation strip", "rows-3")
+	instrumentation.visible = layout_mode() == "desktop"
+	_project_menu.add_separator()
+	_project_menu.add_action("shortcuts", "Gesture guide and shortcuts", "keyboard")
+	_project_menu.add_action("about", "About Kinema", "info")
+	_project_menu.add_separator()
+	_project_menu.add_action("close", "Close project", "x")
+
+
+func _on_project_menu_row(id: String) -> void:
+	match id:
+		"settings":
+			_open_settings()
+		"import":
+			_pick_model()
+		"graphics":
+			_open_settings("graphics")
+		"interface":
+			_open_interface_sheet()
+		"performance":
+			_open_performance_overlay()
+		"instrumentation":
+			_toggle_instrumentation()
+		"shortcuts":
+			_open_shortcuts_sheet()
+		"about":
+			_show_about()
+		"close":
+			request_close()
+
+
+## The interface sheet is the existing workspace sheet until the W1 cleanup
+## renames the file; the project menu already speaks the new name.
+func _open_interface_sheet() -> void:
+	_open_workspace_sheet()
+
+
+## The instrumentation strip is optional and desktop-only. Until the Stage host
+## owns it, the existing status bar is the live strip; the row is hidden where
+## there is no desktop chrome.
+func _toggle_instrumentation() -> void:
+	if layout_mode() != "desktop":
+		return
+	if _status_bar != null:
+		_status_bar.visible = not _status_bar.visible
+		if _status_bar.visible:
+			_refresh_chrome_values()
+		_apply_shell()
+
 
 func _open_project_settings() -> void:
 	if doc == null:

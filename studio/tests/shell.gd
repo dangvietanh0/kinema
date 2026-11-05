@@ -31,6 +31,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await _test_layout_and_workspace_api()
+	await _test_workspace_bar_and_menu()
 	_finish()
 
 
@@ -83,6 +84,49 @@ func _test_layout_and_workspace_api() -> void:
 
 	editor.set_workspace("bogus")
 	_check(editor.workspace() == "scene", "an invalid workspace id falls back to scene")
+
+
+func _test_workspace_bar_and_menu() -> void:
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+	var bar = editor._workspace_bar
+	_check(bar.size.y >= 43.5 and bar.size.y <= 44.5, "touch top bar is 44 dp")
+	_check(bar.workspace_chip().text == "Scene", "the chip shows the current workspace name")
+	_check(bar.workspace_chip().custom_minimum_size.x >= 96.0,
+		"the chip keeps the 96 dp minimum")
+	_check(not bar.visible_action_ids().has("render"), "no render action lives in the top bar")
+
+	bar.workspace_chip().pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace_menu_open(), "the chip opens the workspace menu")
+	var menu = editor._workspace_menu
+	_check(menu.row_count() == 5, "the workspace menu has exactly five rows")
+	var ids := ["scene", "shading", "rig", "animate", "render"]
+	for id in ids:
+		var row: Button = menu.row_button(id)
+		_check(row != null and row.custom_minimum_size.y >= 52.0,
+			"workspace row %s is at least 52 dp" % id)
+		_check(row.get_meta("workspace_row", "") == id,
+			"workspace row %s carries its id" % id)
+	_check(menu.row_button("scene").button_pressed, "the current workspace row is checked")
+
+	menu.row_button("animate").pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace() == "animate", "selecting a row switches workspace")
+	_check(not editor.workspace_menu_open(), "selecting a row closes the menu")
+	_check(bar.workspace_chip().text == "Animate", "the chip follows the workspace")
+
+	# Project menu order and rows.
+	bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	var project = editor._project_menu
+	var expected := ["settings", "import", "graphics", "interface", "performance",
+		"instrumentation", "shortcuts", "about", "close"]
+	_check(project.row_count() == expected.size(), "the project menu has nine rows")
+	for id in expected:
+		_check(project.row_button(id) != null, "project menu row %s exists" % id)
+	_check(not project.row_button("instrumentation").visible,
+		"the instrumentation strip row is hidden in touch layouts")
 
 
 func _finish() -> void:
