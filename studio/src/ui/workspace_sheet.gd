@@ -87,8 +87,8 @@ func refresh_fit(percent: float, is_clamped: bool) -> void:
 
 
 func _resolved_mode() -> String:
-	if editor != null and editor.has_method("workspace_mode"):
-		return str(editor.call("workspace_mode"))
+	if editor != null and editor.has_method("layout_mode"):
+		return str(editor.call("layout_mode"))
 	return resolved_mode
 
 

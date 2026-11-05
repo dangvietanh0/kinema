@@ -13,7 +13,8 @@ extends Control
 signal exit_requested
 ## Emitted when the workbench arrangement changes, including when Main
 ## resolves a different mode for the same preference.
-signal workspace_mode_changed(mode: String)
+signal layout_mode_changed(mode: String)
+signal workspace_changed(id: String)
 
 const DocumentScript = preload("res://src/core/document.gd")
 const RenderExport = preload("res://src/core/render_export.gd")
@@ -108,6 +109,15 @@ const COLOR_PALETTE := [
 	"#D8D8D8", "#BDBDBD", "#A0A0A0", "#7A7A7A", "#4A4A4A", "#202020",
 ]
 
+## The five workspaces are the shell's top-level mental model. They are
+## independent from the layout preset: a phone can show any workspace in
+## Compact or Studio, and the choice survives project open.
+const WORKSPACES := ["scene", "shading", "rig", "animate", "render"]
+const WORKSPACE_LABELS := {
+	"scene": "Scene", "shading": "Shading", "rig": "Rig",
+	"animate": "Animate", "render": "Render",
+}
+
 var doc: DocumentScript = null
 
 var _project_meta: Dictionary = {}
@@ -188,7 +198,9 @@ var _compact_tab := "scene"
 var _scene_transient := false
 var _scene_transient_width := -1.0
 var layout_info: Dictionary = {}
-var workbench_mode := "studio"
+var _layout_preset := "studio"
+var _workspace := "scene"
+var _workspace_menu_open := false
 var _timeline_visible := false
 ## Session-only "More" state: raises the overlay budget to the full cap until
 ## the sheet is closed or reopened. It is never persisted.
@@ -715,7 +727,7 @@ func open_timeline_workspace() -> bool:
 	# The workspace is the dope sheet and the graph, not a second clip/media
 	# lane stack. The lane scroll is still adopted so the restore is exact.
 	_lane_scroll.visible = false
-	_timeline.set_workspace_mode(true)
+	_timeline.set_layout_mode(true)
 	if _timeline_panel != null:
 		_timeline_panel.visible = false
 	_workspace_title.text = _active_clip_name()
@@ -734,7 +746,7 @@ func close_timeline_workspace(restore_focus: bool = true) -> void:
 	_restore_workspace_child("transport")
 	_restore_workspace_child("timeline")
 	_restore_workspace_child("lane")
-	_timeline.set_workspace_mode(false)
+	_timeline.set_layout_mode(false)
 	_timeline.set_mode(_workspace_previous_mode)
 	if _timeline_panel != null:
 		_timeline_panel.visible = bool(_workspace_saved.get("panel_visible", true))
@@ -1010,7 +1022,7 @@ func _on_drawer_scrim_input(event: InputEvent) -> void:
 func apply_layout(layout: Dictionary) -> void:
 	layout_info = layout
 	# Main already knows the mode it resolved, so this path never notifies it.
-	_apply_workspace_mode(str(layout.get("mode", "studio")), false)
+	_apply_layout_mode(str(layout.get("mode", "studio")), false)
 	apply_fit_info(
 		float(layout.get("fit_percent", 100.0)),
 		bool(layout.get("user_scale_enabled", true)),
@@ -1018,26 +1030,49 @@ func apply_layout(layout: Dictionary) -> void:
 	)
 
 
-func workspace_mode() -> String:
-	return workbench_mode
+func layout_mode() -> String:
+	return _layout_preset
+
+
+func workspace() -> String:
+	return _workspace
+
+
+## Switches the workspace and, unless asked otherwise, remembers it for the
+## next project open. An unknown id falls back to Scene rather than leaving the
+## shell on a surface that does not exist.
+func set_workspace(id: String, persist := true) -> void:
+	var next := id if id in WORKSPACES else "scene"
+	if persist:
+		Prefs.set_value("editor.workspace", next)
+	if next == _workspace:
+		return
+	_workspace = next
+	_workspace_menu_open = false
+	workspace_changed.emit(next)
+	call_deferred("_apply_shell")
+
+
+func workspace_menu_open() -> bool:
+	return _workspace_menu_open
 
 
 ## User intent. Persists the preference and, when the shell is hosted by Main,
 ## asks it to re-resolve; without a host the mode is resolved here so pure
 ## scenes and tests behave identically.
-func set_workspace_mode(mode: String) -> void:
+func set_layout_mode(mode: String) -> void:
 	var next := mode if mode in ["auto", "compact", "studio", "desktop"] else "auto"
 	Prefs.set_value("display.layout", next)
 	if _layout_hosted():
 		# Main re-resolves and calls apply_layout, which applies the mode and
-		# emits workspace_mode_changed if the arrangement actually changed.
+		# emits layout_mode_changed if the arrangement actually changed.
 		var host := get_parent()
 		while host != null and not host.has_method("refresh_layout_scale"):
 			host = host.get_parent()
 		if host != null:
 			host.call("refresh_layout_scale")
 		return
-	_apply_workspace_mode(_resolve_local(next), true)
+	_apply_layout_mode(_resolve_local(next), true)
 
 
 func apply_fit_info(fit_percent: float, user_scale_enabled: bool, clamped: bool) -> void:
@@ -1066,10 +1101,10 @@ func fit_clamped() -> bool:
 	return _fit_clamped
 
 
-func _apply_workspace_mode(mode: String, notify: bool) -> void:
+func _apply_layout_mode(mode: String, notify: bool) -> void:
 	var next := mode if mode in ["compact", "studio", "desktop"] else "studio"
-	var changed := next != workbench_mode
-	workbench_mode = next
+	var changed := next != _layout_preset
+	_layout_preset = next
 	if changed:
 		# A mode switch is a deliberate arrangement change, so it resets the
 		# manual sheet choice and uses the mode default.
@@ -1077,7 +1112,7 @@ func _apply_workspace_mode(mode: String, notify: bool) -> void:
 		_timeline_visible = _default_timeline_visible()
 	_apply_shell()
 	if changed and notify:
-		workspace_mode_changed.emit(next)
+		layout_mode_changed.emit(next)
 
 
 ## The stage is the reason the editor exists. The dope sheet opens only when
@@ -1110,7 +1145,7 @@ func _resolve_local(preference: String) -> String:
 	if dpi <= 0.0:
 		dpi = 160.0
 	var user_scale := float(Prefs.get_value("display.user_scale", 1.0))
-	var fit_desktop := workbench_mode != "compact"
+	var fit_desktop := layout_mode() != "compact"
 	var result: Dictionary = LayoutMathScript.resolve(physical, dpi, OS.get_name(), user_scale, preference, fit_desktop)
 	return str(result.get("mode", "studio"))
 
@@ -1183,6 +1218,9 @@ func _adopt_document(document: Node3D) -> void:
 	_update_header()
 	_update_history_buttons()
 	_select_tool(_tool)
+	var saved_workspace := str(Prefs.get_value("editor.workspace", "scene"))
+	_workspace = saved_workspace if saved_workspace in WORKSPACES else "scene"
+	_workspace_menu_open = false
 	# Both calls end with a deferred reframe; arrange the shell once the new
 	# document's deferred work has run so the first frame is already correct.
 	call_deferred("_apply_shell")
@@ -1622,7 +1660,7 @@ func _apply_shell() -> void:
 	# reapplies the shell in one pass.
 	if _render_mode:
 		return
-	var compact := workbench_mode == "compact"
+	var compact := layout_mode() == "compact"
 	# The dock is always an overlay. Studio and Desktop keep a 44 dp rail as
 	# the permanent affordance; Compact uses its bottom action bar. The stage
 	# never pays for a reserved panel column again. Below the Studio minimum
@@ -1638,19 +1676,19 @@ func _apply_shell() -> void:
 	# fold/open choice is respected until the next mode switch.
 	if _short != was_short and not _timeline_user_override:
 		_timeline_visible = _default_timeline_visible()
-	_top_bar.set_mode(workbench_mode)
+	_top_bar.set_mode(layout_mode())
 	_top_bar.set_available_width(size.x)
-	_rail.set_mode(workbench_mode)
+	_rail.set_mode(layout_mode())
 	_rail.set_available_height(size.y)
-	_view_header.set_mode(workbench_mode)
+	_view_header.set_mode(layout_mode())
 	if _view != null:
 		_view_header.set_view_label(_view.view_preset())
 		_view_header.set_grid(_view.grid_enabled())
-	_bottom_bar.set_mode(workbench_mode)
-	_status_bar.set_mode(workbench_mode)
+	_bottom_bar.set_mode(layout_mode())
+	_status_bar.set_mode(layout_mode())
 	if _overlay != null:
-		_overlay.set_layout_mode(workbench_mode)
-	_timeline.set_chrome_mode(workbench_mode)
+		_overlay.set_layout_mode(layout_mode())
+	_timeline.set_chrome_mode(layout_mode())
 
 	# The rail is a column on wide screens and a strip under the header on
 	# phones, so it is re-parented instead of duplicated.
@@ -1785,7 +1823,7 @@ func _apply_shell() -> void:
 # -------------------------------------------------------------------------
 
 func _scene_panel_enabled() -> bool:
-	return workbench_mode != "compact" and size.x >= SCENE_PANEL_MIN_WIDTH
+	return layout_mode() != "compact" and size.x >= SCENE_PANEL_MIN_WIDTH
 
 
 func _scene_expanded_width() -> float:
@@ -2215,7 +2253,7 @@ func _dock_overlay_mode() -> bool:
 	return true
 
 func _compact_shell() -> bool:
-	return workbench_mode == "compact"
+	return layout_mode() == "compact"
 
 
 func _set_compact_tab(tab: String) -> void:
@@ -2239,8 +2277,8 @@ func _update_drawer_tabs() -> void:
 		return
 	# Same rule as _apply_shell: the tabs light up wherever the flyout is the
 	# only panel navigation (Compact, or Studio below the rail's minimum).
-	var tabbed := workbench_mode == "compact" \
-		or (workbench_mode != "compact" and size.x < PANEL_RAIL_MIN_WIDTH)
+	var tabbed := layout_mode() == "compact" \
+		or (layout_mode() != "compact" and size.x < PANEL_RAIL_MIN_WIDTH)
 	_drawer_scene_tab.set_pressed_no_signal(tabbed and _compact_tab == "scene")
 	_drawer_props_tab.set_pressed_no_signal(tabbed and _compact_tab == "inspector")
 	if _drawer_rig_tab != null:
@@ -2325,7 +2363,7 @@ func _on_chrome_action(action: String) -> void:
 			if doc != null:
 				doc.delete_selected()
 		TopBarScript.ACTION_RESET_LAYOUT:
-			set_workspace_mode("auto")
+			set_layout_mode("auto")
 		TopBarScript.ACTION_ABOUT:
 			_show_about()
 		TopBarScript.ACTION_SHORTCUTS:
@@ -4002,7 +4040,7 @@ func _open_workspace_sheet() -> void:
 	var sheet = WorkspaceSheetScript.new()
 	sheet.setup(self)
 	sheet.layout_selected.connect(func(mode: String) -> void:
-		set_workspace_mode(mode)
+		set_layout_mode(mode)
 		sheet.call_deferred("close")
 	)
 	sheet.orientation_selected.connect(_on_settings_orientation)

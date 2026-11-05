@@ -80,14 +80,14 @@ func _ready() -> void:
 	for size in SIZES:
 		await _resize(main, size)
 		for mode in MODES:
-			editor.set_workspace_mode(mode)
+			editor.set_layout_mode(mode)
 			await get_tree().process_frame
 			await get_tree().process_frame
 			main.refresh_layout_scale()
 			await get_tree().process_frame
 			var label := "%dx%d %s" % [size.x, size.y, mode]
 			var info: Dictionary = main.layout
-			_check(editor.workspace_mode() == mode, label + ": the workbench mode applies")
+			_check(editor.layout_mode() == mode, label + ": the workbench mode applies")
 			_check(str(info.get("mode", "")) == mode, label + ": the resolved layout reports the mode")
 			_check(not editor._timeline_visible, label + ": the dope sheet starts folded")
 			_check(editor._dock.size.x <= 400.5,
@@ -201,7 +201,7 @@ func _ready() -> void:
 	]:
 		var scaled: Dictionary = scale_spec
 		await _resize(main, scaled["size"])
-		editor.set_workspace_mode(str(scaled["mode"]))
+		editor.set_layout_mode(str(scaled["mode"]))
 		await get_tree().process_frame
 		await get_tree().process_frame
 		main.refresh_layout_scale()
@@ -209,7 +209,7 @@ func _ready() -> void:
 		var scaled_label := "%dx%d %s at 200%%" % [
 			scaled["size"].x, scaled["size"].y, scaled["mode"]
 		]
-		_check(editor.workspace_mode() == str(scaled["mode"]),
+		_check(editor.layout_mode() == str(scaled["mode"]),
 			scaled_label + ": the workbench mode applies")
 		_check(not editor._timeline_visible,
 			scaled_label + ": the dope sheet starts folded")
@@ -247,7 +247,7 @@ func _ready() -> void:
 	print("LAYOUT STEP: scene panel and timeline overlay")
 	Prefs.set_value("editor.scene_panel_expanded", true)
 	await _resize(main, Vector2i(1440, 900))
-	editor.set_workspace_mode("desktop")
+	editor.set_layout_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -267,7 +267,7 @@ func _ready() -> void:
 	print("LAYOUT STEP: scene column on the right edge")
 	for size in [Vector2i(1280, 800), Vector2i(915, 412)]:
 		await _resize(main, size)
-		editor.set_workspace_mode("studio")
+		editor.set_layout_mode("studio")
 		await get_tree().process_frame
 		await get_tree().process_frame
 		main.refresh_layout_scale()
@@ -288,7 +288,7 @@ func _ready() -> void:
 		_check_no_overflow(editor, edge_label)
 		print("LAYOUT OK: " + edge_label)
 	await _resize(main, Vector2i(1440, 900))
-	editor.set_workspace_mode("desktop")
+	editor.set_layout_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -380,7 +380,7 @@ func _ready() -> void:
 	# least 55 percent of the stage and folds the clip lane and media header
 	# before it squeezes the sheet below transport + 72 dp.
 	await _resize(main, Vector2i(915, 412))
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -631,7 +631,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 
 	await _resize(main, Vector2i(600, 960))
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -649,7 +649,7 @@ func _ready() -> void:
 	# the sub-760 expansion is legal only while the stage keeps exactly 320 dp
 	# (611 dp shell), and illegal one dp below it.
 	await _resize(main, Vector2i(480, 960))
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -668,7 +668,7 @@ func _ready() -> void:
 		absf((below_threshold["logical_after"] as Vector2).x - SCENE_PANEL_MIN) < 0.5,
 		"a 479 dp Studio window clamps to the 480 dp column threshold")
 	await _resize(main, Vector2i(479, 960))
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -688,7 +688,7 @@ func _ready() -> void:
 	Prefs.set_value("editor.scene_panel_expanded", false)
 	for entry in [[611, true], [610, false]]:
 		await _resize(main, Vector2i(int(entry[0]), 960))
-		editor.set_workspace_mode("studio")
+		editor.set_layout_mode("studio")
 		await get_tree().process_frame
 		await get_tree().process_frame
 		main.refresh_layout_scale()
@@ -708,7 +708,7 @@ func _ready() -> void:
 	Prefs.set_value("editor.scene_panel_expanded", true)
 
 	await _resize(main, Vector2i(700, 960))
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()
@@ -736,7 +736,7 @@ func _ready() -> void:
 	for size in [Vector2i(412, 915), Vector2i(915, 412), Vector2i(1440, 900)]:
 		await _resize(main, size)
 		for mode in ["compact", "studio"]:
-			editor.set_workspace_mode(mode)
+			editor.set_layout_mode(mode)
 			await get_tree().process_frame
 			await get_tree().process_frame
 			main.refresh_layout_scale()
@@ -808,13 +808,13 @@ func _ready() -> void:
 	# Desktop on a portrait phone must stay Desktop, never fall back to Studio.
 	for phone in [Vector2i(360, 640), Vector2i(412, 915)]:
 		await _resize(main, phone)
-		editor.set_workspace_mode("desktop")
+		editor.set_layout_mode("desktop")
 		await get_tree().process_frame
 		main.refresh_layout_scale()
 		await get_tree().process_frame
 		await get_tree().process_frame
 		var label := "desktop %dx%d" % [phone.x, phone.y]
-		_check(editor.workspace_mode() == "desktop", label + ": desktop never falls back")
+		_check(editor.layout_mode() == "desktop", label + ": desktop never falls back")
 		_check(str(main.layout.get("mode", "")) == "desktop", label + ": the shell resolves desktop")
 		_check(editor._status_bar.visible, label + ": the desktop status bar stays visible")
 		_check(editor._top_bar.size.y <= 38.0, label + ": the desktop menu bar stays at most 38 dp")
@@ -823,7 +823,7 @@ func _ready() -> void:
 	# fields; Duplicate and Delete belong to a fixed footer, not to content that
 	# can end a few pixels below the viewport.
 	await _resize(main, Vector2i(1440, 900))
-	editor.set_workspace_mode("desktop")
+	editor.set_layout_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	main.refresh_layout_scale()

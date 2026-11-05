@@ -255,16 +255,16 @@ func _ready() -> void:
 	_check(str(LayoutMathScript.resolve(Vector2i(1280, 800), 160.0, "Linux", 1.0, str(Prefs.get_value("display.layout", "")), true).get("mode", "")) == "compact", "compact layout is actively selectable")
 	Prefs.set_value("display.layout", "auto")
 	var live_layout = main.refresh_layout_scale()
-	_check(editor.workbench_mode == str(live_layout.get("mode", "")), "editor receives the resolved mode")
+	_check(editor.layout_mode() == str(live_layout.get("mode", "")), "editor receives the resolved mode")
 	# The shell follows the preference even when the window itself cannot be
 	# measured. Restore the editor to the live window mode afterwards.
 	editor.apply_layout(LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "compact", true))
-	_check(editor.workbench_mode == "compact", "editor switches to the compact shell")
+	_check(editor.layout_mode() == "compact", "editor switches to the compact shell")
 	editor.apply_layout(LayoutMathScript.resolve(Vector2i(1080, 2400), 420.0, "Android", 1.0, "desktop", true))
-	_check(editor.workbench_mode == "desktop", "desktop stays selected on a phone")
+	_check(editor.layout_mode() == "desktop", "desktop stays selected on a phone")
 	_check(float(editor.layout_info.get("fit", 1.0)) < 1.0, "desktop fit is reported to the editor")
 	editor.apply_layout(live_layout)
-	_check(editor.workbench_mode == str(live_layout.get("mode", "")), "editor returns to the live mode")
+	_check(editor.layout_mode() == str(live_layout.get("mode", "")), "editor returns to the live mode")
 	_check(not main.apply_orientation("portrait"), "orientation is disabled when the display server has no feature")
 	_check(doc != null and doc.objects.size() >= 3, "study template has objects")
 	var form: Dictionary = {}
@@ -615,10 +615,10 @@ func _ready() -> void:
 	_check(not editor._overlay.has_modal(), "a long handle drag dismisses the sheet")
 
 	print("SMOKE STEP: workspace modes")
-	editor.set_workspace_mode("compact")
+	editor.set_layout_mode("compact")
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(editor.workspace_mode() == "compact", "compact mode applies")
+	_check(editor.layout_mode() == "compact", "compact mode applies")
 	_check(editor._bottom_bar.visible, "compact bottom action bar is visible")
 	_check(editor._top_bar.size.y >= 47.0, "compact top bar is 48 dp")
 	var compact_min: float = editor._layout.get_combined_minimum_size().x
@@ -658,10 +658,10 @@ func _ready() -> void:
 	# opens as an overlay instead of reserving a column.
 	editor.size = Vector2(1280.0, 800.0)
 	editor._apply_shell()
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(editor.workspace_mode() == "studio", "studio mode applies")
+	_check(editor.layout_mode() == "studio", "studio mode applies")
 	var wide_rail = editor.get("_panel_rail")
 	_check(wide_rail != null and wide_rail.visible, "studio keeps the right panel rail")
 	if wide_rail != null:
@@ -856,7 +856,7 @@ func _ready() -> void:
 	print("SMOKE STEP: persistent scene panel")
 	Prefs.set_value("editor.scene_panel_expanded", true)
 	editor.size = Vector2(1280.0, 800.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	for _i in 3:
 		await get_tree().process_frame
@@ -972,7 +972,7 @@ func _ready() -> void:
 
 	# Re-parenting between the scene column and the dock keeps one instance and
 	# preserves the selection, search and scroll state.
-	editor.set_workspace_mode("compact")
+	editor.set_layout_mode("compact")
 	for _i in 3:
 		await get_tree().process_frame
 	_check(editor._outliner == scene_outliner,
@@ -984,7 +984,7 @@ func _ready() -> void:
 		"re-parenting preserves the scene search")
 	_check(scene_outliner._scroll.scroll_vertical == scene_scroll,
 		"re-parenting preserves the scene scroll")
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	for _i in 3:
 		await get_tree().process_frame
 	_check(editor._outliner == scene_outliner and editor._outliner_panel.get_parent() == editor._scene_column,
@@ -1005,10 +1005,10 @@ func _ready() -> void:
 	var outliner = editor._outliner
 	var outliner_overflow: bool = outliner._list.get_combined_minimum_size().y + 16.0 > outliner._scroll.size.y
 	_check(not outliner_overflow or absf(fmod(outliner._scroll.size.y - 6.0, 45.0)) < 0.6, "scene list viewport ends on a whole row")
-	editor.set_workspace_mode("desktop")
+	editor.set_layout_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(editor.workspace_mode() == "desktop", "desktop mode applies on any screen")
+	_check(editor.layout_mode() == "desktop", "desktop mode applies on any screen")
 	_check(editor._status_bar.visible, "desktop status bar is visible")
 	_check(editor._top_bar.size.y >= 35.0 and editor._top_bar.size.y <= 38.0, "desktop menu bar is 36 dp")
 	_check(editor.get("_panel_rail") != null and editor.get("_panel_rail").visible, "desktop keeps the panel rail")
@@ -1018,7 +1018,7 @@ func _ready() -> void:
 	print("SMOKE STEP: timeline overlay")
 	Prefs.set_value("editor.scene_panel_expanded", true)
 	editor.size = Vector2(1280.0, 800.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	for _i in 3:
 		await get_tree().process_frame
@@ -1496,7 +1496,7 @@ func _ready() -> void:
 	# control stays reachable.
 	print("SMOKE STEP: media header stays reachable")
 	editor.size = Vector2(1440.0, 900.0)
-	editor.set_workspace_mode("desktop")
+	editor.set_layout_mode("desktop")
 	editor._apply_shell()
 	for _i in 3:
 		await get_tree().process_frame
@@ -1529,7 +1529,7 @@ func _ready() -> void:
 
 	print("SMOKE STEP: editor type and touch floor")
 	editor.size = Vector2(412.0, 915.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	await get_tree().process_frame
 	var too_small_labels := 0
@@ -1579,7 +1579,7 @@ func _ready() -> void:
 
 	print("SMOKE STEP: landscape shell")
 	editor.size = Vector2(915.0, 412.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -1617,7 +1617,7 @@ func _ready() -> void:
 	_check(editor._timeline.transport_panel().get_combined_minimum_size().x <= editor._view.size.x + 1.0, "the landscape transport fits the stage width")
 	editor._timeline.set_sheet_visible(false)
 	editor.size = Vector2(412.0, 915.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	_check(not editor._short, "412x915 resolves as a tall studio shell")
 	_check(not editor._timeline_visible, "tall studio also starts with the dope sheet folded")
@@ -1661,7 +1661,7 @@ func _ready() -> void:
 	editor._close_drawer()
 	await get_tree().process_frame
 	_check(not editor._dock.visible, "closing the drawer returns the stage to the viewport")
-	editor.set_workspace_mode("compact")
+	editor.set_layout_mode("compact")
 	await get_tree().process_frame
 	_check(not editor._top_bar._panels_button.visible, "compact uses the bottom bar for panels")
 	_check(editor.get("_panel_rail") == null or not editor.get("_panel_rail").visible, "compact hides the right panel rail")
@@ -1684,7 +1684,7 @@ func _ready() -> void:
 
 	print("SMOKE STEP: sequence shell wiring")
 	editor.size = Vector2(412.0, 915.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	# A mode switch reopens the default sheet; this step is about the folded
 	# stack, so fold explicitly first.
@@ -1831,7 +1831,7 @@ func _ready() -> void:
 		_check(false, "the drawer exposes a visible rig tab")
 	if rig_panel != null and editor._drawer_rig_tab != null:
 		var shell_rail = editor.get("_panel_rail")
-		if editor.workspace_mode() == "compact":
+		if editor.layout_mode() == "compact":
 			_check(editor._drawer_rig_tab.visible, "the rig tab is visible on compact shells")
 		elif shell_rail != null and shell_rail.visible:
 			_check(shell_rail.page_button("rig") != null, "the panel rail exposes the rig page on wide shells")
@@ -2050,7 +2050,7 @@ func _ready() -> void:
 
 	print("SMOKE STEP: collapsible panels")
 	editor.size = Vector2(412.0, 915.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	await get_tree().process_frame
 	editor._set_section_collapsed("outliner", true)
@@ -2068,7 +2068,7 @@ func _ready() -> void:
 	editor._set_section_collapsed("inspector", false)
 	await get_tree().process_frame
 	_check(not editor._outliner.collapsed and not editor._inspector.collapsed, "panels expand again")
-	editor.set_workspace_mode("compact")
+	editor.set_layout_mode("compact")
 	await get_tree().process_frame
 
 	print("SMOKE STEP: graph editor")
@@ -2187,7 +2187,7 @@ func _ready() -> void:
 
 		print("SMOKE STEP: short landscape graph")
 		editor.size = Vector2(915.0, 412.0)
-		editor.set_workspace_mode("studio")
+		editor.set_layout_mode("studio")
 		editor._apply_shell()
 		editor._timeline_visible = true
 		editor._sync_timeline_visibility()
@@ -2214,7 +2214,7 @@ func _ready() -> void:
 			_check(editor._timeline.graph_caption() == "Rotate or open the timeline workspace for curve editing",
 				"800x360 graph states the exact workspace caption")
 		editor.size = Vector2(412.0, 915.0)
-		editor.set_workspace_mode("compact")
+		editor.set_layout_mode("compact")
 		editor._apply_shell()
 		editor._timeline_visible = true
 		editor._sync_timeline_visibility()
@@ -2679,7 +2679,7 @@ func _ready() -> void:
 
 	print("SMOKE STEP: workspace clamp copy and rotation")
 	editor.size = Vector2(915.0, 412.0)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	editor._open_workspace_sheet()
 	await get_tree().process_frame
@@ -2720,7 +2720,7 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 	editor.size = Vector2(412.0, 915.0)
-	editor.set_workspace_mode("compact")
+	editor.set_layout_mode("compact")
 	await get_tree().process_frame
 	await get_tree().process_frame
 
@@ -2770,7 +2770,7 @@ func _ready() -> void:
 	# 3D view.
 	editor.size = Vector2(1280.0, 800.0)
 	Prefs.set_value("editor.scene_panel_expanded", false)
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	editor._apply_shell()
 	for _i in 3:
 		await get_tree().process_frame

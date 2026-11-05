@@ -389,8 +389,8 @@ func _display(parent: Control) -> void:
 		{"label": "Studio", "value": "studio"},
 		{"label": "Desktop", "value": "desktop"},
 	], str(Prefs.get_value("display.layout", "auto")), func(value: Variant) -> void:
-		if editor != null and editor.has_method("set_workspace_mode"):
-			editor.call("set_workspace_mode", str(value))
+		if editor != null and editor.has_method("set_layout_mode"):
+			editor.call("set_layout_mode", str(value))
 		else:
 			Prefs.set_value("display.layout", value)
 		_rebuild()
@@ -447,8 +447,8 @@ func _display(parent: Control) -> void:
 
 
 func _resolved_mode() -> String:
-	if editor != null and editor.has_method("workspace_mode"):
-		return str(editor.call("workspace_mode")).capitalize()
+	if editor != null and editor.has_method("layout_mode"):
+		return str(editor.call("layout_mode")).capitalize()
 	return "Studio"
 
 

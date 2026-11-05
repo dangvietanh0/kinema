@@ -210,8 +210,8 @@ func _open_editor(record: Dictionary, template: String, loaded: bool) -> void:
 	var editor := EditorShellScript.new()
 	_host.add_child(editor)
 	editor.exit_requested.connect(_on_editor_exit)
-	if not editor.workspace_mode_changed.is_connected(_on_workspace_mode_changed):
-		editor.workspace_mode_changed.connect(_on_workspace_mode_changed)
+	if not editor.layout_mode_changed.is_connected(_on_layout_mode_changed):
+		editor.layout_mode_changed.connect(_on_layout_mode_changed)
 	if loaded:
 		editor.open_loaded(record.get("meta", {}), record.get("data", {}))
 	else:
@@ -235,7 +235,7 @@ func _await_editor_first_frame() -> void:
 	await RenderingServer.frame_post_draw
 	Gfx.mark_renderer_ready()
 
-func _on_workspace_mode_changed(_mode: String) -> void:
+func _on_layout_mode_changed(_mode: String) -> void:
 	refresh_layout_scale()
 
 

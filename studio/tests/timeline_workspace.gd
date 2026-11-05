@@ -574,7 +574,7 @@ func _test_timeline_workspace() -> void:
 		await get_tree().process_frame
 		return
 	editor._overlay.clear_toast()
-	editor.set_workspace_mode("studio")
+	editor.set_layout_mode("studio")
 	await get_tree().process_frame
 
 	var doc = editor.doc
