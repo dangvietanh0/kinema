@@ -33,6 +33,7 @@ func _ready() -> void:
 	await _test_layout_and_workspace_api()
 	await _test_workspace_bar_and_menu()
 	await _test_context_bar_overflow_and_icons()
+	await _test_transport()
 	_finish()
 
 
@@ -172,6 +173,60 @@ func _test_context_bar_overflow_and_icons() -> void:
 				"%s: %s and %s do not share the %s icon" %
 				[workspace_id, icons.get(icon_name, ""), id, icon_name])
 			icons[icon_name] = id
+
+
+func _test_transport() -> void:
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+	var bar = editor._transport_bar
+	_check(bar.size.y >= 43.5 and bar.size.y <= 44.5, "touch transport is 44 dp")
+	_check(bar.animate_button().custom_minimum_size.x >= 96.0,
+		"Animate is a 96 dp text action")
+
+	var doc = editor.doc
+	_check(not doc.is_playing, "playback starts paused")
+	bar.play_button().pressed.emit()
+	await get_tree().process_frame
+	_check(doc.is_playing, "play drives document playback")
+	bar.play_button().pressed.emit()
+	await get_tree().process_frame
+	_check(not doc.is_playing, "the same control pauses")
+
+	doc.seek(1.0)
+	bar.skip_start_requested.emit()
+	await get_tree().process_frame
+	_check(absf(doc.current_time) < 0.001, "skip to start returns to 0")
+
+	# Add key inserts a real transform key set at the playhead.
+	doc.seek(0.5)
+	var before: int = doc.get_channel_keys(doc.selected_id, "position").size()
+	bar.add_key_button().pressed.emit()
+	await get_tree().process_frame
+	_check(doc.get_channel_keys(doc.selected_id, "position").size() == before + 1,
+		"add key inserts a real position key")
+
+	doc.set_selection("")
+	editor._sync_transport_state()
+	_check(bar.add_key_button().disabled, "add key disables with no selection")
+	_check(bar.add_key_button().tooltip_text == "Select an object to add a key.",
+		"the disabled key control states the real reason")
+
+	bar.animate_button().pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace() == "animate", "Animate switches workspace")
+	_check(not bar.visible, "the shared transport hides in Animate")
+
+	# Time entry sheet: tap the timecode, enter a frame, seek.
+	var time_button: Button = bar.time_button()
+	time_button.pressed.emit()
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "tapping the timecode opens the entry sheet")
+	editor._time_frame_field.text = "12"
+	editor._time_frame_field.text_submitted.emit("12")
+	editor._apply_time_entry()
+	await get_tree().process_frame
+	_check(absf(doc.current_time - 12.0 / float(doc.fps)) < 0.01,
+		"the frame field seeks to frame 12")
 
 
 func _finish() -> void:

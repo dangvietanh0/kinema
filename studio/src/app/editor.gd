@@ -27,6 +27,7 @@ const OverlayScript = preload("res://src/ui/overlay.gd")
 const TopBarScript = preload("res://src/ui/components/top_bar.gd")
 const WorkspaceBarScript = preload("res://src/ui/components/workspace_bar.gd")
 const ContextBarScript = preload("res://src/ui/components/context_bar.gd")
+const TransportBarScript = preload("res://src/ui/components/transport_bar.gd")
 const MenuPanelScript = preload("res://src/ui/components/menu_panel.gd")
 const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
 const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
@@ -244,6 +245,10 @@ var _color_hex: LineEdit
 var _color_rgb: Array = []
 var _color_updating := false
 
+var _time_frame_field: LineEdit
+var _time_seconds_field: LineEdit
+var _time_error: Label
+
 var _settings_duration_field
 var _settings_fps_field
 var _settings_linear: Button
@@ -297,6 +302,7 @@ func _ready() -> void:
 	_build_top_bar()
 	_build_context_bar()
 	_build_body()
+	_build_transport_bar()
 	_build_status_bar()
 	_build_bottom_bar()
 	# The scrim is added before the dock so GUI picking gives the drawer the
@@ -370,6 +376,15 @@ func _build_context_bar() -> void:
 	_context_bar = ContextBarScript.new()
 	_context_bar.action_requested.connect(_on_context_action)
 	_layout.add_child(_context_bar)
+
+func _build_transport_bar() -> void:
+	_transport_bar = TransportBarScript.new()
+	_transport_bar.play_requested.connect(_on_transport_play)
+	_transport_bar.skip_start_requested.connect(_on_transport_skip)
+	_transport_bar.time_requested.connect(_open_time_entry_sheet)
+	_transport_bar.add_key_requested.connect(_on_transport_add_key)
+	_transport_bar.animate_requested.connect(_on_transport_animate)
+	_layout.add_child(_transport_bar)
 
 func _build_body() -> void:
 	_body = HBoxContainer.new()
@@ -1478,7 +1493,7 @@ func _fit_animate_pane() -> void:
 func _visible_shell_action_ids() -> PackedStringArray:
 	var ids := PackedStringArray()
 	for bar in [_workspace_bar, _context_bar, _transport_bar]:
-		if bar == null:
+		if bar == null or not bar.visible:
 			continue
 		for id in bar.visible_action_ids():
 			ids.append(id)
@@ -1537,6 +1552,134 @@ func _on_camera_menu_row(id: String) -> void:
 		_exit_look_through()
 	else:
 		_enter_look_through(id)
+
+
+# -------------------------------------------------------------------------
+# Stage transport and time entry
+# -------------------------------------------------------------------------
+
+func _on_transport_play() -> void:
+	if doc != null:
+		doc.toggle_play()
+	_sync_transport_state()
+
+
+func _on_transport_skip() -> void:
+	if doc == null:
+		return
+	doc.pause()
+	doc.seek(0.0)
+	_sync_transport_state()
+
+
+func _on_transport_add_key() -> void:
+	if doc == null or doc.selected_id == "":
+		return
+	doc.insert_transform_keys()
+	_sync_transport_state()
+
+
+func _on_transport_animate() -> void:
+	set_workspace("animate")
+
+
+func _sync_transport_state() -> void:
+	if _transport_bar == null:
+		return
+	if doc == null:
+		_transport_bar.set_playing(false)
+		_transport_bar.set_timecode("00:00:00")
+		_transport_bar.set_add_key_enabled(false, "Select an object to add a key.")
+		return
+	_transport_bar.set_playing(doc.is_playing)
+	_transport_bar.set_timecode(doc.format_timecode(doc.current_time))
+	_transport_bar.set_add_key_enabled(
+		doc.selected_id != "", "Select an object to add a key.")
+
+
+## Real frame/time entry. The frame field wins when both are filled; the time
+## field is converted to frames when the frame field is empty. Invalid input
+## stays in the sheet with an inline message and never seeks.
+func _open_time_entry_sheet() -> void:
+	if doc == null or _overlay == null:
+		return
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	row.custom_minimum_size.y = 44.0
+	body.add_child(row)
+
+	var frame_box := VBoxContainer.new()
+	frame_box.add_theme_constant_override("separation", 2)
+	frame_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	frame_box.add_child(Kit.mono_label("FRAME", 10, Kit.TEXT_DIM))
+	_time_frame_field = Kit.line_edit("Frame")
+	_time_frame_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	_time_frame_field.custom_minimum_size.y = 44.0
+	frame_box.add_child(_time_frame_field)
+	row.add_child(frame_box)
+
+	var seconds_box := VBoxContainer.new()
+	seconds_box.add_theme_constant_override("separation", 2)
+	seconds_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	seconds_box.add_child(Kit.mono_label("SECONDS", 10, Kit.TEXT_DIM))
+	_time_seconds_field = Kit.line_edit("Seconds")
+	_time_seconds_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	_time_seconds_field.custom_minimum_size.y = 44.0
+	seconds_box.add_child(_time_seconds_field)
+	row.add_child(seconds_box)
+
+	_time_error = Kit.label("", 11, Kit.DANGER)
+	_time_error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_time_error.visible = false
+	body.add_child(_time_error)
+
+	_time_frame_field.text_submitted.connect(func(_text: String) -> void:
+		_apply_time_entry()
+	)
+	_time_seconds_field.text_submitted.connect(func(_text: String) -> void:
+		_apply_time_entry()
+	)
+
+	_overlay.show_sheet(
+		"Go to time",
+		"Enter a frame or a time in seconds.",
+		body,
+		[
+			{"text": "Cancel", "compact": true},
+			{"text": "Go", "primary": true, "callback": _apply_time_entry},
+		]
+	)
+	_time_frame_field.grab_focus()
+
+
+func _apply_time_entry() -> void:
+	if doc == null or _overlay == null:
+		return
+	if _time_frame_field == null or not is_instance_valid(_time_frame_field):
+		return
+	var frame_text := _time_frame_field.text.strip_edges()
+	var seconds_text := _time_seconds_field.text.strip_edges() if _time_seconds_field != null else ""
+	var frame := -1.0
+	if frame_text != "":
+		if frame_text.is_valid_float():
+			frame = frame_text.to_float()
+	elif seconds_text != "":
+		if seconds_text.is_valid_float():
+			frame = seconds_text.to_float() * float(doc.fps)
+	if frame < 0.0:
+		if _time_error != null:
+			_time_error.text = "Enter a frame or a time in seconds."
+			_time_error.visible = true
+		return
+	var last_frame := maxf(roundf(doc.duration * float(doc.fps)), 0.0)
+	frame = clampf(roundf(frame), 0.0, last_frame)
+	doc.pause()
+	doc.seek(frame / float(doc.fps))
+	_overlay.close_modal()
+	_sync_transport_state()
+
 
 
 
@@ -1710,6 +1853,7 @@ func _adopt_document(document: Node3D) -> void:
 func _on_document_scene_changed() -> void:
 	_update_header()
 	_update_scene_rail_count()
+	_sync_transport_state()
 
 func _on_document_rigs_changed() -> void:
 	if doc != null and _rig_overlay != null and _rig_mode:
@@ -1794,6 +1938,7 @@ func _on_graphics_changed() -> void:
 
 func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
+	_sync_transport_state()
 
 func _on_document_dirty_changed(_is_dirty: bool) -> void:
 	_update_header()
@@ -2165,6 +2310,9 @@ func _apply_shell() -> void:
 	_context_bar.set_layout_mode(layout_mode())
 	_context_bar.set_available_width(size.x)
 	_sync_context_actions()
+	_transport_bar.set_layout_mode(layout_mode())
+	_transport_bar.visible = _workspace != "animate" and not _look_through
+	_sync_transport_state()
 	_rail.set_mode(layout_mode())
 	_rail.set_available_height(size.y)
 	_view_header.set_mode(layout_mode())
@@ -3832,6 +3980,7 @@ func _sync_render_hud() -> void:
 
 
 func _on_document_playback_changed(_time: float, _playing: bool) -> void:
+	_sync_transport_state()
 	if _render_mode:
 		_sync_render_hud()
 	_sync_sequence_transport()
