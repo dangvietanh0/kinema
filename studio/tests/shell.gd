@@ -34,6 +34,7 @@ func _ready() -> void:
 	await _test_workspace_bar_and_menu()
 	await _test_context_bar_overflow_and_icons()
 	await _test_transport()
+	await _test_shell_anatomy_and_panels()
 	_finish()
 
 
@@ -45,6 +46,11 @@ func _boot_main(width: int, height: int) -> Control:
 		_main.free()
 		_main = null
 	Prefs.set_value("editor.workspace", "scene")
+	# Each boot owns its arrangement. The layout API test above persists an
+	# explicit Studio choice; without this reset every later size would boot
+	# Studio and the 360 dp case would be clamped to 480 logical pixels instead
+	# of resolving Compact.
+	Prefs.set_value("display.layout", "auto")
 	var packed: PackedScene = load("res://src/app/main.tscn")
 	var main: Control = packed.instantiate()
 	add_child(main)
@@ -227,6 +233,97 @@ func _test_transport() -> void:
 	await get_tree().process_frame
 	_check(absf(doc.current_time - 12.0 / float(doc.fps)) < 0.01,
 		"the frame field seeks to frame 12")
+
+
+func _test_shell_anatomy_and_panels() -> void:
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	_check(editor._workspace_bar.size.y >= 43.5, "scene: 44 dp top bar")
+	_check(editor._context_bar.size.y >= 43.5, "scene: 44 dp context row")
+	_check(editor._transport_bar.visible, "scene: transport visible")
+	_check(editor._stage_host.size.x >= 480.0, "scene: stage keeps the centre")
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.HIDDEN,
+		"scene: no reserved panel")
+	_check(not editor._timeline.get_parent() == editor._stage_host,
+		"scene: the timeline is not a stage child")
+
+	# Scene tree/inspector overlays close each other and never resize the stage.
+	var stage_width: float = editor._stage_host.size.x
+	editor._toggle_scene_panel("scene")
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.OVERLAY,
+		"scene tree opens as an overlay")
+	_check(absf(editor._stage_host.size.x - stage_width) < 0.5,
+		"opening an overlay does not resize the stage")
+	editor._toggle_scene_panel("inspector")
+	await get_tree().process_frame
+	_check(editor._workspace_panel.content() == editor._inspector_panel,
+		"opening the inspector closes the scene tree")
+	editor._toggle_scene_panel("inspector")
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.HIDDEN,
+		"tapping the same action closes the panel")
+
+	# Reserved panels at 915 dp, with the stage floor.
+	for id in ["shading", "rig", "render"]:
+		editor.set_workspace(id)
+		await get_tree().process_frame
+		var mode: int = editor._workspace_panel.mode()
+		_check(mode == editor._workspace_panel.Mode.RESERVED,
+			"%s: 915 dp reserves the panel" % id)
+		var width: float = editor._workspace_panel.panel_rect().size.x
+		_check(width >= 280.0 and width <= 360.0,
+			"%s: reserved width is 280–360 dp" % id)
+		_check(editor._stage_host.size.x >= 480.0,
+			"%s: the stage keeps at least 480 dp" % id)
+		_check(editor._workspace_panel.close_button().visible == false,
+			"%s: a reserved panel has no close button" % id)
+
+	# Overlay panels below 768 dp.
+	await _resize_main(main, Vector2i(600, 960))
+	editor.set_workspace("shading")
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.OVERLAY,
+		"600 dp turns the shading panel into an overlay")
+	_check(editor._workspace_panel.scrim().visible, "the overlay has a scrim")
+	_check(editor._workspace_panel.panel_rect().size.x <= 400.0,
+		"the overlay respects the 400 dp cap")
+	_check(editor._workspace_panel.close_button().visible and
+		editor._workspace_panel.close_button().size.x >= 43.5,
+		"the overlay close button is a 44 dp target")
+	editor._workspace_panel.close_button().pressed.emit()
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.HIDDEN,
+		"the close button closes the overlay")
+
+	# Animate pane is a real layout sibling below the stage and does not cover it.
+	await _resize_main(main, Vector2i(915, 412))
+	editor.set_workspace("animate")
+	await get_tree().process_frame
+	_check(editor._animate_pane.visible, "animate: the pane is visible")
+	_check(editor._animate_pane.get_parent() == editor._center, "animate: pane is in the centre column")
+	_check(editor._animate_pane.get_index() > editor._stage_host.get_index(),
+		"animate: the pane sits below the stage")
+	_check(editor._animate_pane.timeline() == editor._timeline,
+		"animate: the mounted Timeline is the existing component")
+	_check(editor._timeline.get_parent() == editor._animate_pane,
+		"animate: the timeline is not a stage overlay")
+	_check(editor._stage_host.get_global_rect().end.y <=
+		editor._animate_pane.get_global_rect().position.y + 0.5,
+		"animate: the pane never covers the stage")
+	_check(not editor._transport_bar.visible, "animate: the shared transport is replaced")
+
+	# Non-animate workspaces have no timeline over the stage.
+	for id in ["scene", "shading", "rig", "render"]:
+		editor.set_workspace(id)
+		await get_tree().process_frame
+		_check(not editor._animate_pane.visible,
+			"%s: the animate pane is hidden" % id)
+		_check(not editor._stage_host.is_ancestor_of(editor._timeline),
+			"%s: no timeline node lives inside the stage host" % id)
 
 
 func _finish() -> void:

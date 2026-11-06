@@ -253,7 +253,7 @@ func _subtitle_for(category: String) -> String:
 	match category:
 		"general": return "Application identity and a full preference reset."
 		"editor": return "How the workbench behaves while you animate."
-		"display": return "Workspace, orientation and interface scale."
+		"display": return "Arrangement, orientation and interface scale."
 		"graphics": return "Real engine features, with unsupported options disabled."
 		"performance": return "Preview policy and live engine monitors."
 		"render": return "Real PNG stills and PNG sequences. No video encoder."
@@ -382,7 +382,7 @@ func _editor(parent: Control) -> void:
 # -------------------------------------------------------------------------
 
 func _display(parent: Control) -> void:
-	parent.add_child(Kit.section_label("Workspace"))
+	parent.add_child(Kit.section_label("Arrangement"))
 	_choice_row(parent, "Layout", "Resolved: %s" % _resolved_mode(), [
 		{"label": "Auto", "value": "auto"},
 		{"label": "Compact", "value": "compact"},

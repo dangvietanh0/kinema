@@ -1,5 +1,5 @@
 extends VBoxContainer
-## Workspace and interface scale.
+## Interface arrangement and scale.
 ##
 ## The sheet never changes the layout on its own. It reports the arrangement
 ## the user picked; Main resolves the real mode from the window and the saved
