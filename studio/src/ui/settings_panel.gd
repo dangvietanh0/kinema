@@ -39,7 +39,7 @@ const ICONS := {
 	"about": "info",
 }
 const PACKAGE_NAME := "studio.kinema.app"
-const APP_VERSION := "0.1.0"
+const APP_VERSION := "0.1.5"
 const ScaleSliderScript = preload("res://src/ui/components/scale_slider.gd")
 
 # Graphics risk copy. The panel emits the request; the editor owns the

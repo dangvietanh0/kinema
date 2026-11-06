@@ -6,6 +6,7 @@ extends Control
 ## and reads the live controls. It never fabricates a control or a state.
 
 const PROJECT_TITLE := "Shell suite"
+const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
 
 var _failures: Array[String] = []
 var _checks := 0
@@ -36,6 +37,10 @@ func _ready() -> void:
 	await _test_transport()
 	await _test_shell_anatomy_and_panels()
 	await _test_camera_view()
+	await _test_workspace_switch_with_open_surfaces()
+	await _test_back_precedence()
+	await _test_desktop_shell()
+	await _test_version_strings()
 	_finish()
 
 
@@ -408,6 +413,89 @@ func _test_camera_view() -> void:
 	_check(editor._camera_menu.empty_text() == "No scene cameras. Add one to look through it.",
 		"the empty camera message is exact")
 	editor._camera_menu.close()
+
+
+func _test_workspace_switch_with_open_surfaces() -> void:
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+	editor.set_workspace("shading")
+	await get_tree().process_frame
+	editor._toggle_workspace_panel()          # no-op at 915, reserved
+	editor.set_workspace("rig")
+	await get_tree().process_frame
+	_check(editor._workspace_panel.content() == editor._rig_panel,
+		"switching workspace swaps the panel content")
+	editor._toggle_scene_panel("scene")       # nothing in rig; must not open a scene panel
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.RESERVED,
+		"a scene overlay request never replaces a reserved rig panel")
+
+	# A modal closes before the workspace changes on Back.
+	editor.set_workspace("scene")
+	editor._open_add_sheet()
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "the add sheet is open")
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(not editor._overlay.has_modal() and editor.workspace() == "scene",
+		"Back closes the modal before switching workspace")
+
+	# Workspace chip -> menu -> Back closes the menu, not the project.
+	editor._workspace_bar.workspace_chip().pressed.emit()
+	await get_tree().process_frame
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(not editor.workspace_menu_open() and editor.workspace() == "scene",
+		"Back closes the workspace menu first")
+
+func _test_back_precedence() -> void:
+	var main = await _boot_main(600, 960)
+	var editor = main._editor
+	editor.set_workspace("shading")
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.OVERLAY,
+		"600 dp uses the overlay panel")
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == editor._workspace_panel.Mode.HIDDEN and
+		editor.workspace() == "shading", "Back closes the panel before the workspace")
+	editor.handle_back()
+	await get_tree().process_frame
+	_check(editor.workspace() == "scene", "Back returns to Scene from another workspace")
+
+func _test_desktop_shell() -> void:
+	var main = await _boot_main(1280, 800)
+	var editor = main._editor
+	editor.set_layout_mode("desktop")
+	await get_tree().process_frame
+	_check(editor._workspace_bar.size.y >= 31.5 and editor._workspace_bar.size.y <= 32.5,
+		"desktop top bar is 32 dp")
+	_check(editor._context_bar.size.y >= 35.5 and editor._context_bar.size.y <= 36.5,
+		"desktop context row is 36 dp")
+	_check(editor._transport_bar.size.y >= 31.5 and editor._transport_bar.size.y <= 32.5,
+		"desktop transport is 32 dp")
+	_check(not editor._instrumentation.visible, "desktop strip is off by default")
+	editor._workspace_bar.workspace_chip().pressed.emit()
+	await get_tree().process_frame
+	_check(editor._workspace_menu.row_count() == 5, "desktop keeps the five-row menu")
+	editor._workspace_menu.close()
+	editor._workspace_bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	_check(editor._project_menu.row_button("instrumentation") != null,
+		"desktop exposes the instrumentation row")
+	editor._project_menu.close()
+
+func _test_version_strings() -> void:
+	_check(SettingsPanelScript.APP_VERSION == "0.1.5", "settings reports 0.1.5")
+	var manifest := FileAccess.get_file_as_string("res://android/app/AndroidManifest.xml")
+	_check(manifest.contains('android:versionCode="2"'), "manifest versionCode is 2")
+	_check(manifest.contains('android:versionName="0.1.5"'), "manifest versionName is 0.1.5")
+	var repo_root := ProjectSettings.globalize_path("res://").simplify_path().get_base_dir()
+	var workflow := FileAccess.get_file_as_string(
+		repo_root.path_join(".github/workflows/build.yml"))
+	_check(workflow.contains("-Pexport_version_code=2"), "CI exports versionCode 2")
+	_check(workflow.contains("-Pexport_version_name=0.1.5"), "CI exports versionName 0.1.5")
+	_check(workflow.contains("Kinema-Studio-0.1.5-arm64-debug"), "CI artifact uses 0.1.5")
 
 
 func _finish() -> void:

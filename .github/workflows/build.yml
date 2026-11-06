@@ -111,8 +111,8 @@ jobs:
             -PgenerateNativeLibs=true \
             -Pexport_package_name=studio.kinema.app \
             -Pexport_enabled_abis=arm64-v8a \
-            -Pexport_version_code=1 \
-            -Pexport_version_name=0.1.0 \
+            -Pexport_version_code=2 \
+            -Pexport_version_name=0.1.5 \
             -Pperform_signing=true \
             -Pperform_zipalign=true \
             -Pdebug_keystore_file="$RUNNER_TEMP/kinema-debug.keystore" \
@@ -123,7 +123,7 @@ jobs:
         run: |
           apk="$(find godot/platform/android/java/app/build/outputs/apk -name '*.apk' -print -quit)"
           test -n "$apk"
-          out="$PWD/Kinema-Studio-0.1.0-arm64-debug.apk"
+          out="$PWD/Kinema-Studio-0.1.5-arm64-debug.apk"
           cp "$apk" "$out"
           sha256sum "$out" | tee "$out.sha256"
           test -s "$out"
@@ -131,17 +131,19 @@ jobs:
       - name: Inspect APK package and contents
         run: |
           "$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/aapt" dump badging \
-            Kinema-Studio-0.1.0-arm64-debug.apk > badging.txt
+            Kinema-Studio-0.1.5-arm64-debug.apk > badging.txt
           head -20 badging.txt
           grep -F "package: name='studio.kinema.app'" badging.txt
-          unzip -l Kinema-Studio-0.1.0-arm64-debug.apk | grep -E \
+          grep -F "versionCode='2'" badging.txt
+          grep -F "versionName='0.1.5'" badging.txt
+          unzip -l Kinema-Studio-0.1.5-arm64-debug.apk | grep -E \
             'assets/project\.godot|assets/src/app/main\.tscn|assets/assets/fonts/IBMPlexSans-Regular\.ttf|assets/assets/licenses/godot/COPYRIGHT\.txt|lib/arm64-v8a/libgodot_android\.so'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Kinema-Studio-0.1.0-arm64-debug
+          name: Kinema-Studio-0.1.5-arm64-debug
           path: |
-            Kinema-Studio-0.1.0-arm64-debug.apk
-            Kinema-Studio-0.1.0-arm64-debug.apk.sha256
+            Kinema-Studio-0.1.5-arm64-debug.apk
+            Kinema-Studio-0.1.5-arm64-debug.apk.sha256
           if-no-files-found: error
