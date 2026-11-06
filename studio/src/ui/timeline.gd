@@ -749,9 +749,11 @@ func _refresh_compact() -> void:
 	if _more_button != null:
 		_more_button.visible = not _workspace_mode
 	if _expand_button != null:
-		_expand_button.visible = _sheet_open and not _workspace_mode
 		var viewport_size := get_viewport_rect().size
 		var can_expand := viewport_size.x >= 720.0 and viewport_size.y >= 360.0
+		# A control that can never act is not worth a 44 dp slot on a phone
+		# canvas; on wider surfaces it stays visible and states the reason.
+		_expand_button.visible = _sheet_open and not _workspace_mode and can_expand
 		_expand_button.disabled = not can_expand
 		_expand_button.tooltip_text = "Open timeline workspace" if can_expand \
 			else "Landscape workspace needs at least 720 × 360 dp"

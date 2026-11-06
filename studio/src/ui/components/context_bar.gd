@@ -138,6 +138,9 @@ func _rebuild() -> void:
 		_row.remove_child(child)
 		child.queue_free()
 	_buttons.clear()
+	# More is permanent chrome, not an authored action. Keep it addressable
+	# after the rebuild so action_button("more") never returns a stale null.
+	_buttons["more"] = _more_button
 	_items.clear()
 	var groups: Dictionary = {}
 
