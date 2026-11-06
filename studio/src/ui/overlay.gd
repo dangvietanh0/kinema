@@ -448,6 +448,14 @@ func toast(message: String, icon_name: String = "check", tone: Color = Kit.SUCCE
 		_toast_holder.visible = false
 
 
+## Read-only hook for tests and accessibility: the message currently on screen,
+## or an empty string when no toast is showing. It never changes visibility.
+func toast_text() -> String:
+	if _toast_holder == null or not _toast_holder.visible or _toast_label == null:
+		return ""
+	return _toast_label.text
+
+
 func clear_toast() -> void:
 	# Opening a panel dismisses the transient message so it never sits on top
 	# of the drawer controls.

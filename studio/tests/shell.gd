@@ -35,6 +35,7 @@ func _ready() -> void:
 	await _test_context_bar_overflow_and_icons()
 	await _test_transport()
 	await _test_shell_anatomy_and_panels()
+	await _test_camera_view()
 	_finish()
 
 
@@ -324,6 +325,89 @@ func _test_shell_anatomy_and_panels() -> void:
 			"%s: the animate pane is hidden" % id)
 		_check(not editor._stage_host.is_ancestor_of(editor._timeline),
 			"%s: no timeline node lives inside the stage host" % id)
+
+
+func _test_camera_view() -> void:
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+	var doc = editor.doc
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+
+	var cam_a: String = doc.add_camera(Vector3(2, 2, 3))
+	var cam_b: String = doc.add_camera(Vector3(-2, 2, 3))
+	doc.rename_object(cam_a, "A camera")
+	doc.rename_object(cam_b, "B camera")
+	await get_tree().process_frame
+
+	editor._context_bar.action_button("camera_view").pressed.emit()
+	await get_tree().process_frame
+	var menu = editor._camera_menu
+	_check(menu.is_open(), "the camera control opens the camera menu")
+	_check(menu.row_count() >= 2, "the menu lists the scene cameras")
+	_check(menu.row_button(cam_a) != null and menu.row_button(cam_b) != null,
+		"both cameras are rows")
+
+	var exits: Array = []
+	editor._view.look_through_exited.connect(func() -> void: exits.append(true))
+	menu.row_button(cam_a).pressed.emit()
+	await get_tree().process_frame
+	_check(editor.is_look_through(), "selecting a camera enters look-through")
+	_check(editor._view.look_through_camera_id() == cam_a, "the view holds camera A")
+	_check(not editor._context_bar.visible and not editor._transport_bar.visible,
+		"look-through hides context and transport")
+	_check(editor._workspace_bar.action_button("undo").visible == false,
+		"look-through hides undo")
+	_check(editor._workspace_bar.workspace_chip().text == "Camera: A camera",
+		"the chip names the active camera")
+
+	var saved_before: Dictionary = editor._view._look_saved.duplicate(true)
+	editor._enter_camera_view(cam_b)
+	await get_tree().process_frame
+	_check(editor._view.look_through_camera_id() == cam_b, "switching updates the camera")
+	_check(exits.is_empty(), "switching does not emit look_through_exited")
+	_check(editor._view._look_saved == saved_before, "switching preserves the saved editor state")
+	_check(editor._workspace_bar.workspace_chip().text == "Camera: B camera",
+		"the chip follows the switch")
+
+	editor._workspace_bar.action_button("exit_camera").pressed.emit()
+	await get_tree().process_frame
+	_check(not editor.is_look_through(), "the top-bar X exits camera view")
+	_check(exits.size() == 1, "exit emits look_through_exited once")
+
+	# Deletion guard.
+	editor._enter_camera_view(cam_b)
+	doc.set_selection(cam_b)
+	doc.delete_selected()
+	await get_tree().process_frame
+	_check(not editor.is_look_through(), "deleting the active camera exits look-through")
+	_check(editor._overlay.toast_text() == "Camera removed — returned to the editor view.",
+		"deletion shows the exact toast")
+
+	# Hidden camera row is disabled with the reason.
+	var cam_hidden: String = doc.add_camera(Vector3(0, 2, 4))
+	doc.set_object_visible(cam_hidden, false)
+	editor._open_camera_menu()
+	await get_tree().process_frame
+	var hidden_row: Button = editor._camera_menu.row_button(cam_hidden)
+	_check(hidden_row.disabled, "a hidden camera is disabled")
+	_check(hidden_row.tooltip_text == "Camera is hidden.", "the hidden reason is exact")
+	editor._camera_menu.close()
+
+	# Empty camera menu stays honest. Delete every camera, including the
+	# blank template's Main Camera, so "no scene cameras" is real.
+	for obj in doc.objects.duplicate():
+		if str(obj.get("kind", "")) == "camera":
+			doc.set_selection(str(obj.get("id", "")))
+			doc.delete_selected()
+	editor.set_workspace("scene")
+	editor._open_camera_menu()
+	await get_tree().process_frame
+	_check(editor._camera_menu.row_count() == 1,
+		"an empty camera menu has the Add camera row")
+	_check(editor._camera_menu.empty_text() == "No scene cameras. Add one to look through it.",
+		"the empty camera message is exact")
+	editor._camera_menu.close()
 
 
 func _finish() -> void:

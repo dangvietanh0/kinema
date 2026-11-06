@@ -21,7 +21,7 @@ const ACTION_ICONS := {
 	"redo": "redo-2",
 	"save": "save",
 	"menu": "menu",
-	"camera_exit": "x",
+	"exit_camera": "x",
 }
 
 var _layout_mode := "studio"
@@ -90,7 +90,7 @@ func _build() -> void:
 	for button in [_undo_button, _redo_button, _save_button, _menu_button]:
 		_row.add_child(button)
 
-	_camera_exit_button = _make_action_button("camera_exit", "Exit camera view")
+	_camera_exit_button = _make_action_button("exit_camera", "Exit camera view")
 	_camera_exit_button.pressed.connect(func() -> void: camera_exit_requested.emit())
 	_row.add_child(_camera_exit_button)
 

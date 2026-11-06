@@ -420,7 +420,7 @@ func _build_panel_content() -> void:
 	_inspector.color_requested.connect(_open_color_sheet)
 	_inspector.choose_material_requested.connect(_open_material_sheet)
 	_inspector.edit_material_requested.connect(_open_material_editor_for_target)
-	_inspector.look_through_requested.connect(_enter_look_through)
+	_inspector.look_through_requested.connect(_enter_camera_view)
 	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("inspector", collapsed)
 	)
@@ -976,8 +976,7 @@ func _shell_action_icon(id: String) -> String:
 
 
 ## The camera menu is the Scene/Render look-through entry point. It lists the
-## document cameras; switching and the camera chip are added with the camera
-## view task.
+## document cameras, the Add camera row and, only while active, Exit.
 func _open_camera_menu() -> void:
 	if doc == null or _camera_menu == null:
 		return
@@ -985,7 +984,7 @@ func _open_camera_menu() -> void:
 	_camera_menu.set_empty_text("")
 	var anchor: Control = _context_bar.action_button("camera_view") \
 		if _context_bar != null else _workspace_bar.workspace_chip()
-	_camera_menu.open_menu(anchor, "Camera", "", layout_mode() != "desktop")
+	_camera_menu.open_menu(anchor, "CAMERA", "", layout_mode() != "desktop")
 	var cameras: Array = []
 	for obj in doc.objects:
 		if str(obj.get("kind", "")) == "camera":
@@ -1012,11 +1011,12 @@ func _open_camera_menu() -> void:
 
 func _on_camera_menu_row(id: String) -> void:
 	if id == "add_camera":
-		_add_camera()
+		# The camera lives in the Add sheet with every other scene element.
+		_open_add_sheet()
 	elif id == "exit_camera":
 		_exit_look_through()
 	else:
-		_enter_look_through(id)
+		_enter_camera_view(id)
 
 
 # -------------------------------------------------------------------------
@@ -1301,6 +1301,20 @@ func _adopt_document(document: Node3D) -> void:
 func _on_document_scene_changed() -> void:
 	_update_header()
 	_sync_transport_state()
+	_guard_camera_view()
+
+
+## A deleted or hidden camera must never leave the editor stuck in a view whose
+## source object is gone. The exit restores the saved editing layout first, then
+## the toast explains the jump.
+func _guard_camera_view() -> void:
+	if not _look_through or _look_camera_id == "":
+		return
+	if _camera_target_valid(_look_camera_id):
+		return
+	_exit_look_through()
+	if _overlay != null:
+		_overlay.toast("Camera removed — returned to the editor view.", "camera", Kit.WARNING)
 
 func _on_document_rigs_changed() -> void:
 	if doc != null and _rig_overlay != null and _rig_mode:
@@ -1726,11 +1740,14 @@ func _apply_shell() -> void:
 		_overlay.set_layout_mode(layout_mode())
 	_timeline.set_chrome_mode(layout_mode())
 	_workspace_panel.set_top_bar_height(_workspace_bar.custom_minimum_size.y)
+	_workspace_bar.set_workspace(_workspace)
 
 	# Camera look-through is the clean document view: the top bar keeps only
 	# Back, the camera chip and Exit, while every editing row and the workspace
-	# panel yield their height to the stage.
+	# panel yield their height to the stage. The branch survives every resize
+	# and preference change because it is derived from the live flags.
 	if _look_through:
+		_workspace_bar.set_camera_mode(_camera_name(_look_camera_id))
 		_context_bar.visible = false
 		_transport_bar.visible = false
 		_workspace_panel.set_mode(WorkspacePanelScript.Mode.HIDDEN)
@@ -1740,8 +1757,8 @@ func _apply_shell() -> void:
 		_refresh_chrome_values()
 		return
 
+	_workspace_bar.set_camera_mode("")
 	_context_bar.visible = true
-	_workspace_bar.set_workspace(_workspace)
 	_transport_bar.visible = _workspace != "animate"
 	_animate_pane.visible = _workspace == "animate"
 	_update_workspace_panel()
@@ -2736,29 +2753,41 @@ func _file_size(path: String) -> int:
 	file.close()
 	return size
 
-## Look-through is a viewing mode, not a document change. The view copies the
-## document camera; here we hide the editing header and keep the timeline,
-## transport, dock and scene tree exactly as they were.
-func _enter_look_through(camera_id: String) -> void:
+## Camera view is a viewing mode, not a document change. The view copies the
+## document camera; the editor owns the session flag, the chip and the chrome.
+## Entering another camera while active is a switch, never an exit/re-entry.
+func _enter_camera_view(camera_id: String) -> void:
 	if _view == null or _render_mode:
 		return
-	if _view.is_look_through():
-		return
-	if not _view.enter_look_through(camera_id):
+	var was_looking := _look_through
+	var entered := false
+	if was_looking:
+		entered = _view.switch_look_through_camera(camera_id)
+	else:
+		entered = _view.enter_look_through(camera_id)
+	if not entered:
 		return
 	_look_through = true
 	_look_camera_id = camera_id
-	_look_perf_was_visible = _perf_overlay != null and _perf_overlay.visible
-	if _perf_overlay != null:
-		_perf_overlay.visible = false
-	# The rotoscope and rig handles are workbench layers, not part of the
-	# document camera's view. _sync_rig_overlay() gates on _look_through.
-	if _video_overlay != null:
-		_video_overlay.set_render_mode(true)
-	if _rig_overlay != null:
-		_rig_overlay.set_enabled(false)
-	_sync_rig_overlay()
+	if not was_looking:
+		_look_perf_was_visible = _perf_overlay != null and _perf_overlay.visible
+		if _perf_overlay != null:
+			_perf_overlay.visible = false
+		# The rotoscope and rig handles are workbench layers, not part of the
+		# document camera's view. _sync_rig_overlay() gates on _look_through.
+		if _video_overlay != null:
+			_video_overlay.set_render_mode(true)
+		if _rig_overlay != null:
+			_rig_overlay.set_enabled(false)
+		_sync_rig_overlay()
+	_workspace_bar.set_camera_mode(_camera_name(camera_id))
 	_apply_shell()
+
+
+## Compatibility spelling for the pre-camera-view shell paths.
+func _enter_look_through(camera_id: String) -> void:
+	_enter_camera_view(camera_id)
+
 
 ## The view can leave look-through by itself (the Exit control lives inside
 ## it), so the editor restores its own chrome from this one handler. Calling
@@ -2767,6 +2796,7 @@ func _enter_look_through(camera_id: String) -> void:
 func _on_view_look_through_exited() -> void:
 	_look_through = false
 	_look_camera_id = ""
+	_workspace_bar.set_camera_mode("")
 	if _perf_overlay != null:
 		_perf_overlay.visible = _look_perf_was_visible
 	if _video_overlay != null:
@@ -2774,12 +2804,35 @@ func _on_view_look_through_exited() -> void:
 	_sync_rig_overlay()
 	_apply_shell()
 
+
 func _exit_look_through() -> void:
 	if _view != null and _view.is_look_through():
 		_view.exit_look_through()
 		return
 	if _look_through:
 		_on_view_look_through_exited()
+
+
+## The live document name for a camera id, or "" when the object is gone.
+func _camera_name(camera_id: String) -> String:
+	if doc == null or camera_id == "":
+		return ""
+	var obj := doc.get_object(camera_id)
+	if obj.is_empty():
+		return ""
+	return str(obj.get("name", camera_id))
+
+
+## A camera is a valid view target only while its object and live node both
+## exist as a visible camera.
+func _camera_target_valid(camera_id: String) -> bool:
+	if doc == null or camera_id == "":
+		return false
+	var obj := doc.get_object(camera_id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "camera":
+		return false
+	var node: Node3D = doc.nodes.get(camera_id)
+	return node != null and node.visible
 
 func is_look_through() -> bool:
 	return _look_through
