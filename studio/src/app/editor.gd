@@ -395,6 +395,12 @@ func _build_timeline() -> void:
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
+	# The Animate pane is permanent, so fold is a sheet state, not a shell
+	# state. The transport's chevron and the compact header's close action both
+	# collapse the dope sheet and leave the transport reachable.
+	_timeline.close_requested.connect(func() -> void:
+		_timeline.set_sheet_visible(not _timeline.sheet_visible())
+	)
 	_animate_pane.setup(_timeline)
 
 ## The panel host owns the existing content. The outliner, inspector and rig

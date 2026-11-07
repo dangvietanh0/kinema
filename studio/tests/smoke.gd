@@ -3,6 +3,7 @@ extends Control
 
 const RenderExport = preload("res://src/core/render_export.gd")
 const DocumentScript = preload("res://src/core/document.gd")
+const WorkspacePanelScript = preload("res://src/ui/components/workspace_panel.gd")
 
 var _failures: Array[String] = []
 func _check(condition: bool, message: String) -> void:
@@ -19,6 +20,47 @@ func _collect_group_buttons(node: Node, acc: Array) -> void:
 			if button.button_group != null:
 				acc.append(button)
 		_collect_group_buttons(child, acc)
+
+## Resize the whole canvas, not the anchored editor. Assigning `editor.size`
+## while the editor is full-rect produced stale layout measurements; a real
+## window resize goes through the same path the app uses on a device.
+func _resize_shell(main: Control, editor: Control, value: Vector2) -> void:
+	get_window().size = Vector2i(value)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	editor._apply_shell()
+	await get_tree().process_frame
+
+## Minimal PCM WAV fixture for the media-record migration. The old smoke test
+## drove the removed lane rows; the document records still need a real file.
+func _write_smoke_wav(path: String) -> void:
+	var sample_rate := 44100
+	var frames := sample_rate
+	var pcm := PackedByteArray()
+	pcm.resize(frames * 2)
+	for i in range(frames):
+		pcm.encode_s16(i * 2, int(sin(TAU * 220.0 * float(i) / float(sample_rate)) * 12000.0))
+	var header := PackedByteArray()
+	header.resize(44)
+	header.encode_u32(0, 0x46464952) # RIFF
+	header.encode_u32(4, 36 + pcm.size())
+	header.encode_u32(8, 0x45564157) # WAVE
+	header.encode_u32(12, 0x20746D66) # fmt
+	header.encode_u32(16, 16)
+	header.encode_u16(20, 1)
+	header.encode_u16(22, 1)
+	header.encode_u32(24, sample_rate)
+	header.encode_u32(28, sample_rate * 2)
+	header.encode_u16(32, 2)
+	header.encode_u16(34, 16)
+	header.encode_u32(36, 0x61746164) # data
+	header.encode_u32(40, pcm.size())
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_buffer(header + pcm)
+	file.close()
 
 func _ready() -> void:
 	# The stretch mode is disabled, so the headless window would otherwise stay
@@ -616,121 +658,97 @@ func _ready() -> void:
 
 	print("SMOKE STEP: workspace modes")
 	editor.set_layout_mode("compact")
+	# The workspace is persisted, so a previous run can leave any of the five
+	# active. Pin Scene before asserting its context row.
+	editor.set_workspace("scene")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor.layout_mode() == "compact", "compact mode applies")
-	_check(editor._bottom_bar.visible, "compact bottom action bar is visible")
-	_check(editor._top_bar.size.y >= 47.0, "compact top bar is 48 dp")
+	_check(editor._workspace_bar.size.y >= 43.5, "compact top bar is 44 dp")
+	_check(editor._context_bar.size.y >= 43.5, "compact context row is 44 dp")
+	_check(editor._transport_bar.size.y >= 43.5, "compact transport is 44 dp")
+	await _resize_shell(main, editor, Vector2(360.0, 640.0))
 	var compact_min: float = editor._layout.get_combined_minimum_size().x
 	print("SMOKE INFO: compact shell minimum width ", compact_min)
-	_check(compact_min <= 320.0, "compact shell fits a 320 dp phone without horizontal overflow")
-	_check(editor._bottom_bar.get_combined_minimum_size().x <= 320.0, "compact action bar fits a 320 dp phone")
-	_check(editor._timeline.transport_panel().get_combined_minimum_size().x <= 320.0, "compact transport fits a 320 dp phone")
-	_check(not editor._top_bar._undo_button.visible and not editor._top_bar._settings_button.visible, "compact header keeps back, title and overflow only")
-	_check(editor._top_bar._menu_button.visible, "compact header keeps the overflow menu")
-	editor._toggle_timeline()
-	await get_tree().process_frame
-	_check(editor._bottom_bar.is_active("timeline"), "timeline action reports active while the sheet is open")
-	_check(editor._timeline._compact_header.visible, "compact sheet header appears with the timeline")
-	_check(not editor._timeline._fold_button.visible, "compact folds from the action bar, not the transport")
-	editor._toggle_timeline()
-	await get_tree().process_frame
-	_check(not editor._bottom_bar.is_active("timeline"), "timeline action clears when the sheet folds")
-	editor._toggle_drawer("scene")
-	for _i in 4:
+	_check(compact_min <= 360.5, "compact shell fits the 360x640 budget")
+	_check(editor._workspace_bar.get_combined_minimum_size().x <= 360.5, "the top bar fits 360 dp")
+	_check(editor._context_bar.get_combined_minimum_size().x <= 360.5, "the context row fits 360 dp")
+	_check(editor._transport_bar.get_combined_minimum_size().x <= 360.5, "the transport fits 360 dp")
+	_check(not editor._context_bar.visible_action_ids().has("view"),
+		"the context row demotes the lowest-priority scene action on a phone")
+	var move_button: Button = editor._context_bar.action_button("move")
+	_check(move_button != null, "the context row exposes the Move tool")
+	if move_button != null:
+		move_button.pressed.emit()
 		await get_tree().process_frame
-	_check(editor._drawer_open and editor._dock.visible, "compact scene drawer opens")
-	_check(editor._drawer_scene_tab.size.y >= 43.0, "drawer tabs keep a 44 dp target")
-	var inside_drawer := InputEventScreenTouch.new()
-	inside_drawer.pressed = true
-	inside_drawer.position = editor._dock.get_global_rect().get_center()
-	editor.get_viewport().push_input(inside_drawer)
+		_check(editor._tool == "move" and move_button.button_pressed,
+			"the context row selects the active tool")
+		editor._context_bar.action_button("select").pressed.emit()
+		await get_tree().process_frame
+	# Scene tree and Inspector share the one overlay slot.
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
+	editor.set_workspace("scene")
 	await get_tree().process_frame
-	_check(editor._drawer_open, "a tap inside the drawer keeps it open")
-	var outside_drawer := InputEventScreenTouch.new()
-	outside_drawer.pressed = true
-	outside_drawer.position = Vector2(5, 400)
-	editor.get_viewport().push_input(outside_drawer)
-	await get_tree().process_frame
-	_check(not editor._drawer_open, "a tap outside the drawer closes it")
-	# The window is still a portrait phone here, where Compact uses its bottom
-	# bar. On a wide workbench the stage keeps a 44 dp panel rail and the dock
-	# opens as an overlay instead of reserving a column.
-	editor.size = Vector2(1280.0, 800.0)
-	editor._apply_shell()
-	editor.set_layout_mode("studio")
-	await get_tree().process_frame
-	await get_tree().process_frame
-	_check(editor.layout_mode() == "studio", "studio mode applies")
-	var wide_rail = editor.get("_panel_rail")
-	_check(wide_rail != null and wide_rail.visible, "studio keeps the right panel rail")
-	if wide_rail != null:
-		_check(absf(wide_rail.size.x - 44.0) < 1.0, "the panel rail is 44 dp wide")
-		# Each rail page is a real toggle: one press opens that page, a second
-		# press closes the flyout. The Scene page is the persistent right-hand
-		# column, so it toggles that column instead of the dock. Icon-only
-		# buttons also carry an accessible name.
-		for page_name in ["scene", "inspector", "rig"]:
-			var page_button: Button = wide_rail.page_button(page_name)
-			_check(page_button.accessibility_name != "",
-				"the %s rail button has an accessible name" % page_name)
-			if page_name == "scene" and editor._scene_panel_enabled():
-				var was_expanded: bool = editor._scene_is_expanded()
-				page_button.pressed.emit()
-				await get_tree().process_frame
-				await get_tree().process_frame
-				_check(editor._scene_is_expanded() != was_expanded,
-					"the scene rail button toggles the persistent column")
-				_check(not editor._drawer_open,
-					"the scene rail button does not open the dock")
-				page_button.pressed.emit()
-				await get_tree().process_frame
-				_check(editor._scene_is_expanded() == was_expanded,
-					"a second scene rail press restores the column")
-				continue
-			page_button.pressed.emit()
-			await get_tree().process_frame
-			await get_tree().process_frame
-			_check(editor._drawer_open and editor._compact_tab == page_name,
-				"the rail opens the %s page" % page_name)
-			page_button.pressed.emit()
-			await get_tree().process_frame
-			_check(not editor._drawer_open,
-				"a second %s rail press closes the flyout" % page_name)
-	_check(not editor._dock.visible, "studio dock starts closed")
-	_check(editor._top_bar.size.y >= 43.0, "studio top bar is 44 dp")
+	var stage_width: float = editor._stage_host.size.x
+	editor._toggle_scene_panel("scene")
+	for _i in 2:
+		await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY,
+		"the scene tree opens as an overlay")
+	_check(editor._workspace_panel.content() == editor._outliner_panel,
+		"the overlay owns the one outliner")
+	_check(editor._workspace_panel.scrim().visible, "the overlay dims the stage")
+	_check(absf(editor._stage_host.size.x - stage_width) < 0.5,
+		"opening the overlay does not resize the stage")
+	_check(editor._workspace_panel.panel_rect().size.x <= 400.0,
+		"the phone overlay respects the 400 dp cap")
+	editor._toggle_scene_panel("inspector")
+	for _i in 2:
+		await get_tree().process_frame
+	_check(editor._workspace_panel.content() == editor._inspector_panel,
+		"opening the inspector replaces the scene tree")
+	editor._workspace_panel.close_button().pressed.emit()
+	for _i in 2:
+		await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.HIDDEN,
+		"the overlay close button returns the stage")
 
 	print("SMOKE STEP: black chrome")
 	_check(Kit.theme.get_stylebox("panel", "PanelContainer").get_border_width(SIDE_LEFT) == 0,
 		"the default panel stylebox draws no border")
-	for shell_panel_name in ["_dock", "_timeline_panel", "_panel_rail", "_outliner_panel", "_inspector_panel", "_rig_frame"]:
+	for shell_panel_name in ["_outliner_panel", "_inspector_panel", "_rig_frame"]:
 		var shell_panel = editor.get(shell_panel_name)
 		_check(shell_panel != null, "black chrome: %s is mounted" % shell_panel_name)
 		if shell_panel != null:
 			var shell_style: StyleBoxFlat = shell_panel.get_theme_stylebox("panel")
-			# The timeline is a floating overlay: a single quiet top edge
-			# separates it from the stage. Every other chrome panel and the
-			# other three timeline sides stay borderless.
-			var side_borders: int = (
-				shell_style.get_border_width(SIDE_LEFT)
-				+ shell_style.get_border_width(SIDE_RIGHT)
-				+ shell_style.get_border_width(SIDE_BOTTOM)
-			)
-			var top_border := shell_style.get_border_width(SIDE_TOP)
-			var borderless: bool = side_borders == 0 and (
-				top_border == 0 or (shell_panel_name == "_timeline_panel" and top_border == 1))
-			_check(borderless, "the shell panel %s draws no outline" % shell_panel_name)
-			if shell_panel_name == "_timeline_panel" and top_border > 0:
-				_check(shell_style.border_color == Kit.BORDER_SOFT,
-					"the timeline overlay keeps a quiet top separator")
+			_check(shell_style.get_border_width(SIDE_LEFT) == 0
+				and shell_style.get_border_width(SIDE_TOP) == 0
+				and shell_style.get_border_width(SIDE_RIGHT) == 0
+				and shell_style.get_border_width(SIDE_BOTTOM) == 0,
+				"the shell panel %s draws no outline" % shell_panel_name)
+	var transport_style: StyleBoxFlat = editor._timeline.transport_panel().get_theme_stylebox("panel")
+	_check(transport_style != null and transport_style.get_border_width(SIDE_LEFT) == 0
+		and transport_style.get_border_width(SIDE_TOP) == 0
+		and transport_style.get_border_width(SIDE_RIGHT) == 0
+		and transport_style.get_border_width(SIDE_BOTTOM) == 0,
+		"the timeline transport draws no border")
+	var panel_style: StyleBoxFlat = editor._workspace_panel._panel.get_theme_stylebox("panel")
+	_check(panel_style.get_border_width(SIDE_LEFT) <= 1
+		and panel_style.get_border_width(SIDE_TOP) == 0
+		and panel_style.get_border_width(SIDE_RIGHT) == 0
+		and panel_style.get_border_width(SIDE_BOTTOM) == 0,
+		"the workspace panel keeps at most a quiet leading edge")
+	if panel_style.get_border_width(SIDE_LEFT) > 0:
+		_check(panel_style.border_color == Kit.BORDER_SOFT,
+			"the workspace panel edge uses the quiet separator token")
 	var shell_separators := 0
 	for node in editor.find_children("*", "ColorRect", true, false):
 		var chrome_line := node as ColorRect
 		if chrome_line.color == Kit.BORDER_SOFT and (chrome_line.size.x <= 1.5 or chrome_line.size.y <= 1.5):
 			shell_separators += 1
 	_check(shell_separators > 0, "the shell keeps at least one separator")
-	# Fix round 1: transient cards are floating surfaces too. They separate by
-	# elevation; a 1 px frame re-introduces the outline the override removed.
+	# Transient cards are floating surfaces too. They separate by elevation; a
+	# 1 px frame re-introduces the outline the override removed.
 	var toast_style: StyleBoxFlat = editor._overlay._toast_panel.get_theme_stylebox("panel")
 	_check(toast_style.get_border_width(SIDE_LEFT) == 0
 		and toast_style.get_border_width(SIDE_TOP) == 0
@@ -842,80 +860,50 @@ func _ready() -> void:
 	await get_tree().process_frame
 
 	var view_before: float = editor._view.size.x
-	editor._toggle_drawer("inspector")
+	editor._toggle_scene_panel("inspector")
 	for _i in 4:
 		await get_tree().process_frame
-	_check(editor._drawer_open and editor._dock.visible, "studio opens the properties flyout")
-	_check(editor._drawer_scrim.visible, "the flyout dims the stage it covers")
-	_check(absf(editor._view.size.x - view_before) < 1.0, "opening the flyout does not shrink the viewport")
-	_check(absf(editor._dock.get_global_rect().end.y - editor.size.y) <= 1.0, "studio dock reaches the bottom edge")
-	_check(editor._inspector_panel.size.y >= 320.0, "the properties page owns the flyout height")
-	editor._close_drawer()
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY,
+		"studio opens the properties overlay")
+	_check(editor._workspace_panel.scrim().visible, "the overlay dims the stage it covers")
+	_check(editor._workspace_panel.content() == editor._inspector_panel,
+		"the properties overlay owns the inspector")
+	_check(absf(editor._view.size.x - view_before) < 1.0, "opening the overlay does not shrink the viewport")
+	_check(absf(editor._workspace_panel.panel_rect().end.y - editor.size.y) <= 1.0,
+		"the overlay reaches the bottom edge")
+	_check(editor._inspector_panel.size.y >= 320.0, "the properties page owns the overlay height")
+	editor._workspace_panel.close_button().pressed.emit()
 	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.HIDDEN,
+		"the overlay close button returns the stage")
 
-	print("SMOKE STEP: persistent scene panel")
-	Prefs.set_value("editor.scene_panel_expanded", true)
-	editor.size = Vector2(1280.0, 800.0)
+	print("SMOKE STEP: scene panel state")
+	await _resize_shell(main, editor, Vector2(1280.0, 800.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
+	await get_tree().process_frame
+	editor.set_workspace("scene")
+	editor._toggle_scene_panel("scene")
 	for _i in 3:
 		await get_tree().process_frame
-	_check(bool(Prefs.get_value("editor.scene_panel_expanded", false)),
-		"editor.scene_panel_expanded defaults and reads true")
-	_check(editor._scene_column != null and editor._scene_column.visible,
-		"studio mounts the persistent scene column")
-	_check(editor._outliner_panel.get_parent() == editor._scene_column,
-		"the one outliner instance lives in the scene column")
-	var expected_scene_width := clampf(editor.size.x * 0.20, 196.0, 280.0)
-	_check(absf(editor._scene_column.size.x - expected_scene_width) < 1.0,
-		"the expanded scene column uses the clamped 20 percent width")
-	_check(editor._outliner_panel.visible and not editor._scene_rail.visible,
-		"the expanded scene panel shows the outliner rather than the rail")
-	_check(not editor._drawer_open and not editor._drawer_scrim.visible,
-		"the persistent scene panel has no scrim and no focus trap")
-	# User override 2026-11-01: the tree hangs off the right edge, before the
-	# 44 dp panel rail.
-	_check(editor._viewport_host.get_global_rect().end.x <=
-		editor._scene_column.get_global_rect().position.x + 0.5,
-		"the persistent scene column sits to the right of the stage")
-	_check(editor._scene_column.get_global_rect().end.x <=
-		editor._panel_rail.get_global_rect().position.x + 0.5,
-		"the persistent scene column ends before the panel rail")
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY,
+		"the scene tree is an overlay at 1280 dp")
+	var stage_before: float = editor._stage_host.size.x
+	_check(editor._workspace_panel.content() == editor._outliner_panel,
+		"the scene overlay owns the one outliner")
+	_check(absf(editor._stage_host.size.x - stage_before) < 0.5,
+		"the overlay never reserves a scene column")
 
 	var scene_outliner = editor._outliner
 	var scene_pick: String = doc.selected_id
 	if scene_pick == "" and not doc.objects.is_empty():
 		scene_pick = str(doc.objects[0]["id"])
 	doc.set_selection(scene_pick)
-
-	# M2: the outliner's own chevron collapses the persistent column; the rail
-	# then carries the object count and a 44x44 way back.
+	scene_outliner._on_scene_changed()
+	await get_tree().process_frame
 	_check(scene_outliner._count.text == str(doc.objects.size()),
 		"the outliner count badge tracks the object count")
-	var objects_before_collapse: int = doc.objects.size()
-	scene_outliner._collapse_button.pressed.emit()
-	for _i in 3:
-		await get_tree().process_frame
-	_check(absf(editor._scene_column.size.x - 44.0) < 1.0 and editor._scene_rail.visible,
-		"the outliner chevron collapses the scene panel to the 44 dp rail")
-	_check(not bool(Prefs.get_value("editor.scene_panel_expanded", true)),
-		"the outliner chevron stores the collapsed preference")
-	_check(editor._scene_rail_count.text == str(objects_before_collapse),
-		"the rail object count tracks doc.objects.size()")
-	_check(editor._scene_rail_expand.size.x >= 43.5 and editor._scene_rail_expand.size.y >= 43.5,
-		"the rail expand action is a 44x44 target")
-	editor._scene_rail_expand.pressed.emit()
-	for _i in 3:
-		await get_tree().process_frame
-	_check(editor._outliner_panel.visible and
-		absf(editor._scene_column.size.x - expected_scene_width) < 1.0,
-		"the rail expand action reopens the column")
-	_check(bool(Prefs.get_value("editor.scene_panel_expanded", false)),
-		"the rail expand action stores the expanded preference")
 
-	# M1: the fixture does not overflow the column at this size, so the scroll
-	# round trip would be 0 == 0. Add temporary rows the filter keeps, scroll
-	# to a non-zero offset, then delete them after the round trip.
+	# Filter and scroll state survives switching pages and closing the overlay.
 	var fill_ids: Array[String] = []
 	for i in 16:
 		fill_ids.append(doc.add_primitive("plane", Vector3(float(i) * 0.6 - 4.0, -6.0, 0.0)))
@@ -928,147 +916,103 @@ func _ready() -> void:
 	scene_outliner._scroll.scroll_vertical = 200
 	await get_tree().process_frame
 	var scene_scroll: int = scene_outliner._scroll.scroll_vertical
-	_check(scene_scroll > 0,
-		"the scene list scrolls to a non-zero offset before the round trip")
+	_check(scene_scroll > 0, "the scene list scrolls to a non-zero offset")
 
-	# The right rail Scene page is a toggle, not a second scene flyout.
-	editor._panel_rail.page_button("scene").pressed.emit()
-	for _i in 3:
+	editor._toggle_scene_panel("inspector")
+	for _i in 2:
 		await get_tree().process_frame
-	_check(absf(editor._scene_column.size.x - 44.0) < 1.0 and editor._scene_rail.visible,
-		"the rail Scene action collapses the panel to the 44 dp rail")
-	_check(not editor._drawer_open and not editor._dock.visible,
-		"the rail Scene action never opens a duplicate scene flyout")
-	_check(not bool(Prefs.get_value("editor.scene_panel_expanded", true)),
-		"collapsing the scene panel stores the preference")
-	editor._apply_shell()
-	await get_tree().process_frame
-	_check(editor._scene_rail.visible, "the collapsed scene panel survives _apply_shell")
-	Prefs.load_settings()
-	editor._apply_shell()
-	await get_tree().process_frame
-	_check(editor._scene_rail.visible, "the collapsed scene panel survives a preference reload")
-	editor._scene_rail_expand.pressed.emit()
-	for _i in 3:
+	_check(editor._workspace_panel.content() == editor._inspector_panel,
+		"Properties replaces the scene tree in the same slot")
+	editor._toggle_scene_panel("scene")
+	for _i in 2:
 		await get_tree().process_frame
-	_check(editor._outliner_panel.visible and absf(editor._scene_column.size.x - expected_scene_width) < 1.0,
-		"the rail expand action restores the expanded scene panel")
-	_check(bool(Prefs.get_value("editor.scene_panel_expanded", false)),
-		"expanding the scene panel stores the preference")
-
-	# Scene from an open Properties/Rig flyout focuses the panel and closes it.
-	editor._panel_rail.page_button("inspector").pressed.emit()
-	for _i in 4:
-		await get_tree().process_frame
-	_check(editor._drawer_open and editor._compact_tab == "inspector",
-		"the panel rail opens the properties flyout")
-	editor._panel_rail.page_button("scene").pressed.emit()
-	for _i in 4:
-		await get_tree().process_frame
-	_check(not editor._drawer_open and not editor._dock.visible,
-		"Scene from an open flyout closes the flyout")
-	_check(editor._outliner_panel.visible and editor._outliner_panel.get_parent() == editor._scene_column,
-		"Scene from an open flyout focuses the persistent panel")
-
-	# Re-parenting between the scene column and the dock keeps one instance and
-	# preserves the selection, search and scroll state.
-	editor.set_layout_mode("compact")
-	for _i in 3:
-		await get_tree().process_frame
-	_check(editor._outliner == scene_outliner,
-		"the outliner instance survives re-parenting into the compact dock")
-	_check(editor._outliner_panel.get_parent() == editor._dock_box,
-		"compact moves the outliner into the dock")
-	_check(doc.selected_id == scene_pick, "re-parenting preserves the scene selection")
-	_check(scene_outliner._search.text == scene_filter and scene_outliner._filter == scene_filter.to_lower(),
-		"re-parenting preserves the scene search")
+	_check(editor._workspace_panel.content() == editor._outliner_panel,
+		"Scene returns the outliner to the slot")
+	_check(editor._outliner == scene_outliner, "the outliner instance survives page switches")
+	_check(doc.selected_id == scene_pick, "switching pages preserves the selection")
+	_check(scene_outliner._search.text == scene_filter,
+		"switching pages preserves the scene search")
 	_check(scene_outliner._scroll.scroll_vertical == scene_scroll,
-		"re-parenting preserves the scene scroll")
-	editor.set_layout_mode("studio")
-	for _i in 3:
+		"switching pages preserves the scene scroll")
+
+	editor._workspace_panel.close_button().pressed.emit()
+	for _i in 2:
 		await get_tree().process_frame
-	_check(editor._outliner == scene_outliner and editor._outliner_panel.get_parent() == editor._scene_column,
-		"studio returns the same outliner to the scene column")
-	_check(doc.selected_id == scene_pick, "the scene selection survives the return trip")
-	_check(scene_outliner._search.text == scene_filter and scene_outliner._filter == scene_filter.to_lower(),
-		"the scene search survives the return trip")
-	_check(scene_outliner._scroll.scroll_vertical == scene_scroll,
-		"the scene scroll survives the return trip")
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.HIDDEN,
+		"closing the overlay returns the stage")
+	_check(editor._outliner == scene_outliner and doc.selected_id == scene_pick,
+		"closing the overlay keeps the one outliner and the selection")
+	editor._toggle_scene_panel("scene")
+	for _i in 2:
+		await get_tree().process_frame
+	_check(scene_outliner._search.text == scene_filter
+		and scene_outliner._scroll.scroll_vertical == scene_scroll,
+		"reopening the overlay preserves the scene state")
+
 	scene_outliner._search.text = ""
 	scene_outliner._on_search_changed("")
 	await get_tree().process_frame
-	# Remove the temporary scroll rows and restore the original selection.
 	for fill_id in fill_ids:
 		doc.delete_object(fill_id)
 	doc.set_selection(scene_pick)
 	await get_tree().process_frame
 	var outliner = editor._outliner
 	var outliner_overflow: bool = outliner._list.get_combined_minimum_size().y + 16.0 > outliner._scroll.size.y
-	_check(not outliner_overflow or absf(fmod(outliner._scroll.size.y - 6.0, 45.0)) < 0.6, "scene list viewport ends on a whole row")
+	_check(not outliner_overflow or absf(fmod(outliner._scroll.size.y - 6.0, 45.0)) < 0.6,
+		"scene list viewport ends on a whole row")
+	editor._workspace_panel.close_button().pressed.emit()
+	await get_tree().process_frame
 	editor.set_layout_mode("desktop")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor.layout_mode() == "desktop", "desktop mode applies on any screen")
-	_check(editor._status_bar.visible, "desktop status bar is visible")
-	_check(editor._top_bar.size.y >= 35.0 and editor._top_bar.size.y <= 38.0, "desktop menu bar is 36 dp")
-	_check(editor.get("_panel_rail") != null and editor.get("_panel_rail").visible, "desktop keeps the panel rail")
-	_check(not editor._dock.visible, "desktop dock starts closed")
+	_check(editor._workspace_bar.size.y >= 31.5 and editor._workspace_bar.size.y <= 32.5,
+		"desktop top bar is 32 dp")
+	_check(editor._context_bar.size.y >= 35.5 and editor._context_bar.size.y <= 36.5,
+		"desktop context row is 36 dp")
+	_check(editor._transport_bar.size.y >= 31.5 and editor._transport_bar.size.y <= 32.5,
+		"desktop transport is 32 dp")
+	_check(not editor._instrumentation.visible,
+		"the desktop instrumentation strip stays off by default")
 	_check(str(Prefs.get_value("display.layout", "")) == "desktop", "workspace mode persists")
 
-	print("SMOKE STEP: timeline overlay")
-	Prefs.set_value("editor.scene_panel_expanded", true)
-	editor.size = Vector2(1280.0, 800.0)
+	print("SMOKE STEP: animate pane timeline")
+	await _resize_shell(main, editor, Vector2(1280.0, 800.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	for _i in 3:
-		await get_tree().process_frame
-	editor._timeline.set_mode("dope")
-	_check(editor._timeline_panel.get_parent() == editor._viewport_host,
-		"the timeline is a child of the stage host, not the center column")
-	_check(absf(editor._timeline_panel.anchor_top - 1.0) < 0.001 and
-		absf(editor._timeline_panel.anchor_bottom - 1.0) < 0.001,
-		"the timeline anchors to the bottom edge of the stage")
-	_check(editor._timeline.transport_panel().get_parent() != editor._timeline,
-		"the transport is re-parented below the sheet stack")
-	_check(editor._timeline.mount_target() == editor._timeline_frame,
-		"the transport sits in the timeline frame under the stack")
-	var overlay_view_before: Vector2 = editor._view.size
-	var overlay_host: Control = editor._viewport_host
-	editor._toggle_timeline()
-	for _i in 3:
-		await get_tree().process_frame
-	_check(editor._timeline_visible, "the overlay opens from the transport")
-	var dope_height := minf(208.0, maxf(56.0 + 48.0, overlay_host.size.y * 0.34))
-	_check(absf(editor._timeline_panel.size.y - dope_height) < 1.0,
-		"the open dope overlay respects the compact 34 percent / 208 dp budget")
-	_check(editor._timeline_panel.size.y >= 56.0 + 48.0 - 0.5,
-		"the open dope overlay keeps the transport plus a 48 dp sheet")
-	_check(is_equal_approx(editor._view.size.x, overlay_view_before.x) and
-		is_equal_approx(editor._view.size.y, overlay_view_before.y),
-		"opening the overlay does not resize the 3D view")
-	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
-		"the open overlay leaves at least 96 dp of stage")
-	_check(absf(editor._timeline_panel.get_global_rect().end.y -
-		overlay_host.get_global_rect().end.y) <= 1.0,
-		"the overlay bottom is the stage bottom")
-	_check(absf(editor._timeline.transport_panel().get_global_rect().end.y -
-		overlay_host.get_global_rect().end.y) <= 1.0,
-		"the transport row is the bottom edge of the stage")
-	editor._timeline.set_mode("graph")
-	editor._sync_timeline_visibility()
-	for _i in 3:
-		await get_tree().process_frame
-	_check(editor._timeline_panel.size.y <= minf(300.0, maxf(104.0, overlay_host.size.y)) + 0.5,
-		"the open graph overlay uses the stage-share budget")
-	_check(editor._timeline_panel.size.y > dope_height + 0.5,
-		"the graph overlay takes more room than dope")
-	_check(editor._view.size.y - editor._timeline_panel.size.y >= 95.0,
-		"the graph overlay still leaves a visible stage")
-	editor._timeline.set_mode("dope")
-	editor._sync_timeline_visibility()
+	await get_tree().process_frame
+	editor.set_workspace("animate")
 	for _i in 2:
 		await get_tree().process_frame
-
+	_check(editor._animate_pane.visible, "the Animate workspace opens the pane")
+	_check(editor._timeline.get_parent() == editor._animate_pane,
+		"the timeline is mounted in the Animate pane")
+	_check(editor._stage_host.get_global_rect().end.y <=
+		editor._animate_pane.get_global_rect().position.y + 0.5,
+		"the pane sits below the stage and never covers it")
+	_check(not editor._transport_bar.visible,
+		"the shared transport yields to the timeline transport")
+	var animate_transport: Control = editor._timeline.transport_panel()
+	_check(animate_transport != null and editor._animate_pane.is_ancestor_of(animate_transport),
+		"the timeline transport lives inside the pane")
+	_check(editor._timeline.sheet_visible(), "the dope sheet opens with the workspace")
+	var animate_view_before: Vector2 = editor._view.size
+	editor._timeline.set_mode("graph")
+	await get_tree().process_frame
+	_check(editor._timeline.mode() == "graph", "the pane switches to graph mode")
+	_check(editor._timeline.graph_plot_rect().size.x > 100.0,
+		"the graph plot has a real drawing area")
+	editor._timeline.set_mode("dope")
+	await get_tree().process_frame
+	editor._timeline.set_sheet_visible(false)
+	await get_tree().process_frame
+	_check(not editor._timeline.sheet_visible(),
+		"the pane folds the sheet without leaving Animate")
+	_check(editor._animate_pane.visible
+		and editor._timeline.transport_panel().is_visible_in_tree(),
+		"the folded pane keeps its transport reachable")
+	editor._timeline.set_sheet_visible(true)
+	await get_tree().process_frame
+	_check(editor._timeline.sheet_visible(), "the sheet reopens")
 	# Time viewport: pan and zoom remap time to pixels without changing the
 	# document duration, and every hit test shares the same mapping.
 	var time_tl = editor._timeline
@@ -1482,56 +1426,61 @@ func _ready() -> void:
 	await get_tree().process_frame
 
 	editor._timeline.set_mode("dope")
-	editor._toggle_timeline()
+	editor._timeline.set_sheet_visible(false)
 	for _i in 3:
 		await get_tree().process_frame
-	_check(absf(editor._timeline_panel.size.y - 56.0) < 0.5,
-		"the folded overlay is exactly a 56 dp transport")
-	_check(is_equal_approx(editor._view.size.x, overlay_view_before.x) and
-		is_equal_approx(editor._view.size.y, overlay_view_before.y),
-		"folding the overlay leaves the 3D view untouched")
+	_check(not editor._timeline.sheet_visible(), "the folded pane keeps only the transport")
+	_check(is_equal_approx(editor._view.size.x, animate_view_before.x) and
+		is_equal_approx(editor._view.size.y, animate_view_before.y),
+		"folding the pane leaves the 3D view untouched")
+	editor.set_workspace("scene")
+	await get_tree().process_frame
 
-	# I1: at 1440x900 the expanded media body is capped inside a scroll shell
-	# under its 44 dp header, so the section never vanishes and its collapse
-	# control stays reachable.
-	print("SMOKE STEP: media header stays reachable")
-	editor.size = Vector2(1440.0, 900.0)
-	editor.set_layout_mode("desktop")
-	editor._apply_shell()
-	for _i in 3:
-		await get_tree().process_frame
-	var reachable_media = editor.get("_media_lanes")
-	_check(reachable_media != null, "the media lanes are mounted at 1440x900")
-	if reachable_media != null:
-		editor._timeline_visible = true
-		editor._timeline.set_mode("dope")
-		editor._sync_timeline_visibility()
-		for _i in 2:
-			await get_tree().process_frame
-		reachable_media.set_collapsed(true)
-		await get_tree().process_frame
-		reachable_media.set_collapsed(false)
-		for _i in 2:
-			await get_tree().process_frame
-		_check(reachable_media.visible,
-			"1440x900 keeps the expanded media section visible")
-		_check(reachable_media.is_visible_in_tree(),
-			"the media header and its collapse control stay reachable")
-		_check(not reachable_media.is_collapsed(),
-			"expanding media never silently collapses it again")
-		_check(reachable_media.get_global_rect().end.y <=
-			editor._timeline.transport_panel().get_global_rect().position.y + 0.5,
-			"the capped media body stays above the transport row")
-		reachable_media.set_collapsed(true)
-		editor._timeline_visible = false
-		editor._sync_timeline_visibility()
-		await get_tree().process_frame
+	print("SMOKE STEP: media records")
+	var audio_source := "user://smoke_footsteps.wav"
+	_write_smoke_wav(audio_source)
+	var imported_audio: Dictionary = doc.media_system.import_audio(audio_source)
+	_check(bool(imported_audio.get("ok", false)), "WAV import succeeds")
+	var audio_rel := str(imported_audio.get("rel_path", ""))
+	_check(audio_rel.begins_with("audio/"), "WAV is copied into the project audio folder")
+	var track_id: String = doc.media_system.add_audio_track(audio_rel, 2.0)
+	_check(track_id != "", "the imported WAV becomes a real audio track")
+	var audio_record: Dictionary = doc.media_system.audio_track(track_id)
+	_check(str(audio_record.get("file", "")) == audio_rel, "the audio record stores its copied file")
+	_check(is_equal_approx(float(audio_record.get("start", 0.0)), 2.0),
+		"the audio record stores its sequence start")
+	doc.media_system.update_audio_track(track_id, {"volume": 0.25, "muted": true})
+	audio_record = doc.media_system.audio_track(track_id)
+	_check(is_equal_approx(float(audio_record.get("volume", 1.0)), 0.25) and bool(audio_record.get("muted", false)),
+		"the audio track records volume and mute edits")
+	doc.media_system.delete_audio_track(track_id)
+	_check(doc.media_system.audio_track(track_id).is_empty(),
+		"deleting the audio track clears the record")
+
+	var video_source := "user://smoke_reference.ogv"
+	var video_file := FileAccess.open(video_source, FileAccess.WRITE)
+	video_file.store_buffer(PackedByteArray([0x4f, 0x67, 0x67, 0x53]))
+	video_file.close()
+	var imported_video: Dictionary = doc.media_system.import_video_reference(video_source)
+	_check(bool(imported_video.get("ok", false)), "an OGV video reference imports")
+	var video_refs: Array = doc.media_system.video_references()
+	_check(video_refs.size() == 1, "the video reference is recorded")
+	if not video_refs.is_empty():
+		var video_id := str((video_refs[0] as Dictionary).get("id", ""))
+		_check(video_id != "", "the video reference has an id")
+		doc.media_system.update_video_reference(video_id, {"opacity": 0.5})
+		var video_record: Dictionary = doc.media_system.video_reference(video_id)
+		_check(is_equal_approx(float(video_record.get("opacity", 1.0)), 0.5),
+			"the video reference records its opacity edit")
+		doc.media_system.delete_video_reference(video_id)
+		_check(doc.media_system.video_references().is_empty(),
+			"deleting the video reference clears the record")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(audio_source))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(video_source))
 
 	print("SMOKE STEP: editor type and touch floor")
-	editor.size = Vector2(412.0, 915.0)
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	await get_tree().process_frame
 	var too_small_labels := 0
 	for editor_label in _labels_under(editor):
 		if editor_label.get_theme_font_size("font_size") < 11:
@@ -1578,354 +1527,204 @@ func _ready() -> void:
 	await get_tree().process_frame
 
 	print("SMOKE STEP: landscape shell")
-	editor.size = Vector2(915.0, 412.0)
+	await _resize_shell(main, editor, Vector2(915.0, 412.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor._short, "915x412 resolves as a short landscape shell")
-	_check(not editor._timeline_visible, "short landscape starts with the dope sheet folded")
-	_check(absf(editor._timeline_panel.size.y - 56.0) < 0.5, "the folded landscape stage is a 56 dp transport")
-	var short_lane = editor.get("_clip_lane")
-	var short_media = editor.get("_media_lanes")
-	_check(short_lane != null and not short_lane.visible, "the folded stage hides the sequence lane")
-	_check(short_media != null and not short_media.visible, "the folded stage hides the media headers")
-	var short_rail = editor.get("_panel_rail")
-	_check(short_rail != null and short_rail.visible, "landscape keeps the right panel rail")
-	if short_rail != null:
-		_check(absf(short_rail.size.x - 44.0) < 1.0, "landscape panel rail is 44 dp wide")
-	_check(not editor._dock.visible, "landscape dock starts closed")
-	_check(editor._view.size.x >= 560.0,
-		"landscape keeps a 560 dp stage beside the expanded scene panel")
-	_check(absf(editor._scene_column.size.x - 196.0) < 1.0,
-		"915 dp expands the scene panel to its 196 dp floor")
-	_check(editor._outliner_panel.get_parent() == editor._scene_column,
-		"landscape keeps the one outliner in the scene column")
+	_check(editor._workspace_bar.size.y >= 43.5, "landscape top bar is 44 dp")
+	_check(editor._context_bar.size.y >= 43.5, "landscape context row is 44 dp")
+	_check(editor._transport_bar.visible, "Scene keeps the shared transport in landscape")
+	_check(editor._stage_host.size.y >= 96.0, "landscape keeps a usable stage")
+	editor.set_workspace("animate")
+	for _i in 2:
+		await get_tree().process_frame
+	_check(editor._animate_pane.visible, "landscape Animate opens the pane")
+	_check(editor._animate_pane.size.y >= 120.0, "landscape gives the pane a real share")
+	_check(editor._timeline.size.x <= editor._animate_pane.size.x + 1.0,
+		"the landscape timeline fits the pane")
+	# A hidden sheet keeps the size it had before the resize, so its cached plot
+	# rect would be a stale measurement from the previous shell. Open it first.
 	editor._timeline.set_sheet_visible(true)
+	editor._timeline.set_mode("graph")
+	for _i in 3:
+		await get_tree().process_frame
+	_check(editor._timeline.sheet_visible(), "the landscape graph opens the sheet")
+	_check(editor._timeline.graph_plot_rect().size.y < 120.0,
+		"the short landscape pane reports a short graph plot")
+	_check(editor._timeline.graph_caption() == "Rotate upright for more curve-editing space",
+		"the short graph states the honest rotation caption")
+	editor._timeline.set_mode("dope")
+	editor.set_workspace("scene")
 	await get_tree().process_frame
-	editor._timeline._refresh_compact()
-	if editor._timeline._available_width >= 640.0:
-		_check(
-			editor._timeline._loop_button.visible
-			and editor._timeline._mode_button.visible
-			and editor._timeline._snap_button.visible
-			and not editor._timeline._compact_header.visible,
-			"the wide landscape sheet keeps graph, loop and snap in the transport"
-		)
-	else:
-		_check(editor._timeline._compact_header.visible, "a narrow landscape sheet exposes graph, loop, snap, delete and fold")
-	_check(editor._timeline.transport_panel().get_combined_minimum_size().x <= editor._view.size.x + 1.0, "the landscape transport fits the stage width")
-	editor._timeline.set_sheet_visible(false)
-	editor.size = Vector2(412.0, 915.0)
-	editor.set_layout_mode("studio")
-	editor._apply_shell()
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
 	_check(not editor._short, "412x915 resolves as a tall studio shell")
-	_check(not editor._timeline_visible, "tall studio also starts with the dope sheet folded")
+	_check(editor._workspace_bar.size.y >= 43.5, "the tall phone keeps a 44 dp top bar")
 
 	print("SMOKE STEP: narrow studio drawer")
-	editor._apply_shell()
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
+	editor.set_layout_mode("studio")
+	editor.set_workspace("scene")
 	await get_tree().process_frame
-	await get_tree().process_frame
-	var narrow_rail = editor.get("_panel_rail")
-	_check(narrow_rail == null or not narrow_rail.visible, "sub-minimum studio falls back to the panel toggle")
-	_check(not editor._dock.visible, "narrow studio dock starts closed")
-	_check(editor._top_bar._panels_button.visible, "the panel toggle opens the flyout on a 412 dp stage")
-	_check(editor._view.size.x >= 300.0, "narrow studio viewport keeps a usable width")
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.HIDDEN,
+		"the narrow shell starts with no reserved panel")
+	_check(editor._panel_spacer.custom_minimum_size.x <= 0.5,
+		"the narrow shell reserves no panel width")
+	_check(editor._stage_host.size.x >= 300.0, "narrow studio stage keeps a usable width")
 	var view_rect: Rect2 = editor._view.get_global_rect()
 	var hud_rect: Rect2 = editor._view._quick_render_button.get_global_rect()
 	_check(view_rect.encloses(hud_rect), "narrow studio HUD stays inside the viewport")
-	editor._toggle_drawer("scene")
+	editor._toggle_scene_panel("scene")
 	for _i in 4:
 		await get_tree().process_frame
-	_check(editor._drawer_open and editor._dock.visible, "narrow studio drawer opens")
-	_check(editor._drawer_scrim.visible, "narrow studio drawer has a scrim")
-	# The rail is gone below the Studio minimum, so the flyout itself has to
-	# carry the three page tabs; otherwise Properties or Rig is unreachable.
-	_check(editor._drawer_scene_tab.visible
-		and editor._drawer_props_tab.visible
-		and editor._drawer_rig_tab.visible,
-		"the sub-480 flyout keeps every page tab")
-	editor._drawer_props_tab.pressed.emit()
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY,
+		"the narrow scene panel opens as an overlay")
+	_check(editor._workspace_panel.scrim().visible, "the narrow overlay has a scrim")
+	_check(editor._workspace_panel.content() == editor._outliner_panel,
+		"the narrow overlay shows the one outliner")
+	editor._toggle_scene_panel("inspector")
+	for _i in 2:
+		await get_tree().process_frame
+	_check(editor._workspace_panel.content() == editor._inspector_panel,
+		"the narrow overlay swaps to Properties")
+	editor._workspace_panel.close_button().pressed.emit()
 	await get_tree().process_frame
-	_check(editor._compact_tab == "inspector" and editor._inspector_panel.visible,
-		"the sub-480 flyout switches to Properties")
-	editor._drawer_rig_tab.pressed.emit()
-	await get_tree().process_frame
-	_check(editor._compact_tab == "rig" and editor._rig_frame.visible,
-		"the sub-480 flyout switches to Rig")
-	editor._drawer_scene_tab.pressed.emit()
-	await get_tree().process_frame
-	_check(editor._compact_tab == "scene" and editor._outliner_panel.visible,
-		"the sub-480 flyout switches back to Scene")
-	_check(editor._dock_close_button.visible, "narrow studio drawer can be dismissed")
-	editor._close_drawer()
-	await get_tree().process_frame
-	_check(not editor._dock.visible, "closing the drawer returns the stage to the viewport")
-	editor.set_layout_mode("compact")
-	await get_tree().process_frame
-	_check(not editor._top_bar._panels_button.visible, "compact uses the bottom bar for panels")
-	_check(editor.get("_panel_rail") == null or not editor.get("_panel_rail").visible, "compact hides the right panel rail")
-	await get_tree().process_frame
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.HIDDEN,
+		"closing the narrow overlay returns the stage")
 
 	print("SMOKE STEP: timeline fold control")
-	editor._timeline_visible = true
-	editor._sync_timeline_visibility()
+	editor.set_layout_mode("studio")
+	editor.set_workspace("animate")
+	for _i in 2:
+		await get_tree().process_frame
+	editor._timeline.set_sheet_visible(true)
+	await get_tree().process_frame
 	_check(editor._timeline._fold_button != null, "timeline exposes a fold control")
 	if editor._timeline._fold_button != null:
-		_check(editor._timeline._fold_button.custom_minimum_size.y >= 44.0, "timeline fold control keeps a 44 dp target")
-	editor._on_timeline_close_requested()
+		_check(editor._timeline._fold_button.custom_minimum_size.y >= 44.0,
+			"timeline fold control keeps a 44 dp target")
+		editor._timeline._fold_button.pressed.emit()
+		await get_tree().process_frame
+		_check(not editor._timeline.sheet_visible(), "timeline fold control folds the sheet")
+		editor._timeline._fold_button.pressed.emit()
+		await get_tree().process_frame
+		_check(editor._timeline.sheet_visible(), "timeline fold control reopens the sheet")
+	editor._timeline.set_sheet_visible(false)
+	editor.set_workspace("scene")
 	await get_tree().process_frame
-	_check(not editor._timeline_visible, "timeline fold control folds the sheet")
-	editor._on_timeline_close_requested()
-	await get_tree().process_frame
-	_check(editor._timeline_visible, "timeline fold control reopens the sheet")
-	editor._timeline_visible = false
-	editor._sync_timeline_visibility()
 
 	print("SMOKE STEP: sequence shell wiring")
-	editor.size = Vector2(412.0, 915.0)
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	# A mode switch reopens the default sheet; this step is about the folded
-	# stack, so fold explicitly first.
-	editor._timeline_visible = false
-	editor._sync_timeline_visibility()
-	await get_tree().process_frame
-	await get_tree().process_frame
-	var lane = editor.get("_clip_lane")
-	_check(lane != null, "the clip lane mounts in the lane stack")
-	var media_lanes = editor.get("_media_lanes")
-	_check(media_lanes != null, "media lanes mount in the lane stack")
-	var stack = editor.get("_timeline_stack")
-	_check(stack != null, "the timeline panel stacks the dope sheet over the lane stack")
-	var lane_scroll = editor.get("_lane_scroll")
-	var lane_body = editor.get("_lane_body")
-	if lane != null and media_lanes != null and stack != null:
-		var stack_kids: Array = stack.get_children()
-		_check(stack_kids.has(editor._timeline) and stack_kids.has(lane_scroll),
-			"the dope sheet and the lane stack share one column")
-		if lane_scroll != null:
-			_check(stack_kids.find(editor._timeline) < stack_kids.find(lane_scroll),
-				"the dope sheet sits above the lane stack")
-		if lane_scroll != null and lane_body != null:
-			var lane_kids: Array = lane_body.get_children()
-			_check(lane_kids.has(lane) and lane_kids.has(media_lanes),
-				"clip lane and media lanes share one scrollable lane stack")
-			_check(lane_kids.find(lane) < lane_kids.find(media_lanes),
-				"the clip lane sits above the media lanes")
-		_check(lane.doc == doc, "the clip lane reads the adopted document")
-		_check(media_lanes._doc == doc, "media lanes read the adopted document")
-	if lane != null:
-		_check(lane.get_combined_minimum_size().y >= 44.0, "the clip lane keeps a real row height")
-		_check(not lane.visible, "the folded stage hides the sequence lane")
-	if media_lanes != null:
-		_check(media_lanes.is_collapsed(), "media lanes start collapsed")
-		_check(absf(media_lanes.get_combined_minimum_size().y - 44.0) < 0.5, "collapsed media lanes cost a 44 dp header")
-		_check(not media_lanes.visible, "the folded stage hides the media header")
-		if lane != null:
-			var folded_total: float = 56.0
-			_check(absf(editor._timeline_panel.size.y - folded_total) < 0.5,
-				"the folded sheet is a 56 dp transport")
-			editor._timeline_visible = true
-			editor._sync_timeline_visibility()
-			await get_tree().process_frame
-			var open_panel: float = editor._timeline_panel.size.y
-			var open_host: Control = editor._viewport_host
-			var open_budget := minf(208.0, maxf(56.0 + 48.0, open_host.size.y * 0.34))
-			_check(open_panel <= open_budget + 0.5,
-				"opening the stage keeps the overlay inside the compact 34 percent budget")
-			_check(open_panel >= 56.0 + 48.0 - 0.5,
-				"the open sheet keeps the transport plus a 48 dp sheet")
-			# Fold order: the media body shrinks inside its header, then the
-			# clip lane folds. On a 412 dp canvas the preferred sheet and the
-			# transport leave no room for the lane, but the media header stays.
-			_check(not lane.visible,
-				"a tight open sheet folds the clip lane before shrinking the sheet")
-			_check(media_lanes.visible,
-				"the folded media header stays reachable on the open sheet")
-			media_lanes.set_collapsed(false)
-			await get_tree().process_frame
-			await get_tree().process_frame
-			_check(not media_lanes.is_collapsed(), "media lanes expand on request")
-			_check(media_lanes.visible,
-				"expanding media lanes never hides the section")
-			_check(absf(editor._timeline_panel.size.y - open_panel) < 0.5,
-				"an expanded media lane fits inside the fixed overlay budget")
-			_check(media_lanes.get_global_rect().end.y <=
-				editor._timeline.transport_panel().get_global_rect().position.y + 0.5,
-				"media lanes stay above the transport row")
-			media_lanes.set_collapsed(true)
-			await get_tree().process_frame
-			await get_tree().process_frame
-			_check(absf(editor._timeline_panel.size.y - open_panel) < 0.5,
-				"collapsing media lanes keeps the fixed overlay height")
-
+	editor.set_workspace("scene")
+	for _i in 2:
+		await get_tree().process_frame
 	var tl_play: Button = editor._timeline._play_button
 	_check(tl_play != null, "the dope sheet keeps a clip transport")
-	if lane == null or tl_play == null:
-		_check(false, "the clip lane runs the sequence clock and the timeline runs the clip clock")
-		_check(false, "stopping the sequence restores the saved clip time")
-	if lane != null and tl_play != null:
-		doc.seek(1.0)
-		var lane_play: Button = lane.play_sequence_button()
-		_check(lane_play != null and lane_play.custom_minimum_size.y >= 44.0, "the clip lane keeps a 44 dp transport")
-		lane_play.pressed.emit()
-		_check(doc.is_sequence_playing(), "the clip lane button plays the sequence clock")
-		_check(not doc.is_playing, "the sequence does not run both clocks")
-		_check(tl_play.disabled, "timeline clip transport is disabled while the sequence plays")
-		_check(editor._timeline.has_method("set_clip_transport_enabled"),
-			"the timeline owns the clip transport state")
-		_check(tl_play.tooltip_text == "Stop the sequence first",
-			"the timeline owns the disabled transport reason")
-		var sequence_time_before: float = doc.current_time
-		# Wait a fixed slice instead of two raw frames: format_timecode is
-		# frame-quantized, so two uncapped headless frames can land inside the
-		# same frame and make the label comparison flake.
-		await get_tree().create_timer(0.2).timeout
-		_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before + 0.05,
-			"the sequence clock advances while the lane plays")
-		_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
-			"the timeline follows the advancing sequence time")
-		_check(editor._timeline._time_label.text != doc.format_timecode(sequence_time_before),
-			"the timeline label moved with the sequence")
-		lane_play.pressed.emit()
-		_check(not doc.is_sequence_playing(), "the clip lane button pauses the sequence clock")
-		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
-		doc.seek(1.0)
-		lane_play.pressed.emit()
-		doc.stop_sequence()
-		_check(not doc.is_sequence_playing(), "stop_sequence stops the sequence clock")
-		_check(is_equal_approx(doc.current_time, 1.0), "stopping the sequence restores the saved clip time")
-		# Space is the other transport: pausing the sequence with it must also
-		# put the clip clock back where the sequence took over.
-		doc.seek(1.0)
-		lane_play.pressed.emit()
-		_check(doc.is_sequence_playing(), "the sequence restarts from the lane button")
-		var space := InputEventKey.new()
-		space.keycode = KEY_SPACE
-		space.pressed = true
-		editor._unhandled_key_input(space)
-		_check(not doc.is_sequence_playing(), "space pauses the sequence clock")
-		_check(is_equal_approx(doc.current_time, 1.0), "space restores the saved clip time")
-		tl_play.pressed.emit()
-		_check(doc.is_playing and not doc.is_sequence_playing(), "the timeline transport plays the clip clock")
-		_check(not tl_play.disabled, "timeline clip transport re-enables when the sequence stops")
-		doc.pause()
-		doc.seek(0.0)
-		await get_tree().process_frame
+	doc.seek(1.0)
+	doc.play_sequence()
+	_check(doc.is_sequence_playing(), "the document runs the sequence clock")
+	_check(not doc.is_playing, "the sequence does not run both clocks")
+	_check(tl_play.disabled, "timeline clip transport is disabled while the sequence plays")
+	_check(editor._timeline.has_method("set_clip_transport_enabled"),
+		"the timeline owns the clip transport state")
+	_check(tl_play.tooltip_text == "Stop the sequence first",
+		"the timeline owns the disabled transport reason")
+	var sequence_time_before: float = doc.current_time
+	# Wait a fixed slice instead of two raw frames: format_timecode is
+	# frame-quantized, so two uncapped headless frames can land inside the
+	# same frame and make the label comparison flake.
+	await get_tree().create_timer(0.2).timeout
+	_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before + 0.05,
+		"the sequence clock advances while it plays")
+	_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
+		"the timeline follows the advancing sequence time")
+	_check(editor._timeline._time_label.text != doc.format_timecode(sequence_time_before),
+		"the timeline label moved with the sequence")
+	doc.pause_sequence()
+	_check(not doc.is_sequence_playing(), "pause_sequence stops the sequence clock")
+	_check(is_equal_approx(doc.current_time, 1.0),
+		"pausing the sequence restores the saved clip time")
+	doc.seek(1.0)
+	doc.play_sequence()
+	doc.stop_sequence()
+	_check(not doc.is_sequence_playing(), "stop_sequence stops the sequence clock")
+	_check(is_equal_approx(doc.current_time, 1.0),
+		"stopping the sequence restores the saved clip time")
+	doc.seek(1.0)
+	doc.play_sequence()
+	_check(doc.is_sequence_playing(), "the sequence restarts")
+	var space := InputEventKey.new()
+	space.keycode = KEY_SPACE
+	space.pressed = true
+	editor._unhandled_key_input(space)
+	_check(not doc.is_sequence_playing(), "space pauses the sequence clock")
+	_check(is_equal_approx(doc.current_time, 1.0), "space restores the saved clip time")
+	tl_play.pressed.emit()
+	_check(doc.is_playing and not doc.is_sequence_playing(),
+		"the timeline transport plays the clip clock")
+	_check(not tl_play.disabled,
+		"timeline clip transport re-enables when the sequence stops")
+	doc.pause()
+	doc.seek(0.0)
+	await get_tree().process_frame
 
-	var rig_panel = editor.get("_rig_panel")
-	_check(rig_panel != null, "a rig panel is docked next to scene and properties")
-	_check(editor.get("_drawer_rig_tab") != null, "the drawer exposes a rig tab")
-	var rig_overlay = editor.get("_rig_overlay")
-	var rig_toolbar = editor.get("_rig_toolbar")
-	_check(rig_overlay != null, "a rig overlay floats over the viewport")
-	_check(rig_toolbar != null, "a floating rig toolbar sits above the viewport overlay")
-	if rig_toolbar != null:
-		_check(rig_toolbar.get_parent() == editor._viewport_host, "the rig toolbar mounts in the stage")
-		var stage_kids: Array = editor._viewport_host.get_children()
-		_check(stage_kids.find(rig_toolbar) > stage_kids.find(rig_overlay), "the rig toolbar draws above the rig overlay")
-	if rig_panel == null or editor.get("_drawer_rig_tab") == null:
-		_check(false, "the rig tab shows an honest empty state")
-		_check(false, "the rig overlay follows the active rig tab")
-		_check(false, "the drawer exposes a visible rig tab")
-	if rig_panel != null and editor._drawer_rig_tab != null:
-		var shell_rail = editor.get("_panel_rail")
-		if editor.layout_mode() == "compact":
-			_check(editor._drawer_rig_tab.visible, "the rig tab is visible on compact shells")
-		elif shell_rail != null and shell_rail.visible:
-			_check(shell_rail.page_button("rig") != null, "the panel rail exposes the rig page on wide shells")
-		else:
-			_check(editor._top_bar._panels_button.visible, "the panel toggle exposes the rig page on a sub-minimum shell")
-		_check(editor.get("_rig_panel") != null and editor.get("_rig_panel").visible, "the rig tab keeps the panel reachable")
-		if rig_overlay != null:
-			# Rig mode is an explicit workbench state now: the Rig page engages
-			# it, it survives closing the dock or showing another page, and
-			# Done exits it. An empty rig page keeps the stage quiet.
-			editor._set_compact_tab("rig")
-			if editor._dock_overlay_mode():
-				editor._open_drawer()
-			await get_tree().process_frame
-			_check(not rig_overlay.is_enabled(), "an empty rig page keeps the overlay quiet")
-			if rig_toolbar != null:
-				_check(not rig_toolbar.visible, "the floating toolbar hides until a rig is selected")
-		_check(rig_panel.empty_state_visible(), "the rig tab shows an honest empty state")
-		var rig_id := ""
-		rig_id = doc.rig_system.create_rig("Smoke Rig", Vector3.ZERO)
+	var rig_panel = editor._rig_panel
+	var rig_overlay = editor._rig_overlay
+	_check(rig_panel != null, "the Rig panel is mounted")
+	_check(rig_overlay != null, "the rig overlay floats over the viewport")
+	await _resize_shell(main, editor, Vector2(915.0, 412.0))
+	editor.set_workspace("rig")
+	for _i in 2:
 		await get_tree().process_frame
+	_check(editor.workspace() == "rig", "the Rig workspace activates")
+	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.RESERVED,
+		"the Rig workspace reserves its panel at 915 dp")
+	_check(editor._workspace_panel.content() == rig_panel,
+		"the reserved panel owns the one rig frame")
+	_check(editor._panel_spacer.custom_minimum_size.x >= 280.0,
+		"the reserved panel takes its clamped 34 percent width")
+	var rig_id: String = doc.rig_system.create_rig("Smoke Rig", Vector3.ZERO)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(rig_id != "" and not rig_panel.empty_state_visible(),
+		"creating a rig clears the empty state")
+	var pose_button: Button = editor._context_bar.action_button("pose")
+	_check(pose_button != null and not pose_button.disabled,
+		"the Rig context row enables Pose with a rig")
+	if pose_button != null:
+		pose_button.pressed.emit()
 		await get_tree().process_frame
-		_check(rig_id != "" and not rig_panel.empty_state_visible(), "creating a rig clears the empty state")
-		var active_bone_before := ""
-		if rig_overlay != null and rig_id != "":
-			_check(str(rig_overlay._rig_id) == doc.rig_system.active_rig_id(), "the rig overlay tracks the active rig")
-			_check(rig_overlay.is_enabled(), "selecting a rig engages the overlay")
-			active_bone_before = str(doc.rig_system.get_rig(rig_id).get("active_bone", ""))
-			if rig_toolbar != null:
-				_check(rig_toolbar.visible, "the floating toolbar shows while a rig is selected")
-				_check(rig_toolbar.current_mode() == rig_overlay.mode(), "the toolbar mirrors the overlay mode")
-				var add_bone_button: Button = rig_toolbar.find_child("ToolbarAddBoneButton", true, false)
-				var bones_before := (doc.rig_system.get_rig(rig_id).get("bones", []) as Array).size()
-				if add_bone_button != null:
-					add_bone_button.pressed.emit()
-					await get_tree().process_frame
-					_check((doc.rig_system.get_rig(rig_id).get("bones", []) as Array).size() == bones_before + 1,
-						"the floating Add bone extrudes a child bone")
-					active_bone_before = str(doc.rig_system.get_rig(rig_id).get("active_bone", ""))
-					_check(active_bone_before.begins_with("Bone "), "the extruded bone becomes the active bone")
-					var tree = rig_panel.find_child("BoneTree", true, false)
-					var active_row := ""
-					if tree != null:
-						for row in tree.get_bone_rows():
-							if row.has_theme_color_override("font_color") \
-									and (row as Button).get_theme_color("font_color") == Kit.FOCUS_BRIGHT:
-								active_row = str(row.get_meta("bone_name", ""))
-					_check(active_row == active_bone_before, "the extruded bone is selected in the bone tree")
-				rig_overlay.set_mode("edit")
-				await get_tree().process_frame
-				_check(rig_toolbar.current_mode() == "edit", "the toolbar follows the overlay mode")
-			if editor._dock_overlay_mode():
-				editor._close_drawer()
-				await get_tree().process_frame
-				_check(rig_overlay.is_enabled(), "closing the Rig dock keeps rig mode alive")
-				if rig_toolbar != null:
-					_check(rig_toolbar.visible, "the toolbar survives closing the Rig dock")
-				_check(rig_overlay.mode() == "edit", "closing the Rig dock does not reset the mode")
-				_check(str(doc.rig_system.get_rig(rig_id).get("active_bone", "")) == active_bone_before, "closing the Rig dock keeps the active bone")
-			editor._set_compact_tab("scene")
-			await get_tree().process_frame
-			_check(rig_overlay.is_enabled(), "another dock page does not exit rig mode")
-			if rig_toolbar != null:
-				_check(rig_toolbar.visible, "the toolbar stays visible on another dock page")
-				rig_toolbar.done_requested.emit()
-				await get_tree().process_frame
-				_check(not rig_toolbar.visible, "Done hides the toolbar")
-				_check(not rig_overlay.is_enabled(), "Done hides the overlay")
-				_check(str(rig_overlay._rig_id) == "", "Done clears the rig selection state")
-				editor._set_compact_tab("rig")
-				await get_tree().process_frame
-				_check(rig_overlay.is_enabled(), "reopening the Rig page re-engages the rig")
-				_check(rig_overlay.mode() == "edit", "reopening the Rig page does not reset the mode")
-				_check(rig_toolbar.visible and rig_toolbar.current_mode() == "edit", "the toolbar returns with the preserved mode")
-		doc.rig_system.delete_rig(rig_id)
+		_check(editor._rig_mode, "the Rig context row engages rig mode")
+		_check(rig_overlay != null and rig_overlay.is_enabled(),
+			"the Rig context row enables the rig overlay")
+		_check(rig_overlay.mode() == "pose", "Pose selects the rig pose mode")
+		editor._context_bar.action_button("rig_done").pressed.emit()
 		await get_tree().process_frame
-		_check(rig_panel.empty_state_visible(), "deleting the rig restores the empty state")
-		if rig_overlay != null:
-			_check(str(rig_overlay._rig_id) == "", "the rig overlay clears with the last rig")
-			_check(not rig_overlay.is_enabled(), "deleting the last rig disables the overlay")
-			if rig_toolbar != null:
-				_check(not rig_toolbar.visible, "deleting the last rig hides the toolbar")
-		editor._set_compact_tab("scene")
-		await get_tree().process_frame
+		_check(not editor._rig_mode, "Done leaves rig mode")
+		_check(not rig_overlay.is_enabled(), "Done hides the rig overlay")
+	doc.rig_system.delete_rig(rig_id)
+	await get_tree().process_frame
+	_check(rig_panel.empty_state_visible(), "deleting the rig restores the empty state")
+	if rig_overlay != null:
+		_check(str(rig_overlay._rig_id) == "", "the rig overlay clears with the last rig")
+		_check(not rig_overlay.is_enabled(), "deleting the last rig disables the overlay")
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	await get_tree().process_frame
 
 	var video_overlay = editor.get("_video_overlay")
 	_check(video_overlay != null, "a video reference overlay sits behind the HUD")
 	if video_overlay != null:
 		_check(video_overlay.get_parent() == editor._view, "the video overlay lives on the viewport")
 		var view_kids: Array = editor._view.get_children()
-		_check(view_kids[view_kids.size() - 1] == editor._view._hud_root, "the HUD stays the top viewport layer")
-		_check(view_kids.find(video_overlay) < view_kids.find(editor._view._hud_root), "the video overlay draws below the HUD")
-		_check(view_kids.find(video_overlay) > view_kids.find(editor._view._surface), "the video overlay draws over the 3D surface")
-		_check(video_overlay.mouse_filter == Control.MOUSE_FILTER_IGNORE, "the video overlay ignores every pointer")
+		_check(view_kids[view_kids.size() - 1] == editor._view._hud_root,
+			"the HUD stays the top viewport layer")
+		_check(view_kids.find(video_overlay) < view_kids.find(editor._view._hud_root),
+			"the video overlay draws below the HUD")
+		_check(view_kids.find(video_overlay) > view_kids.find(editor._view._surface),
+			"the video overlay draws over the 3D surface")
+		_check(video_overlay.mouse_filter == Control.MOUSE_FILTER_IGNORE,
+			"the video overlay ignores every pointer")
 		_check(not video_overlay.visible, "the video overlay hides without a visible reference")
 		# Clip mode reads the active strip's start; the sequence clock is used
 		# only while a sequence actually runs.
@@ -1942,35 +1741,34 @@ func _ready() -> void:
 			anim_sys.update_strip(strip_id, {"start": 0.0})
 			doc.seek(0.0)
 
-	# The viewport header is the view's control surface: Perspective, Add,
-	# Grid and Frame must reach the real view, not a duplicate control.
-	var header = editor.get("_view_header")
-	_check(header != null, "the viewport header is mounted")
-	if header != null:
-		_check(header.grid_button() != null and header.frame_button() != null,
-			"the viewport header exposes grid and frame actions")
-		var prior_view: String = editor._view.view_preset()
-		header.view_requested.emit("Front")
-		_check(editor._view.view_preset() == "Front", "the header perspective menu drives the view")
-		header.view_requested.emit(prior_view)
-		var prior_grid: bool = editor._view.grid_enabled()
-		header.grid_toggled.emit(not prior_grid)
-		_check(editor._view.grid_enabled() == (not prior_grid), "the header grid action drives the view")
-		header.grid_toggled.emit(prior_grid)
-		header.add_requested.emit()
-		await get_tree().process_frame
-		_check(editor._overlay.has_modal(), "the header Add action opens the add sheet")
-		editor._overlay.close_modal()
-		await get_tree().process_frame
-		# Frame selection is a no-op without a selection, but must be wired.
-		header.frame_requested.emit()
+	# The context row is the view's control surface: View and Grid must reach
+	# the real view, not a duplicate control.
+	editor._open_view_menu(editor._context_bar.action_button("view"))
+	await get_tree().process_frame
+	_check(editor._view_menu.is_open(), "the context row opens the view menu")
+	var prior_view: String = editor._view.view_preset()
+	if editor._view_menu.row_button("Front") != null:
+		editor._view_menu.row_button("Front").pressed.emit()
+		_check(editor._view.view_preset() == "Front", "the view menu drives the view")
+		editor._view.set_view_preset(prior_view)
+	var prior_grid: bool = editor._view.grid_enabled()
+	editor._context_bar.action_button("grid").pressed.emit()
+	_check(editor._view.grid_enabled() == (not prior_grid),
+		"the context grid action drives the view")
+	editor._context_bar.action_button("grid").pressed.emit()
+	_check(editor._view.grid_enabled() == prior_grid, "the grid action toggles back")
+	editor._context_bar.action_button("add").pressed.emit()
+	await get_tree().process_frame
+	_check(editor._overlay.has_modal(), "the context Add action opens the add sheet")
+	editor._overlay.close_modal()
+	await get_tree().process_frame
 
-	if editor._drawer_open:
-		editor._close_drawer()
+	if editor._workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY:
+		editor._close_workspace_panel()
 	# Render preview is a clip-clock surface: a running sequence must stop
 	# first, and its saved clip playhead must survive the round trip.
 	doc.seek(1.0)
-	editor._clip_lane.play_sequence_button().pressed.emit()
+	doc.play_sequence()
 	_check(doc.is_sequence_playing(), "the sequence can run before render preview")
 	editor._enter_render_mode()
 	_check(editor._render_mode, "render preview engages")
@@ -1980,8 +1778,6 @@ func _ready() -> void:
 		_check(not video_overlay.visible, "render mode hides the video overlay")
 	if rig_overlay != null:
 		_check(not rig_overlay.is_enabled(), "render mode disables the rig overlay")
-	if rig_toolbar != null:
-		_check(not rig_toolbar.visible, "render mode hides the rig toolbar")
 	editor._exit_render_mode()
 	if video_overlay != null:
 		_check(editor._render_mode == false, "render mode exits cleanly")
@@ -2032,51 +1828,58 @@ func _ready() -> void:
 		camera_sheet.set_format("png")
 	doc.set_selection("")
 
-	# The following step expects the sheet left folded by the fold contract.
-	editor._timeline_visible = false
-	editor._sync_timeline_visibility()
+	editor.set_workspace("animate")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	editor._timeline.set_sheet_visible(false)
+	await get_tree().process_frame
 
 	print("SMOKE STEP: graph fold contract")
 	editor._timeline.set_mode("graph")
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(not editor._timeline_visible, "graph mode does not reopen a folded sheet")
-	var folded_graph := 56.0
-	_check(absf(editor._timeline_panel.size.y - folded_graph) < 0.5, "folded graph keeps only the 56 dp transport")
-	editor._timeline_visible = true
-	editor._sync_timeline_visibility()
+	_check(not editor._timeline.sheet_visible(), "graph mode does not reopen a folded sheet")
+	_check(editor._timeline.transport_panel().is_visible_in_tree(),
+		"folded graph keeps the transport reachable")
+	_check(not editor._timeline._sheet.visible, "folded graph hides the sheet body")
+	editor._timeline.set_sheet_visible(true)
 	editor._timeline.set_mode("dope")
 	await get_tree().process_frame
 
 	print("SMOKE STEP: collapsible panels")
-	editor.size = Vector2(412.0, 915.0)
-	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	await get_tree().process_frame
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
+	editor.set_workspace("scene")
+	editor._toggle_scene_panel("scene")
+	for _i in 2:
+		await get_tree().process_frame
 	editor._set_section_collapsed("outliner", true)
 	await get_tree().process_frame
 	_check(editor._outliner.collapsed, "outliner collapses")
 	_check(not editor._outliner._scroll.visible, "collapsed outliner hides its list")
-	_check(editor._outliner_panel.custom_minimum_size.y <= 48.0, "collapsed outliner keeps a 44 dp header")
-	_check("outliner" in Prefs.get_value("editor.collapsed_sections", []), "outliner collapse persists")
+	_check(editor._outliner_panel.custom_minimum_size.y <= 48.0,
+		"collapsed outliner keeps a 44 dp header")
+	_check("outliner" in Prefs.get_value("editor.collapsed_sections", []),
+		"outliner collapse persists")
 	editor._set_section_collapsed("inspector", true)
 	await get_tree().process_frame
 	_check(editor._inspector.collapsed, "inspector collapses")
 	_check(not editor._inspector._scroll.visible, "collapsed inspector hides its fields")
-	_check(editor._inspector_panel.custom_minimum_size.y <= 48.0, "collapsed inspector keeps a 44 dp header")
+	_check(editor._inspector_panel.custom_minimum_size.y <= 48.0,
+		"collapsed inspector keeps a 44 dp header")
 	editor._set_section_collapsed("outliner", false)
 	editor._set_section_collapsed("inspector", false)
 	await get_tree().process_frame
-	_check(not editor._outliner.collapsed and not editor._inspector.collapsed, "panels expand again")
-	editor.set_layout_mode("compact")
-	await get_tree().process_frame
+	_check(not editor._outliner.collapsed and not editor._inspector.collapsed,
+		"panels expand again")
 
 	print("SMOKE STEP: graph editor")
 	var timeline = editor._timeline
 	_check(timeline != null, "timeline exists")
 	if timeline != null:
-		editor._timeline_visible = true
-		editor._sync_timeline_visibility()
+		editor.set_workspace("animate")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		timeline.set_sheet_visible(true)
 		doc.set_selection(key_id)
 		var graph_keys: Array = doc.get_channel_keys(key_id, "position")
 		_check(graph_keys.size() >= 3, "graph fixture has at least three position keys")
@@ -2090,9 +1893,11 @@ func _ready() -> void:
 					all_channel_eased = false
 			_check(all_channel_eased, "channel transition applies to every key")
 			doc.set_channel_transition(key_id, "position", 9.0)
-			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 0), 4.0), "channel transition clamps high")
+			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 0), 4.0),
+				"channel transition clamps high")
 			doc.set_channel_transition(key_id, "position", -1.0)
-			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 0), 0.0), "channel transition clamps low")
+			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 0), 0.0),
+				"channel transition clamps low")
 			doc.set_channel_transition(key_id, "position", 1.0)
 
 		timeline.set_mode("graph")
@@ -2111,8 +1916,8 @@ func _ready() -> void:
 			_check(timeline.graph_height_hint() > 0.0, "graph mode requests a taller sheet")
 		await get_tree().process_frame
 		await get_tree().process_frame
-		var graph_panel_height: float = editor._timeline_panel.size.y
-		_check(graph_panel_height > 180.0, "graph mode gives the sheet more height")
+		var graph_panel_height: float = timeline.size.y
+		_check(graph_panel_height > 180.0, "the Animate pane gives the graph a real height")
 		_check(timeline.has_method("graph_plot_rect"), "graph exposes its plot rect")
 		if timeline.has_method("graph_plot_rect"):
 			var graph_rect: Rect2 = timeline.graph_plot_rect()
@@ -2186,46 +1991,43 @@ func _ready() -> void:
 		doc.set_channel_transition(key_id, "position", 1.0)
 
 		print("SMOKE STEP: short landscape graph")
-		editor.size = Vector2(915.0, 412.0)
+		await _resize_shell(main, editor, Vector2(915.0, 412.0))
 		editor.set_layout_mode("studio")
-		editor._apply_shell()
-		editor._timeline_visible = true
-		editor._sync_timeline_visibility()
+		editor.set_workspace("animate")
+		timeline.set_sheet_visible(true)
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
-		_check(editor._view.size.y >= 96.0, "915x412 graph keeps a usable viewport")
-		var short_graph_host: Control = editor._viewport_host
-		var short_graph_budget := minf(300.0, maxf(104.0, short_graph_host.size.y))
-		_check(editor._timeline_panel.size.y <= short_graph_budget + 0.5,
-			"915x412 graph sheet uses the stage-share budget")
-		_check(editor._timeline.graph_plot_rect().size.y >= 120.0,
-			"915x412 graph keeps the 120 dp plot floor")
-		editor.size = Vector2(800.0, 360.0)
-		editor._apply_shell()
+		_check(editor._stage_host.size.y >= 96.0, "915x412 graph keeps a usable viewport")
+		_check(timeline.graph_plot_rect().size.y < 120.0,
+			"the 915x412 split reports a short graph plot")
+		_check(timeline.graph_caption() == "Rotate upright for more curve-editing space",
+			"915x412 graph states the honest rotation caption")
+		await _resize_shell(main, editor, Vector2(800.0, 360.0))
+		editor.set_layout_mode("studio")
+		editor.set_workspace("animate")
+		timeline.set_sheet_visible(true)
 		await get_tree().process_frame
 		await get_tree().process_frame
-		_check(editor._view.size.y >= 96.0, "800x360 graph keeps a usable viewport")
-		var tiny_graph_host: Control = editor._viewport_host
-		var tiny_graph_budget := minf(300.0, maxf(104.0, tiny_graph_host.size.y))
-		_check(editor._timeline_panel.size.y <= tiny_graph_budget + 0.5,
-			"800x360 graph sheet uses the stage-share budget")
-		if editor._timeline.graph_plot_rect().size.y < 120.0:
-			_check(editor._timeline.graph_caption() == "Rotate or open the timeline workspace for curve editing",
-				"800x360 graph states the exact workspace caption")
-		editor.size = Vector2(412.0, 915.0)
-		editor.set_layout_mode("compact")
-		editor._apply_shell()
-		editor._timeline_visible = true
-		editor._sync_timeline_visibility()
+		_check(editor._stage_host.size.y >= 96.0, "800x360 graph keeps a usable viewport")
+		_check(timeline.graph_plot_rect().size.y < 120.0,
+			"800x360 graph reports a short plot")
+		_check(timeline.graph_caption() == "Rotate upright for more curve-editing space",
+			"800x360 graph states the honest rotation caption")
+		await _resize_shell(main, editor, Vector2(412.0, 915.0))
+		editor.set_layout_mode("studio")
+		editor.set_workspace("animate")
+		timeline.set_sheet_visible(true)
 		await get_tree().process_frame
 		await get_tree().process_frame
+		_check(timeline.graph_plot_rect().size.y >= 120.0,
+			"the tall pane keeps the 120 dp graph plot floor")
 
 		timeline.set_mode("dope")
 		await get_tree().process_frame
 		_check(timeline.mode() == "dope", "dope mode restores")
-		_check(editor._timeline_panel.size.y <= graph_panel_height + 0.5,
-			"dope mode stays inside the graph's overlay height")
+		_check(timeline.size.y <= graph_panel_height + 0.5,
+			"dope mode stays inside the graph's pane height")
 		doc.set_selection(ease_id)
 		doc.seek(0.0)
 
@@ -2618,6 +2420,8 @@ func _ready() -> void:
 	editor._settings_panel.set_option("rig.show_overlay", false)
 	_check(bool(Prefs.get_value("rig.show_overlay", true)) == false, "the rig overlay option writes Prefs")
 	editor._settings_panel.set_option("rig.show_overlay", true)
+	editor.set_layout_mode("compact")
+	await get_tree().process_frame
 	editor._open_settings("display")
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -2644,47 +2448,46 @@ func _ready() -> void:
 	await get_tree().process_frame
 
 	print("SMOKE STEP: workspace fit refresh")
-	editor._open_workspace_sheet()
+	editor._open_interface_sheet()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(editor._workspace_sheet != null, "workspace sheet opens")
-	_check(editor._workspace_sheet._mode_buttons["compact"].button_pressed, "workspace shows the saved arrangement preference")
-	_check(editor._workspace_sheet._resolved_mode() == "compact", "workspace reports the resolved mode")
-	_check(editor._workspace_sheet._orientation_stacked, "workspace stacks orientation on a narrow sheet")
-	_check(editor._workspace_sheet._orientation_track != null, "workspace exposes a real orientation control")
-	_check(editor._workspace_sheet._scale_control != null, "workspace exposes the UI scale slider")
-	if editor._workspace_sheet._scale_control != null:
-		var workspace_scale = editor._workspace_sheet._scale_control.slider
+	_check(editor._interface_sheet != null, "workspace sheet opens")
+	_check(editor._interface_sheet._mode_buttons["compact"].button_pressed, "workspace shows the saved arrangement preference")
+	_check(editor._interface_sheet._resolved_mode() == "compact", "workspace reports the resolved mode")
+	_check(editor._interface_sheet._orientation_stacked, "workspace stacks orientation on a narrow sheet")
+	_check(editor._interface_sheet._orientation_track != null, "workspace exposes a real orientation control")
+	_check(editor._interface_sheet._scale_control != null, "workspace exposes the UI scale slider")
+	if editor._interface_sheet._scale_control != null:
+		var workspace_scale = editor._interface_sheet._scale_control.slider
 		_check(is_equal_approx(workspace_scale.min_value, 50.0) and is_equal_approx(workspace_scale.max_value, 200.0), "workspace UI scale spans 50 to 200 percent")
 	editor.apply_fit_info(43.0, false, false)
 	await get_tree().process_frame
-	_check(editor._workspace_sheet._scale_control.slider.editable, "workspace UI scale stays editable while fit is active")
-	_check(editor._workspace_sheet._fit_label.text.contains("43"), "workspace reports the live fit percentage")
-	_check(editor._workspace_sheet._fit_label.text.begins_with("Fit 43%"),
+	_check(editor._interface_sheet._scale_control.slider.editable, "workspace UI scale stays editable while fit is active")
+	_check(editor._interface_sheet._fit_label.text.contains("43"), "workspace reports the live fit percentage")
+	_check(editor._interface_sheet._fit_label.text.begins_with("Fit 43%"),
 		"the workspace fit label names the fit, not a mode")
-	_check(not editor._workspace_sheet._fit_label.text.contains("Desktop fit"),
+	_check(not editor._interface_sheet._fit_label.text.contains("Desktop fit"),
 		"the fit label is not reused as Desktop-only copy")
 	editor.apply_fit_info(100.0, true, false)
 	await get_tree().process_frame
-	_check(editor._workspace_sheet._scale_control.slider.editable, "workspace UI scale stays editable at 100 percent")
-	editor._workspace_sheet._scale_control.set_percent_value(150.0, true)
+	_check(editor._interface_sheet._scale_control.slider.editable, "workspace UI scale stays editable at 100 percent")
+	editor._interface_sheet._scale_control.set_percent_value(150.0, true)
 	await get_tree().process_frame
 	_check(is_equal_approx(float(Prefs.get_value("display.user_scale", 0.0)), 1.5),
 		"the workspace slider persists a 150 percent scale")
-	_check(is_equal_approx(editor._workspace_sheet._scale_control.scale_value(), 1.5),
+	_check(is_equal_approx(editor._interface_sheet._scale_control.scale_value(), 1.5),
 		"the workspace slider exposes its scale as a factor")
-	editor._workspace_sheet._scale_control.set_percent_value(100.0, true)
+	editor._interface_sheet._scale_control.set_percent_value(100.0, true)
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
 	print("SMOKE STEP: workspace clamp copy and rotation")
-	editor.size = Vector2(915.0, 412.0)
+	await _resize_shell(main, editor, Vector2(915.0, 412.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	editor._open_workspace_sheet()
+	editor._open_interface_sheet()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	var workspace = editor._workspace_sheet
+	var workspace = editor._interface_sheet
 	_check(workspace._two_column, "a landscape phone opens the workspace in two columns")
 	var landscape_text := ""
 	for workspace_label in _labels_under(workspace):
@@ -2698,8 +2501,7 @@ func _ready() -> void:
 	_check(workspace._warning != null and not workspace._warning.text.contains("Desktop stays selected"),
 		"the clamp copy does not claim Desktop is selected")
 	var stored_mode := str(Prefs.get_value("display.layout", ""))
-	editor.size = Vector2(412.0, 915.0)
-	editor._apply_shell()
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
 	editor.apply_fit_info(100.0, true, true)
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -2710,18 +2512,16 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
-	editor.size = Vector2(1440.0, 900.0)
-	editor._apply_shell()
-	editor._open_workspace_sheet()
+	await _resize_shell(main, editor, Vector2(1440.0, 900.0))
+	editor._open_interface_sheet()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(not editor._workspace_sheet._orientation_stacked, "wide workspace keeps orientation inline")
-	_check(editor._workspace_sheet._orientation_track.custom_minimum_size.x >= 280.0, "wide orientation strip keeps a real target width")
+	_check(not editor._interface_sheet._orientation_stacked, "wide workspace keeps orientation inline")
+	_check(editor._interface_sheet._orientation_track.custom_minimum_size.x >= 280.0, "wide orientation strip keeps a real target width")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
-	editor.size = Vector2(412.0, 915.0)
+	await _resize_shell(main, editor, Vector2(412.0, 915.0))
 	editor.set_layout_mode("compact")
-	await get_tree().process_frame
 	await get_tree().process_frame
 
 	print("SMOKE STEP: renderer and draft quality")
@@ -2760,35 +2560,38 @@ func _ready() -> void:
 	_check(render_view._quick_render_button != null, "quick render HUD control exists")
 	_check(render_view._quick_render_button.custom_minimum_size == Vector2(44, 44), "quick render HUD control is a 44 dp square")
 	_check(render_view._fps_chip.custom_minimum_size.y >= 44.0, "FPS chip keeps a 44 dp height")
-	_check(render_view._focus_button.custom_minimum_size.y >= 44.0, "focus HUD control keeps a 44 dp height")
-	_check(render_view._grid_button.custom_minimum_size.y >= 44.0, "grid HUD control keeps a 44 dp height")
+	# Frame and Grid moved from the old view header into the Scene context row.
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var render_frame_action: Button = editor._context_bar.action_button("frame")
+	var render_grid_action: Button = editor._context_bar.action_button("grid")
+	_check(render_frame_action != null and render_frame_action.custom_minimum_size.y >= 44.0,
+		"the context Frame action keeps a 44 dp target")
+	_check(render_grid_action != null and render_grid_action.custom_minimum_size.y >= 44.0,
+		"the context Grid action keeps a 44 dp target")
 	var render_was_playing: bool = doc.is_playing
 	doc.pause()
 	doc.seek(1.0)
-	# I2: render mode owns the whole frame. The timeline and the persistent
-	# scene column/rail hide, and exiting restores both without resizing the
-	# 3D view.
-	editor.size = Vector2(1280.0, 800.0)
-	Prefs.set_value("editor.scene_panel_expanded", false)
+	# I2: render mode owns the whole frame. The shell bars and the Animate pane
+	# hide, and exiting restores them without resizing the 3D view.
+	await _resize_shell(main, editor, Vector2(1280.0, 800.0))
 	editor.set_layout_mode("studio")
-	editor._apply_shell()
-	for _i in 3:
-		await get_tree().process_frame
-	_check(editor._scene_column.visible and editor._scene_rail.visible,
-		"render mode starts from a visible scene rail")
-	editor._timeline_visible = true
-	editor._sync_timeline_visibility()
+	editor.set_workspace("animate")
 	await get_tree().process_frame
+	editor._timeline.set_sheet_visible(true)
+	await get_tree().process_frame
+	_check(editor._animate_pane.visible, "render mode starts from the Animate pane")
 	var render_view_size: Vector2 = editor._view.size
 	editor._enter_render_mode()
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_check(editor._render_mode, "quick render enters a real-time render mode")
 	_check(render_view.render_mode, "viewport enters render mode")
-	_check(not editor._top_bar.visible, "render mode hides the top bar")
-	_check(not editor._timeline_panel.visible, "render mode hides the timeline")
-	_check(not editor._scene_column.visible, "render mode hides the scene column")
-	_check(not editor._scene_rail.is_visible_in_tree(), "render mode hides the scene rail")
+	_check(not editor._workspace_bar.visible, "render mode hides the workspace bar")
+	_check(not editor._context_bar.visible, "render mode hides the context row")
+	_check(not editor._transport_bar.visible, "render mode hides the shared transport")
+	_check(not editor._animate_pane.visible, "render mode hides the Animate pane")
 	_check(not render_view._hud_root.visible, "render mode hides the editing HUD")
 	_check(editor._render_hud.visible, "render transport is visible")
 	_check(doc.is_playing, "render mode plays the document in real time")
@@ -2808,20 +2611,15 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(not editor._render_mode, "render mode exits")
 	_check(not render_view.render_mode, "viewport returns to editing")
-	_check(editor._top_bar.visible, "editing chrome returns")
-	_check(editor._timeline_panel.visible, "render mode restores the timeline")
-	_check(editor._scene_column.visible and editor._scene_rail.visible,
-		"render mode restores the scene column and rail")
+	_check(editor._workspace_bar.visible, "editing chrome returns")
+	_check(editor._animate_pane.visible, "render mode restores the Animate pane")
 	_check(is_equal_approx(editor._view.size.x, render_view_size.x) and
 		is_equal_approx(editor._view.size.y, render_view_size.y),
 		"entering and leaving render mode never resizes the 3D view")
 	_check(not editor._render_hud.visible, "render transport hides")
 	_check(is_equal_approx(doc.current_time, 1.0), "exiting restores the playhead")
 	_check(doc.is_playing == render_was_playing, "exiting restores the prior playback state")
-	editor._timeline_visible = false
-	editor._sync_timeline_visibility()
-	Prefs.set_value("editor.scene_panel_expanded", true)
-	editor._apply_shell()
+	editor.set_workspace("scene")
 	await get_tree().process_frame
 	doc.pause()
 

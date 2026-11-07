@@ -11,7 +11,8 @@ extends Control
 ## Actions: home, home-new, timeline, timeline-folded, drawer-scene,
 ## drawer-props, add-sheet, settings, performance, renderer, graphics, render,
 ## quick-render, workspace, draft, graph, scene-rail, scene-expanded,
-## hierarchy.
+## hierarchy. The timeline/drawer actions now photograph the Animate pane and
+## the scene/inspector workspace overlays; the retired overlay shell is gone.
 ##
 ## Two additions in the U1 follow-up stay inside the scene-panel/timeline
 ## evidence this task owns:
@@ -78,22 +79,21 @@ func _ready() -> void:
 	match action:
 		"home-new":
 			main._home._open_new_project_sheet()
-		"timeline":
-			if not main._editor._timeline_visible:
-				main._editor._toggle_timeline()
-		"timeline-folded":
-			if main._editor._timeline_visible:
-				main._editor._toggle_timeline()
-		"scene-rail":
-			main._editor._set_scene_expanded_from_ui(false)
-		"scene-expanded":
-			main._editor._set_scene_expanded_from_ui(true)
+		"timeline", "timeline-folded":
+			main._editor.set_workspace("animate")
+			if action == "timeline-folded":
+				main._editor._timeline.set_sheet_visible(false)
+		"scene-rail", "scene-expanded":
+			main._editor.set_workspace("scene")
+			main._editor._toggle_scene_panel("scene")
 		"hierarchy":
 			await _setup_hierarchy_capture(main)
 		"drawer-scene":
-			main._editor._toggle_drawer("scene")
+			main._editor.set_workspace("scene")
+			main._editor._toggle_scene_panel("scene")
 		"drawer-props":
-			main._editor._toggle_drawer("inspector")
+			main._editor.set_workspace("scene")
+			main._editor._toggle_scene_panel("inspector")
 		"add-sheet":
 			main._editor._open_add_sheet()
 		"settings":
@@ -109,12 +109,11 @@ func _ready() -> void:
 		"quick-render":
 			main._editor._enter_render_mode()
 		"workspace":
-			main._editor._open_workspace_sheet()
+			main._editor._toggle_workspace_menu()
 		"draft":
 			main._editor._view.set_interactive(true)
 		"graph":
-			if not main._editor._timeline_visible:
-				main._editor._toggle_timeline()
+			main._editor.set_workspace("animate")
 			var timeline = main._editor._timeline
 			var graph_doc = main._editor.doc
 			timeline.set_mode("graph")
@@ -147,15 +146,28 @@ func _ready() -> void:
 	# Geometry is not visible in the PNG; when a shot looks off, this makes the
 	# measured rects recoverable from the capture log.
 	if main._editor != null and OS.get_environment("KINEMA_CAPTURE_GEOMETRY") == "1":
-		print("GEOMETRY host=%s view=%s timeline=%s scene=%s body=%s" % [
+		print("GEOMETRY host=%s view=%s stage=%s panel=%s center=%s" % [
 			str(main._editor._viewport_host.get_global_rect()),
 			str(main._editor._view.get_global_rect()),
-			str(main._editor._timeline_panel.get_global_rect()),
-			str(main._editor._scene_column.get_global_rect()),
-			str(main._editor._body.get_global_rect()),
+			str(main._editor._stage_host.get_global_rect()),
+			str(main._editor._workspace_panel.get_global_rect()),
+			str(main._editor._center.get_global_rect()),
 		])
 	var viewport_size := get_viewport().get_visible_rect().size
-	var image := get_viewport().get_texture().get_image()
+	var texture := get_viewport().get_texture()
+	var image: Image = null
+	if DisplayServer.get_name() != "headless" and texture != null:
+		image = texture.get_image()
+	if image == null:
+		# Headless CI has no framebuffer; the harness still proves the shell
+		# boots and settles (and the geometry print above remains available).
+		print("CAPTURE SKIP: no framebuffer available size=%s expected=%s action=%s" % [
+			str(viewport_size), str(expected), action if action != "" else "none",
+		])
+		if created_id != "":
+			Store.delete_project(created_id)
+		get_tree().quit(0)
+		return
 	var dir := out_path.get_base_dir()
 	if dir != "" and not DirAccess.dir_exists_absolute(dir):
 		DirAccess.make_dir_recursive_absolute(dir)
@@ -184,7 +196,10 @@ func _setup_hierarchy_capture(main: Control) -> void:
 	var id: String = doc.add_imported(str(imported.get("rel_path", "")), "Rig")
 	if id == "":
 		return
-	editor._set_scene_expanded_from_ui(true)
+	editor.set_workspace("scene")
+	if editor._workspace_panel.mode() == editor._workspace_panel.Mode.HIDDEN \
+			or editor._workspace_panel.content() != editor._outliner_panel:
+		editor._toggle_scene_panel("scene")
 	var outliner = editor._outliner
 	outliner._expanded[id] = true
 	outliner._expanded[outliner._part_key(id, "Model/Body")] = true
