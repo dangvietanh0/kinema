@@ -24,7 +24,7 @@ The guaranteed build path is GitHub Actions. Termux cannot build this APK.
 | SCons | 4.8.1 |
 | Python | 3.x |
 | Package | `studio.kinema.app` |
-| Version | `0.1.0` (code `1`) |
+| Version | `0.1.5` (code `2`) |
 | ABI | `arm64-v8a` |
 
 The workflow checks out the tag and then verifies the commit hash. If the tag is
@@ -54,13 +54,13 @@ The job:
 8. builds `:app:assembleStandardDebug` with native libraries;
 9. copies, hashes, inspects, and uploads the APK.
 
-Artifact name: `Kinema-Studio-0.1.0-arm64-debug`.
+Artifact name: `Kinema-Studio-0.1.5-arm64-debug`.
 
 The artifact contains:
 
 ```
-Kinema-Studio-0.1.0-arm64-debug.apk
-Kinema-Studio-0.1.0-arm64-debug.apk.sha256
+Kinema-Studio-0.1.5-arm64-debug.apk
+Kinema-Studio-0.1.5-arm64-debug.apk.sha256
 ```
 
 The workflow is a **debug** build. It is suitable for installation and testing,
@@ -159,8 +159,8 @@ cd godot/platform/android/java
   -PgenerateNativeLibs=true \
   -Pexport_package_name=studio.kinema.app \
   -Pexport_enabled_abis=arm64-v8a \
-  -Pexport_version_code=1 \
-  -Pexport_version_name=0.1.0 \
+  -Pexport_version_code=2 \
+  -Pexport_version_name=0.1.5 \
   -Pperform_signing=true \
   -Pperform_zipalign=true \
   -Pdebug_keystore_file="$HOME/kinema-debug.keystore" \
@@ -205,7 +205,7 @@ unzip -l android_debug.apk | grep -E \
 Expected package line:
 
 ```
-package: name='studio.kinema.app' versionCode='1' versionName='0.1.0'
+package: name='studio.kinema.app' versionCode='2' versionName='0.1.5'
 ```
 
 Install on a connected arm64 device:

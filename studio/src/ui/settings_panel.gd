@@ -32,7 +32,7 @@ const ICONS := {
 	"display": "monitor",
 	"graphics": "gauge",
 	"performance": "timer",
-	"render": "camera",
+	"render": "clapperboard",
 	"import": "upload",
 	"media": "film",
 	"rig": "bone",
@@ -897,7 +897,7 @@ func _render(parent: Control) -> void:
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 8)
 	parent.add_child(actions)
-	var open := Kit.text_button("Render sheet", "camera", true, true)
+	var open := Kit.text_button("Render sheet", "clapperboard", true, true)
 	open.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	open.pressed.connect(func() -> void:
 		close()
@@ -1055,7 +1055,7 @@ func _about(parent: Control) -> void:
 	licenses.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(licenses)
 
-	var copy := Kit.text_button("Copy build info", "download", false, true)
+	var copy := Kit.text_button("Copy build info", "copy", false, true)
 	copy.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	copy.pressed.connect(func() -> void:
 		DisplayServer.clipboard_set(_build_info())

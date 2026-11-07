@@ -237,12 +237,12 @@ func _build_inspector() -> void:
 	_inspector_title = Kit.section_label("Bone")
 	_inspector_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(_inspector_title)
-	_reset_button = Kit.text_button("Reset pose", "restart", false, true)
+	_reset_button = Kit.text_button("Reset pose", "rotate-ccw", false, true)
 	_reset_button.name = "ResetPoseButton"
 	_reset_button.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_reset_button.pressed.connect(_on_reset_pose)
 	head.add_child(_reset_button)
-	_reset_all_button = Kit.icon_button("restart", "Reset all bone poses", 44, 18)
+	_reset_all_button = Kit.icon_button("rotate-ccw", "Reset all bone poses", 44, 18)
 	_reset_all_button.name = "ResetAllPoseButton"
 	_reset_all_button.pressed.connect(_on_reset_all_poses)
 	head.add_child(_reset_all_button)

@@ -781,7 +781,7 @@ func _icon_for_part(part: Dictionary) -> String:
 func _icon_for(obj: Dictionary) -> String:
 	match str(obj.get("kind", "mesh")):
 		"camera": return "camera"
-		"light": return "lightbulb"
+		"light": return "circle-dot" if str(obj.get("light_type", "")) == "omni" else "sun"
 		"empty": return "circle-dot-dashed"
 		"import": return "package-open"
 		_:

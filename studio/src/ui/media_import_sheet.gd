@@ -159,7 +159,7 @@ func _rebuild() -> void:
 		_sync_video_button()
 	)
 	video_row.add_child(_video_field)
-	_video_button = Kit.text_button("Import video", "film", true)
+	_video_button = Kit.text_button("Import video", "video", true)
 	_video_button.pressed.connect(func() -> void:
 		if not _video_path.is_empty():
 			video_import_requested.emit(_video_path, {"fps": _proxy_fps, "max_width": _max_width})

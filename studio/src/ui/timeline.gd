@@ -18,8 +18,6 @@ signal duration_confirmation_requested(value: float, message: String)
 signal more_requested
 ## The active channel changed, whether by the graph tab strip or a dope row.
 signal channel_selected(channel: String)
-## The Expand control asked the editor to open the landscape workspace.
-signal workspace_requested
 
 class DopeSheet:
 	extends Control
@@ -80,9 +78,7 @@ var _duration_close_button: Button
 var _duration_open := false
 var _hint_seen := false
 var _more_button: Button
-var _expand_button: Button
 var _more_state := false
-var _workspace_mode := false
 var _prev_button: Button
 var _next_button: Button
 
@@ -143,7 +139,7 @@ var _gesture_active := false
 
 const CHANNEL_EDGE := 1.0
 const GRAPH_TAB_HEIGHT := 44.0
-const GRAPH_SHORT_CAPTION := "Rotate or open the timeline workspace for curve editing"
+const GRAPH_SHORT_CAPTION := "Rotate upright for more curve-editing space"
 const GRAPH_PRESETS := [
 	{"name": "Hold", "value": 0.0},
 	{"name": "Ease out strong", "value": 0.25},
@@ -326,14 +322,6 @@ func _build_transport() -> void:
 	_more_button.pressed.connect(func() -> void: more_requested.emit())
 	row.add_child(_more_button)
 	_transport_buttons.append(_more_button)
-
-	# The landscape workspace is an explicit mode, so its entry stays on the
-	# always-present transport row. The compact header can fold away, but this
-	# 44 dp target remains reachable in every sheet state.
-	_expand_button = Kit.icon_button("maximize", "Open timeline workspace", 44, 18)
-	_expand_button.pressed.connect(func() -> void: workspace_requested.emit())
-	row.add_child(_expand_button)
-	_transport_buttons.append(_expand_button)
 
 	# The sheet can fold without leaving the workbench: the transport stays,
 	# and this control flips between fold and open. Compact uses the bottom
@@ -726,7 +714,7 @@ func _refresh_compact() -> void:
 		measured = minf(measured, _available_width)
 	var narrow := measured < 640.0
 	var narrow_chrome := touch or narrow
-	var show_header := _sheet_open and narrow_chrome and not _header_folded and not _duration_open and not _workspace_mode
+	var show_header := _sheet_open and narrow_chrome and not _header_folded and not _duration_open
 	# A narrow canvas cannot hold every transport control at 44 dp, so the
 	# folded and open states trade AUTO and the fold control rather than
 	# pushing the center column past the canvas edge.
@@ -742,28 +730,19 @@ func _refresh_compact() -> void:
 		_prev_button.visible = key_step_room
 	if _next_button != null:
 		_next_button.visible = key_step_room
-	_snap_button.visible = not narrow_chrome and not _workspace_mode
-	_mode_button.visible = not narrow_chrome and not _workspace_mode
-	_loop_button.visible = not narrow_chrome and not _workspace_mode
-	_delete_button.visible = not narrow_chrome and not _workspace_mode
+	_snap_button.visible = not narrow_chrome
+	_mode_button.visible = not narrow_chrome
+	_loop_button.visible = not narrow_chrome
+	_delete_button.visible = not narrow_chrome
 	if _more_button != null:
-		_more_button.visible = not _workspace_mode
-	if _expand_button != null:
-		var viewport_size := get_viewport_rect().size
-		var can_expand := viewport_size.x >= 720.0 and viewport_size.y >= 360.0
-		# A control that can never act is not worth a 44 dp slot on a phone
-		# canvas; on wider surfaces it stays visible and states the reason.
-		_expand_button.visible = _sheet_open and not _workspace_mode and can_expand
-		_expand_button.disabled = not can_expand
-		_expand_button.tooltip_text = "Open timeline workspace" if can_expand \
-			else "Landscape workspace needs at least 720 × 360 dp"
+		_more_button.visible = true
 	if _fold_button != null:
 		# The header owns folding while the sheet is open; once it is folded
 		# the transport's control is the way back. Touch uses the compact
 		# bottom bar instead, so it never needs the transport control. When
 		# the overlay budget folds the header, the transport control takes
 		# over so the fold action stays reachable.
-		_fold_button.visible = not touch and not _workspace_mode and ((not narrow or not _sheet_open) or _header_folded)
+		_fold_button.visible = not touch and ((not narrow or not _sheet_open) or _header_folded)
 	if _auto_button != null:
 		# A folded narrow sheet swaps AUTO for the fold control: both cannot
 		# hold a 44 dp target on a 320-360 dp canvas. AUTO returns as soon as
@@ -1624,34 +1603,6 @@ func set_channel(channel: String) -> void:
 func channel() -> String:
 	return _selected_channel
 
-
-## The Expand control in the transport row, for shell/tests layout checks.
-func expand_button() -> Button:
-	return _expand_button
-
-
-func workspace_mode() -> bool:
-	return _workspace_mode
-
-
-## The landscape workspace owns the sheet for its lifetime: dope only, no mode
-## tabs, no More, no second transport. The editor restores the normal chrome
-## when the workspace closes.
-func set_workspace_mode(enabled: bool) -> void:
-	if _workspace_mode == enabled:
-		_refresh_compact()
-		return
-	_workspace_mode = enabled
-	if enabled:
-		set_mode("dope")
-		if _duration_open:
-			close_duration_row()
-		_dismiss_gesture_hint()
-		if _compact_header != null:
-			_compact_header.visible = false
-	_refresh_compact()
-	if _sheet != null:
-		_sheet.queue_redraw()
 
 func select_segment_at_time(time: float) -> bool:
 	if doc == null or doc.selected_id == "":

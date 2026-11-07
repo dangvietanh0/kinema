@@ -347,7 +347,7 @@ func _build_hud() -> void:
 	# Render is an icon-only 44 dp square, so the HUD row has one height and
 	# one target size. A labelled button made the right cluster wider than the
 	# viewport on a phone and read as a call to action rather than a tool.
-	_quick_render_button = Kit.icon_button("camera", "Quick render at full quality", 44, 20)
+	_quick_render_button = Kit.icon_button("clapperboard", "Quick render at full quality", 44, 20)
 	_override_hud_button(_quick_render_button)
 	_quick_render_button.pressed.connect(func() -> void: quick_render_requested.emit())
 	top_right.add_child(_quick_render_button)
@@ -1392,7 +1392,7 @@ func _draw_object_markers() -> void:
 		var p := _locator_screen_point(node)
 		var icon_name := "camera"
 		if kind == "light":
-			icon_name = "lightbulb"
+			icon_name = "circle-dot" if str(obj.get("light_type", "")) == "omni" else "sun"
 		elif kind == "empty":
 			icon_name = "circle-dot-dashed"
 		var selected := id == doc.selected_id

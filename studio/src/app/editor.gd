@@ -2080,7 +2080,7 @@ func _open_add_sheet() -> void:
 	scene_grid.add_child(_sheet_button("Empty", "circle-dot-dashed", _add_empty))
 	scene_grid.add_child(_sheet_button("Camera", "camera", _add_camera))
 	scene_grid.add_child(_sheet_button("Key light", "sun", _add_directional_light))
-	scene_grid.add_child(_sheet_button("Omni light", "lightbulb", _add_omni_light))
+	scene_grid.add_child(_sheet_button("Omni light", "circle-dot", _add_omni_light))
 	scene_grid.add_child(_sheet_button("Rig", "bone", _add_rig))
 
 	body.add_child(Kit.vsep())
@@ -2092,7 +2092,7 @@ func _open_add_sheet() -> void:
 	body.add_child(asset_grid)
 	asset_grid.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
 	asset_grid.add_child(_sheet_button("Audio", "audio-wave", _add_audio_entry))
-	asset_grid.add_child(_sheet_button("Video reference", "film", _add_video_reference_entry))
+	asset_grid.add_child(_sheet_button("Video reference", "video", _add_video_reference_entry))
 
 	_overlay.show_modal("Add object", "Scene elements are independent and can be keyed immediately. Primitives are placed on the ground at the center of the current view.", body, [
 		{"text": "Close", "compact": true},
@@ -2146,7 +2146,7 @@ func _add_omni_light() -> void:
 	if doc == null:
 		return
 	doc.add_light("omni", _spawn_point() + Vector3(1.4, 2.4, 1.2))
-	_overlay.toast("Omni light added", "lightbulb", Kit.SUCCESS)
+	_overlay.toast("Omni light added", "circle-dot", Kit.SUCCESS)
 
 func _add_rig() -> void:
 	if doc == null:
@@ -2364,7 +2364,7 @@ func _open_render_sheet() -> void:
 	var still_actions := HBoxContainer.new()
 	still_actions.add_theme_constant_override("separation", 8)
 	body.add_child(still_actions)
-	_render_still_button = Kit.text_button("Quick still", "camera", true, true)
+	_render_still_button = Kit.text_button("Quick still", "image", true, true)
 	_render_still_button.tooltip_text = "Capture now and save in app storage"
 	_render_still_button.pressed.connect(_quick_still)
 	still_actions.add_child(_render_still_button)

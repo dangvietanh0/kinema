@@ -141,7 +141,7 @@ func _build_header() -> void:
 	var add_audio := Kit.icon_button("plus", "Add audio track", 44)
 	add_audio.pressed.connect(func() -> void: add_audio_requested.emit())
 	header.add_child(add_audio)
-	var add_video := Kit.icon_button("film", "Add video reference", 44)
+	var add_video := Kit.icon_button("video", "Add video reference", 44)
 	add_video.pressed.connect(func() -> void: add_video_requested.emit())
 	header.add_child(add_video)
 
