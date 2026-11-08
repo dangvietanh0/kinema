@@ -211,7 +211,7 @@ func _apply_mode() -> void:
 			continue
 		if id == "more" or not bool(button.get_meta("is_text", false)):
 			button.custom_minimum_size = Vector2(icon_side, icon_side)
-			button.add_theme_constant_override("icon_max_width", 18 if desktop else 20)
+			button.add_theme_constant_override("icon_max_width", 18)
 			if desktop:
 				Kit.exempt_from_hit_floor(button)
 		else:

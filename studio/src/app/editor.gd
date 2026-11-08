@@ -281,7 +281,8 @@ func _ready() -> void:
 func _build_workspace_bar() -> void:
 	_workspace_bar = WorkspaceBarScript.new()
 	_workspace_bar.action_requested.connect(_on_chrome_action)
-	_workspace_bar.workspace_requested.connect(_toggle_workspace_menu)
+	_workspace_bar.workspace_tab_requested.connect(_on_workspace_tab_requested)
+	_workspace_bar.more_workspaces_requested.connect(_toggle_workspace_menu)
 	_workspace_bar.camera_exit_requested.connect(_exit_look_through)
 	_layout.add_child(_workspace_bar)
 
@@ -592,8 +593,9 @@ func workspace_menu_open() -> bool:
 	return _workspace_menu_open
 
 
-## One dropdown for the five workspaces. The chip owns the only permanent
-## workspace name, so the menu header carries the project title instead.
+## One compact menu for the two secondary workspaces. Rig and Render no longer
+## own permanent tabs; the More control carries the active name while either is
+## current. The header carries the project title the removed chip used to hold.
 func _toggle_workspace_menu() -> void:
 	if doc == null or _workspace_menu == null or _workspace_bar == null:
 		return
@@ -603,31 +605,40 @@ func _toggle_workspace_menu() -> void:
 		return
 	if _project_menu != null:
 		_project_menu.close()
-	var descriptions := {
-		"scene": ["Objects, transforms and the scene tree", "box"],
-		"shading": ["Materials, textures and lights", "palette"],
-		"rig": ["Skeletons, poses and IK", "bone"],
-		"animate": ["Timeline, keys and curves", "chart-spline"],
-		"render": ["Stills, video, camera tracks and GLB", "clapperboard"],
-	}
 	_workspace_menu.set_layout_mode(layout_mode())
 	_workspace_menu.set_empty_text("")
+	_workspace_menu.set_max_width(280.0)
 	_workspace_menu.open_menu(
-		_workspace_bar.workspace_chip(),
-		"Workspace",
+		_workspace_bar.more_button(),
+		"Workspaces",
 		doc.title if doc != null else "Untitled",
 		layout_mode() != "desktop"
 	)
-	for id in WORKSPACES:
-		var copy: Array = descriptions.get(id, ["", ""])
+	var copy := {
+		"rig": ["Skeletons, poses and IK", "bone"],
+		"render": ["Stills, video, camera tracks and GLB", "clapperboard"],
+	}
+	for id in ["rig", "render"]:
+		var detail: Array = copy[id]
 		_workspace_menu.add_row(
 			id,
 			str(WORKSPACE_LABELS.get(id, id)),
-			str(copy[1]),
-			str(copy[0]),
-			id == _workspace
+			str(detail[1]),
+			str(detail[0]),
+			id == _workspace,
+			true,
+			"",
+			44.0
 		)
 	_workspace_menu_open = true
+
+
+func _on_workspace_tab_requested(id: String) -> void:
+	if _workspace_menu_open and _workspace_menu != null:
+		_workspace_menu.close()
+		_workspace_menu_open = false
+	set_workspace(id)
+	_update_header()
 
 
 func _on_workspace_menu_row(id: String) -> void:
@@ -679,7 +690,11 @@ func _context_actions(id: String) -> Array:
 		"shading":
 			return [
 				_act("assign", "Assign", "check", 100, true),
-				_act("material_new", "New", "plus", 90, true),
+				_act("select", "Select", "tool-select", 98, false, true),
+				_act("move", "Move", "tool-move", 97, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
+				_act("scale", "Scale", "tool-scale", 95, false, true),
+				_act("material_new", "New", "plus", 90),
 				_act("light_add", "Add light", "lightbulb", 80),
 				_act("panel", "Materials panel", "panel-right", 70),
 				_act("frame", "Frame selection", "focus", 60),
@@ -703,13 +718,21 @@ func _context_actions(id: String) -> Array:
 		"animate":
 			# W1 scope only; W3 inserts dope/graph/stage_toggle here.
 			return [
-				_act("fit", "Fit", "focus", 100),
+				_act("select", "Select", "tool-select", 100, false, true),
+				_act("move", "Move", "tool-move", 95, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 90, false, true),
+				_act("scale", "Scale", "tool-scale", 85, false, true),
+				_act("fit", "Fit", "focus", 80),
 			]
 		"render":
 			return [
-				_act("preview", "Preview", "eye", 100, true),
-				_act("render", "Render", "clapperboard", 90, true),
-				_act("still", "Still", "image", 80, true),
+				_act("render", "Render", "clapperboard", 100, true),
+				_act("select", "Select", "tool-select", 98, false, true),
+				_act("move", "Move", "tool-move", 97, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
+				_act("scale", "Scale", "tool-scale", 95, false, true),
+				_act("preview", "Preview", "eye", 90),
+				_act("still", "Still", "image", 80),
 				_act("panel", "Render panel", "panel-right", 70),
 				_act("camera_view", "Camera", "camera", 60),
 				_act("frame", "Frame selection", "focus", 50),
@@ -753,10 +776,12 @@ func _sync_context_state() -> void:
 		_context_bar.set_action_active("panel", panel_reserved or panel_overlay)
 
 	var selected := doc.selected_id if doc != null else ""
-	_context_bar.set_action_enabled(
-		"assign",
+	_context_bar.set_action_enabled("assign",
 		selected != "" and doc != null and doc.material_system != null,
 		"Select an object with a material to assign.")
+	for tool_id in ["select", "move", "rotate", "scale"]:
+		_context_bar.set_action_enabled(tool_id, selected != "",
+			"Select an object to transform.")
 
 	var rig_id := ""
 	var imported := false
@@ -989,7 +1014,7 @@ func _open_camera_menu() -> void:
 	_camera_menu.set_layout_mode(layout_mode())
 	_camera_menu.set_empty_text("")
 	var anchor: Control = _context_bar.action_button("camera_view") \
-		if _context_bar != null else _workspace_bar.workspace_chip()
+		if _context_bar != null else _workspace_bar.more_button()
 	_camera_menu.open_menu(anchor, "CAMERA", "", layout_mode() != "desktop")
 	var cameras: Array = []
 	for obj in doc.objects:
@@ -1397,6 +1422,7 @@ func _on_graphics_changed() -> void:
 func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
 	_sync_transport_state()
+	_sync_context_state()
 
 func _on_document_dirty_changed(_is_dirty: bool) -> void:
 	_update_header()
@@ -3236,7 +3262,17 @@ func _open_project_menu(anchor: Control) -> void:
 		_workspace_menu.close()
 	_workspace_menu_open = false
 	_project_menu.set_layout_mode(layout_mode())
+	_project_menu.set_max_width(320.0)
 	_project_menu.open_menu(anchor, "Project", doc.title, layout_mode() != "desktop")
+	# Below 600 dp the top bar keeps only Back, the tabs, More, Save and this
+	# menu. History moves here rather than disappearing; at 600 dp and above
+	# the bar owns the same two actions and the menu does not duplicate them.
+	if size.x < 600.0:
+		_project_menu.add_action("undo", "Undo", "undo-2",
+			doc.can_undo(), "Nothing to undo.")
+		_project_menu.add_action("redo", "Redo", "redo-2",
+			doc.can_redo(), "Nothing to redo.")
+		_project_menu.add_separator()
 	_project_menu.add_action("settings", "Project settings", "sliders-horizontal")
 	_project_menu.add_action("import", "Import 3D model", "upload")
 	_project_menu.add_action("graphics", "Graphics and performance", "gauge")
@@ -3254,6 +3290,10 @@ func _open_project_menu(anchor: Control) -> void:
 
 func _on_project_menu_row(id: String) -> void:
 	match id:
+		"undo":
+			_undo()
+		"redo":
+			_redo()
 		"settings":
 			_open_settings()
 		"import":

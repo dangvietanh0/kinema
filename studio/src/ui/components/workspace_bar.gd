@@ -1,19 +1,30 @@
 extends PanelContainer
 ## The one top bar for every layout.
 ##
-## Left: Back and the workspace chip. Right: Undo, Redo, Save and the project
-## menu. The project title is not shown here; it lives in the chip tooltip and
-## the workspace menu header. While looking through a camera the chip becomes
-## `Camera: <name>` and an Exit control replaces the edit actions.
+## Left: Back, the three permanent workspace tabs, the More workspaces control
+## and a spacer. Right: Undo, Redo, Save and the project menu. Undo and Redo
+## leave the bar below 600 dp and stay reachable in the project menu. The
+## project title is not shown here; the secondary-workspace menu carries it.
 ##
-## The bar only reports intent. The editor owns every action.
+## While looking through a camera the tabs give way to `Camera: <name>` and an
+## Exit control replaces the edit actions. The bar only reports intent; the
+## editor owns every action and every workspace switch.
 
 signal action_requested(action: String)
-signal workspace_requested
+signal workspace_tab_requested(id: String)
+signal more_workspaces_requested
 signal camera_exit_requested
 
 const HEIGHT_TOUCH := 44
 const HEIGHT_DESKTOP := 32
+const TAB_HEIGHT_TOUCH := 44
+const TAB_HEIGHT_DESKTOP := 28
+const TAB_MIN_WIDTH := 44.0
+const TAB_FONT_SIZE := 11
+const MORE_MIN_WIDTH := 60.0
+const NARROW_BAR := 600.0
+const PRIMARY_TABS := ["scene", "shading", "animate"]
+const SECONDARY_WORKSPACES := ["rig", "render"]
 
 const ACTION_ICONS := {
 	"back": "chevron-left",
@@ -33,8 +44,9 @@ var _available_width := -1.0
 
 var _row: HBoxContainer
 var _back_button: Button
-var _chip_group: HBoxContainer
-var _chip_button: Button
+var _tabs_group: HBoxContainer
+var _tabs: Dictionary = {}
+var _more_button: Button
 var _dirty_dot: ColorRect
 var _undo_button: Button
 var _redo_button: Button
@@ -59,24 +71,24 @@ func _build() -> void:
 	_back_button = _make_action_button("back", "Back to projects")
 	_row.add_child(_back_button)
 
-	_chip_group = HBoxContainer.new()
-	_chip_group.add_theme_constant_override("separation", 4)
-	_chip_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_row.add_child(_chip_group)
+	_tabs_group = HBoxContainer.new()
+	_tabs_group.add_theme_constant_override("separation", 0)
+	_tabs_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_row.add_child(_tabs_group)
+	for id in PRIMARY_TABS:
+		var tab := _make_tab(str(id))
+		_tabs_group.add_child(tab)
+		_tabs[id] = tab
 
-	_chip_button = Kit.text_button(_label_for(_workspace), "chevron-down", false, true)
-	_chip_button.custom_minimum_size = Vector2(96, HEIGHT_TOUCH)
-	_chip_button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	_chip_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_chip_button.pressed.connect(func() -> void: workspace_requested.emit())
-	_chip_group.add_child(_chip_button)
-
-	_dirty_dot = ColorRect.new()
-	_dirty_dot.color = Color(0, 0, 0, 0)
-	_dirty_dot.custom_minimum_size = Vector2(6, 6)
-	_dirty_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_dirty_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_chip_group.add_child(_dirty_dot)
+	_more_button = Button.new()
+	_more_button.focus_mode = Control.FOCUS_NONE
+	_more_button.custom_minimum_size = Vector2(TAB_MIN_WIDTH, TAB_HEIGHT_TOUCH)
+	_more_button.tooltip_text = "More workspaces"
+	_more_button.add_theme_font_override("font", Kit.font_medium)
+	_more_button.add_theme_font_size_override("font_size", TAB_FONT_SIZE)
+	_more_button.add_theme_constant_override("h_separation", 4)
+	_more_button.pressed.connect(func() -> void: more_workspaces_requested.emit())
+	_row.add_child(_more_button)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -90,9 +102,34 @@ func _build() -> void:
 	for button in [_undo_button, _redo_button, _save_button, _menu_button]:
 		_row.add_child(button)
 
+	_dirty_dot = ColorRect.new()
+	_dirty_dot.color = Kit.TEXT
+	_dirty_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_dirty_dot.visible = false
+	_dirty_dot.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_dirty_dot.offset_left = -8
+	_dirty_dot.offset_top = 3
+	_dirty_dot.offset_right = -2
+	_dirty_dot.offset_bottom = 9
+	_save_button.add_child(_dirty_dot)
+
 	_camera_exit_button = _make_action_button("exit_camera", "Exit camera view")
 	_camera_exit_button.pressed.connect(func() -> void: camera_exit_requested.emit())
 	_row.add_child(_camera_exit_button)
+
+	_apply_workspace_state()
+
+
+func _make_tab(id: String) -> Button:
+	var tab := Button.new()
+	tab.text = _label_for(id)
+	tab.focus_mode = Control.FOCUS_NONE
+	tab.custom_minimum_size = Vector2(TAB_MIN_WIDTH, TAB_HEIGHT_TOUCH)
+	tab.add_theme_font_override("font", Kit.font_medium)
+	tab.add_theme_font_size_override("font_size", TAB_FONT_SIZE)
+	tab.set_meta("workspace_tab", id)
+	tab.pressed.connect(func() -> void: workspace_tab_requested.emit(id))
+	return tab
 
 
 func _make_action_button(action_id: String, tooltip: String) -> Button:
@@ -116,15 +153,14 @@ func set_mode(mode: String) -> void:
 
 func set_workspace(id: String) -> void:
 	_workspace = id if id in ["scene", "shading", "rig", "animate", "render"] else "scene"
-	if _camera_mode == "":
-		_chip_button.text = _label_for(_workspace)
+	_apply_workspace_state()
 
 
 func set_project(title: String, dirty: bool) -> void:
 	_project_title = title if title != "" else "Untitled"
 	_dirty = dirty
-	_dirty_dot.color = Kit.TEXT if _dirty and _camera_mode == "" else Color(0, 0, 0, 0)
-	_chip_button.tooltip_text = "%s workspace" % _project_title
+	_apply_dirty_state()
+	_tabs_group.tooltip_text = _project_title
 
 
 func set_history(can_undo: bool, can_redo: bool) -> void:
@@ -133,7 +169,7 @@ func set_history(can_undo: bool, can_redo: bool) -> void:
 
 
 ## An empty name restores the normal edit bar. A non-empty name is the
-## look-through chip: no workspace icon, no edit actions, one Exit control.
+## look-through chip: no tabs, no edit actions, one Exit control.
 func set_camera_mode(camera_name: String) -> void:
 	_camera_mode = camera_name
 	_apply_camera_mode()
@@ -141,14 +177,25 @@ func set_camera_mode(camera_name: String) -> void:
 
 func set_available_width(value: float) -> void:
 	_available_width = value
-	if _chip_button != null:
-		# The chip is a name, not a title bar: 96 dp is enough for every
-		# workspace label plus the chevron. It never grows into the actions.
-		_chip_button.custom_minimum_size.x = 96.0
+	_refresh_visibility()
 
 
+## The named workspace surface. Retained as a compatibility alias for older
+## callers that read the current name or the camera chip; new code uses
+## `more_button()`.
 func workspace_chip() -> Button:
-	return _chip_button
+	return _more_button
+
+
+## One permanent primary-workspace tab, or null for a secondary workspace.
+func workspace_tab(id: String) -> Button:
+	return _tabs.get(id, null)
+
+
+## The compact control that carries the current name and opens the two-row
+## secondary-workspace menu.
+func more_button() -> Button:
+	return _more_button
 
 
 func action_button(action_id: String) -> Button:
@@ -179,13 +226,84 @@ func _label_for(id: String) -> String:
 	return "Scene"
 
 
+func _apply_workspace_state() -> void:
+	for id in _tabs.keys():
+		_apply_tab_style(_tabs[id], str(id) == _workspace)
+	if _camera_mode == "":
+		_refresh_more()
+
+
+func _refresh_more() -> void:
+	var secondary := _workspace in SECONDARY_WORKSPACES
+	if secondary:
+		_more_button.text = _label_for(_workspace)
+		_more_button.icon = Kit.icon_texture("chevron-down")
+		_more_button.set_meta("action_icon", "chevron-down")
+		_more_button.custom_minimum_size.x = MORE_MIN_WIDTH
+		_more_button.add_theme_constant_override("icon_max_width", 12)
+		_more_button.tooltip_text = "More workspaces"
+		_apply_tab_style(_more_button, true)
+	else:
+		_more_button.text = ""
+		_more_button.icon = Kit.icon_texture("ellipsis-horizontal")
+		_more_button.set_meta("action_icon", "ellipsis-horizontal")
+		_more_button.custom_minimum_size.x = _icon_side()
+		_more_button.add_theme_constant_override("icon_max_width", 18)
+		_more_button.tooltip_text = "More workspaces"
+		_apply_tab_style(_more_button, false)
+
+
+func _apply_tab_style(button: Button, active: bool) -> void:
+	if active:
+		button.add_theme_stylebox_override("normal", _tab_style(Kit.FOCUS))
+		button.add_theme_stylebox_override("hover", _tab_style(Kit.FOCUS_BRIGHT))
+		button.add_theme_stylebox_override("pressed", _tab_style(Kit.FOCUS.darkened(0.14)))
+		button.add_theme_stylebox_override("hover_pressed",
+			_tab_style(Kit.FOCUS.darkened(0.14)))
+		button.add_theme_stylebox_override("focus",
+			_tab_style(Color(0, 0, 0, 0), Kit.FOCUS_BRIGHT))
+		for slot in ["font_color", "font_hover_color", "font_pressed_color",
+				"font_hover_pressed_color", "font_focus_color"]:
+			button.add_theme_color_override(slot, Kit.BG)
+		for slot in ["icon_normal_color", "icon_hover_color", "icon_pressed_color",
+				"icon_hover_pressed_color"]:
+			button.add_theme_color_override(slot, Kit.BG)
+	else:
+		button.add_theme_stylebox_override("normal", _tab_style(Color(0, 0, 0, 0)))
+		button.add_theme_stylebox_override("hover", _tab_style(Kit.SURFACE_HOVER))
+		button.add_theme_stylebox_override("pressed", _tab_style(Kit.SURFACE_ACTIVE))
+		button.add_theme_stylebox_override("hover_pressed", _tab_style(Kit.SURFACE_ACTIVE))
+		button.add_theme_stylebox_override("focus", _tab_style(Color(0, 0, 0, 0)))
+		button.add_theme_color_override("font_color", Kit.TEXT)
+		button.add_theme_color_override("font_hover_color", Kit.TEXT)
+		button.add_theme_color_override("font_pressed_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("font_hover_pressed_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("font_focus_color", Kit.TEXT)
+		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
+		button.add_theme_color_override("icon_hover_color", Kit.TEXT)
+		button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("icon_hover_pressed_color", Kit.FOCUS_BRIGHT)
+
+
+func _tab_style(fill: Color, border := Color(0, 0, 0, 0)) -> StyleBoxFlat:
+	return Kit.style_with_margins(fill, Kit.R_CONTROL, border, 0, Vector4(4, 0, 4, 0))
+
+
+func _icon_side() -> float:
+	return 28.0 if _layout_mode == "desktop" else 44.0
+
+
+func _tab_height() -> float:
+	return TAB_HEIGHT_DESKTOP if _layout_mode == "desktop" else TAB_HEIGHT_TOUCH
+
+
 func _apply_mode() -> void:
 	var desktop := _layout_mode == "desktop"
 	var height := float(HEIGHT_DESKTOP if desktop else HEIGHT_TOUCH)
 	custom_minimum_size.y = height
 	var style := Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0)
-	style.content_margin_left = 4
-	style.content_margin_right = 4
+	style.content_margin_left = 2
+	style.content_margin_right = 2
 	style.content_margin_top = 0
 	style.content_margin_bottom = 0
 	add_theme_stylebox_override("panel", style)
@@ -195,25 +313,52 @@ func _apply_mode() -> void:
 		if button == null:
 			continue
 		button.custom_minimum_size = button_size
-		button.add_theme_constant_override("icon_max_width", 18 if desktop else 20)
+		button.add_theme_constant_override("icon_max_width", 18)
 		if desktop:
 			Kit.exempt_from_hit_floor(button)
-	_chip_button.custom_minimum_size.y = height
-	_chip_button.add_theme_font_size_override("font_size", 11 if desktop else Kit.TYPE_BODY)
-	_chip_button.add_theme_constant_override("icon_max_width", 14)
+	var tab_height := _tab_height()
+	for id in _tabs.keys():
+		var tab: Button = _tabs[id]
+		tab.custom_minimum_size = Vector2(TAB_MIN_WIDTH, tab_height)
+		if desktop:
+			Kit.exempt_from_hit_floor(tab)
+	_more_button.custom_minimum_size.y = tab_height
 	if desktop:
-		Kit.exempt_from_hit_floor(_chip_button)
+		Kit.exempt_from_hit_floor(_more_button)
+	if _camera_mode == "":
+		_refresh_more()
+	else:
+		_more_button.custom_minimum_size.y = tab_height
+	_refresh_visibility()
 
 
 func _apply_camera_mode() -> void:
 	var active := _camera_mode != ""
-	_dirty_dot.visible = not active
-	_chip_button.text = ("Camera: " + _camera_mode) if active else _label_for(_workspace)
-	_chip_button.icon = null if active else Kit.icon_texture("chevron-down")
-	_chip_button.disabled = active
-	_chip_button.tooltip_text = ("Looking through %s" % _camera_mode) if active else ("%s workspace" % _project_title)
-	_undo_button.visible = not active
-	_redo_button.visible = not active
-	_save_button.visible = not active
-	_menu_button.visible = not active
-	_camera_exit_button.visible = active
+	_tabs_group.visible = not active
+	if active:
+		_more_button.text = "Camera: " + _camera_mode
+		_more_button.icon = null
+		_more_button.set_meta("action_icon", "")
+		_more_button.custom_minimum_size.x = 0.0
+		_more_button.tooltip_text = "Looking through %s" % _camera_mode
+		_more_button.disabled = true
+		_apply_tab_style(_more_button, false)
+	else:
+		_more_button.disabled = false
+		_refresh_more()
+	_apply_dirty_state()
+	_refresh_visibility()
+
+
+func _apply_dirty_state() -> void:
+	_dirty_dot.visible = _dirty and _camera_mode == ""
+
+
+func _refresh_visibility() -> void:
+	var camera := _camera_mode != ""
+	var narrow := _available_width > 0.0 and _available_width < NARROW_BAR
+	_undo_button.visible = not camera and not narrow
+	_redo_button.visible = not camera and not narrow
+	_save_button.visible = not camera
+	_menu_button.visible = not camera
+	_camera_exit_button.visible = camera

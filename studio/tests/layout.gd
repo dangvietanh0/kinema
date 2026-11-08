@@ -168,8 +168,9 @@ func _ready() -> void:
 					label + ": the editor reports the fit percentage")
 			print("LAYOUT OK: " + label)
 
-	# The workspace menu is capped at 360 dp and never overflows even on the
-	# narrowest phone and the shortest landscape window.
+	# The secondary-workspace menu is capped at 280 dp and never overflows even
+	# on the narrowest phone and the shortest landscape window. The top bar
+	# itself must still fit its width with a named secondary workspace.
 	editor.set_workspace("scene")
 	for menu_size in [Vector2i(360, 640), Vector2i(800, 360)]:
 		await _resize(main, menu_size)
@@ -179,13 +180,32 @@ func _ready() -> void:
 		main.refresh_layout_scale()
 		await get_tree().process_frame
 		var menu_label := "%dx%d workspace menu" % [menu_size.x, menu_size.y]
-		editor._workspace_bar.workspace_chip().pressed.emit()
+		_check(editor._workspace_bar.get_combined_minimum_size().x <=
+			float(menu_size.x) + 0.5,
+			menu_label + ": the top bar fits the width")
+		for workspace_id in ["rig", "render"]:
+			editor.set_workspace(workspace_id)
+			await get_tree().process_frame
+			_check(editor._workspace_bar.get_combined_minimum_size().x <=
+				float(menu_size.x) + 0.5,
+				menu_label + ": the named top bar fits with " + workspace_id)
+		editor.set_workspace("scene")
+		await get_tree().process_frame
+		editor._workspace_bar.more_button().pressed.emit()
 		await get_tree().process_frame
 		_check_no_overflow(editor._workspace_menu, menu_label)
 		# MenuPanel is the full-rect overlay; its surface is the floating
 		# panel that must fit, not the scrim that catches the outside tap.
-		_check(editor._workspace_menu._panel.size.x <= 360.0,
-			menu_label + ": workspace menu <= 360 dp")
+		_check(editor._workspace_menu._panel.size.x <= 280.0,
+			menu_label + ": secondary menu <= 280 dp")
+		_check(editor._workspace_menu.row_count() == 2,
+			menu_label + ": the secondary menu has two rows")
+		_check(editor._workspace_menu._header.custom_minimum_size.y <= 32.5,
+			menu_label + ": the secondary menu header is 32 dp")
+		for row_id in ["rig", "render"]:
+			var row: Button = editor._workspace_menu.row_button(row_id)
+			_check(row != null and row.custom_minimum_size.y >= HIT_FLOOR,
+				menu_label + ": the " + row_id + " row keeps the 44 dp floor")
 		_check(editor._workspace_menu.is_open(), menu_label + ": the menu opens")
 		editor._workspace_menu.close()
 		await get_tree().process_frame

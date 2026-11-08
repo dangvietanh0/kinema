@@ -8,14 +8,15 @@ extends Control
 signal closed
 signal row_selected(id: String)
 
-const MAX_WIDTH := 360.0
-const HEADER_H := 40.0
+const DEFAULT_MAX_WIDTH := 320.0
+const HEADER_H := 32.0
 
 var _open := false
 var _centered := true
 var _anchor: Control = null
 var _layout_mode := "studio"
 var _empty_text := ""
+var _max_width := DEFAULT_MAX_WIDTH
 
 var _scrim: ColorRect
 var _panel: PanelContainer
@@ -61,19 +62,22 @@ func _build() -> void:
 	_header.custom_minimum_size.y = HEADER_H
 	_header.add_theme_constant_override("margin_left", 12)
 	_header.add_theme_constant_override("margin_right", 12)
-	_header.add_theme_constant_override("margin_top", 6)
-	_header.add_theme_constant_override("margin_bottom", 6)
+	_header.add_theme_constant_override("margin_top", 0)
+	_header.add_theme_constant_override("margin_bottom", 0)
 	_column.add_child(_header)
-	var header_box := VBoxContainer.new()
-	header_box.add_theme_constant_override("separation", 0)
+	var header_box := HBoxContainer.new()
+	header_box.add_theme_constant_override("separation", 6)
 	_header.add_child(header_box)
 	_eyebrow = Kit.mono_label("", 11, Kit.TEXT_DIM)
 	_eyebrow.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_eyebrow.clip_text = true
+	_eyebrow.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header_box.add_child(_eyebrow)
 	_subtitle = Kit.label("", 13, Kit.TEXT, 500)
 	_subtitle.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_subtitle.clip_text = true
+	_subtitle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_subtitle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header_box.add_child(_subtitle)
 
 	_rows_box = VBoxContainer.new()
@@ -97,6 +101,14 @@ func _build() -> void:
 
 func set_layout_mode(mode: String) -> void:
 	_layout_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
+
+
+## The floating surface never grows past this width. The project menu keeps
+## 320 dp; the compact secondary-workspace menu asks for 280 dp.
+func set_max_width(value: float) -> void:
+	_max_width = maxf(200.0, value)
+	if _open:
+		_apply_geometry()
 
 
 func open_menu(anchor: Control, title: String, subtitle: String, centered: bool) -> void:
@@ -127,7 +139,7 @@ func is_open() -> bool:
 
 
 func add_row(id: String, label: String, icon: String, description: String,
-		checked: bool, enabled := true, reason := "", height := 52.0) -> Button:
+		checked: bool, enabled := true, reason := "", height := 44.0) -> Button:
 	var row := Button.new()
 	row.toggle_mode = true
 	row.button_pressed = checked
@@ -293,7 +305,7 @@ func _apply_geometry() -> void:
 	var view := size
 	if view.x <= 1.0 or view.y <= 1.0:
 		return
-	var width := minf(MAX_WIDTH, view.x - 32.0) if _centered else minf(MAX_WIDTH, view.x - 16.0)
+	var width := minf(_max_width, view.x - 32.0) if _centered else minf(_max_width, view.x - 16.0)
 	width = maxf(width, 200.0)
 	var height := _panel.get_combined_minimum_size().y
 	height = minf(height, maxf(view.y - 16.0, 44.0))

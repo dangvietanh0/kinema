@@ -33,6 +33,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await _test_layout_and_workspace_api()
 	await _test_workspace_bar_and_menu()
+	await _test_compact_top_bar()
 	await _test_context_bar_overflow_and_icons()
 	await _test_transport()
 	await _test_shell_anatomy_and_panels()
@@ -105,32 +106,105 @@ func _test_workspace_bar_and_menu() -> void:
 	var editor = main._editor
 	var bar = editor._workspace_bar
 	_check(bar.size.y >= 43.5 and bar.size.y <= 44.5, "touch top bar is 44 dp")
-	_check(bar.workspace_chip().text == "Scene", "the chip shows the current workspace name")
-	_check(bar.workspace_chip().custom_minimum_size.x >= 96.0,
-		"the chip keeps the 96 dp minimum")
 	_check(not bar.visible_action_ids().has("render"), "no render action lives in the top bar")
 
-	bar.workspace_chip().pressed.emit()
+	# Three permanent text tabs; Rig and Render never appear as tabs.
+	for id in ["scene", "shading", "animate"]:
+		var tab: Button = bar.workspace_tab(id)
+		_check(tab != null, "the %s tab exists" % id)
+		if tab == null:
+			continue
+		_check(tab.visible, "the %s tab is visible" % id)
+		_check(tab.text == str(editor.WORKSPACE_LABELS.get(id, id)),
+			"the %s tab names its workspace" % id)
+		_check(tab.custom_minimum_size.x >= 44.0,
+			"the %s tab keeps the 44 dp minimum width" % id)
+		_check(tab.custom_minimum_size.y >= 43.5,
+			"the %s tab keeps the 44 dp touch height" % id)
+		_check(tab.get_theme_font_size("font_size") == 11,
+			"the %s tab uses an 11 sp label" % id)
+		_check(tab.get_meta("workspace_tab", "") == id,
+			"the %s tab carries its id" % id)
+	_check(bar.workspace_tab("rig") == null and bar.workspace_tab("render") == null,
+		"Rig and Render are not permanent tabs")
+	_check(_is_filled(bar.workspace_tab("scene")), "the active tab uses the focus fill")
+	_check(not _is_filled(bar.workspace_tab("shading")),
+		"an inactive tab has no focus fill")
+
+	var more: Button = bar.more_button()
+	_check(more != null and more.visible, "the bar exposes the More workspaces control")
+	_check(more.custom_minimum_size.x >= 43.5 and more.custom_minimum_size.y >= 43.5,
+		"More keeps the 44 dp touch target")
+	_check(more.get_meta("action_icon", "") == "ellipsis-horizontal",
+		"More uses the ellipsis-horizontal glyph")
+	_check(more.tooltip_text == "More workspaces", "More carries an accessible name")
+
+	bar.workspace_tab("shading").pressed.emit()
 	await get_tree().process_frame
-	_check(editor.workspace_menu_open(), "the chip opens the workspace menu")
+	_check(editor.workspace() == "shading", "a primary tab switches workspace")
+	_check(_is_filled(bar.workspace_tab("shading")), "the new tab takes the focus fill")
+	_check(not _is_filled(bar.workspace_tab("scene")), "the old tab loses the focus fill")
+	_check(bar.more_button().text == "",
+		"More stays an ellipsis in a primary workspace")
+
+	more.pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace_menu_open(), "More opens the secondary-workspace menu")
 	var menu = editor._workspace_menu
-	_check(menu.row_count() == 5, "the workspace menu has exactly five rows")
-	var ids := ["scene", "shading", "rig", "animate", "render"]
-	for id in ids:
+	_check(menu.row_count() == 2, "the secondary menu has exactly two rows")
+	for id in ["rig", "render"]:
 		var row: Button = menu.row_button(id)
-		_check(row != null and row.custom_minimum_size.y >= 52.0,
-			"workspace row %s is at least 52 dp" % id)
+		_check(row != null, "the secondary menu has the %s row" % id)
+		if row == null:
+			continue
+		_check(row.custom_minimum_size.y >= 43.5 and row.custom_minimum_size.y <= 44.5,
+			"the %s row is 44 dp" % id)
+		_check(row.get_meta("action_icon", "") ==
+			("bone" if id == "rig" else "clapperboard"),
+			"the %s row uses its icon" % id)
 		_check(row.get_meta("workspace_row", "") == id,
-			"workspace row %s carries its id" % id)
-	_check(menu.row_button("scene").button_pressed, "the current workspace row is checked")
+			"the %s row carries its id" % id)
+	_check(menu._panel.size.x <= 280.0, "the secondary menu is at most 280 dp wide")
+	_check(menu._header.custom_minimum_size.y <= 32.5,
+		"the secondary menu header is 32 dp")
+	_check(not menu.row_button("rig").button_pressed,
+		"no secondary row is checked in a primary workspace")
 
-	menu.row_button("animate").pressed.emit()
+	more.pressed.emit()
 	await get_tree().process_frame
-	_check(editor.workspace() == "animate", "selecting a row switches workspace")
-	_check(not editor.workspace_menu_open(), "selecting a row closes the menu")
-	_check(bar.workspace_chip().text == "Animate", "the chip follows the workspace")
+	_check(not editor.workspace_menu_open(), "tapping More again closes the menu")
 
-	# Project menu order and rows.
+	more.pressed.emit()
+	await get_tree().process_frame
+	menu.row_button("rig").pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace() == "rig", "the Rig row switches workspace")
+	_check(not editor.workspace_menu_open(), "selecting a row closes the menu")
+	_check(bar.more_button().text == "Rig",
+		"More shows the active secondary workspace name")
+	_check(bar.more_button().get_meta("action_icon", "") == "chevron-down",
+		"the named More control pairs the name with a chevron")
+	_check(bar.more_button().custom_minimum_size.x >= 60.0,
+		"the named More control keeps a 60 dp minimum")
+	_check(_is_filled(bar.more_button()),
+		"the named More control uses the active fill")
+
+	more.pressed.emit()
+	await get_tree().process_frame
+	_check(menu.row_button("rig").button_pressed, "the Rig row is checked while Rig is current")
+	_check(menu.row_button("render") != null, "the Render row is still reachable")
+	menu.row_button("render").pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace() == "render" and bar.more_button().text == "Render",
+		"the Render row switches workspace and renames More")
+	bar.workspace_tab("scene").pressed.emit()
+	await get_tree().process_frame
+	_check(editor.workspace() == "scene", "a tab returns from a secondary workspace")
+	_check(bar.more_button().text == "" and
+		bar.more_button().get_meta("action_icon", "") == "ellipsis-horizontal",
+		"More returns to the ellipsis")
+
+	# Project menu order and rows at a width that keeps Undo/Redo on the bar.
 	bar.action_button("menu").pressed.emit()
 	await get_tree().process_frame
 	var project = editor._project_menu
@@ -141,6 +215,92 @@ func _test_workspace_bar_and_menu() -> void:
 		_check(project.row_button(id) != null, "project menu row %s exists" % id)
 	_check(not project.row_button("instrumentation").visible,
 		"the instrumentation strip row is hidden in touch layouts")
+	_check(project.row_button("settings").custom_minimum_size.y >= 43.5,
+		"the project menu keeps 44 dp rows")
+	_check(project._panel.size.x <= 320.0, "the project menu keeps a 320 dp cap")
+	_check(project.row_button("undo") == null and project.row_button("redo") == null,
+		"the wide project menu does not duplicate the bar history")
+	project.close()
+
+
+func _test_compact_top_bar() -> void:
+	var main = await _boot_main(360, 640)
+	var editor = main._editor
+	var bar = editor._workspace_bar
+	var ids: PackedStringArray = bar.visible_action_ids()
+	_check(not ids.has("undo") and not ids.has("redo"),
+		"the 360 dp top bar hides Undo and Redo")
+	_check(ids.has("back") and ids.has("save") and ids.has("menu"),
+		"Back, Save and the project menu stay on the compact bar")
+	_check(bar.get_combined_minimum_size().x <= 360.5,
+		"the compact top bar fits the 360 dp budget")
+	for workspace_id in ["rig", "render"]:
+		editor.set_workspace(workspace_id)
+		await get_tree().process_frame
+		_check(bar.more_button().text != "",
+			"the named More control is readable in %s" % workspace_id)
+		_check(bar.get_combined_minimum_size().x <= 360.5,
+			"the top bar keeps the 360 dp budget with %s named" % workspace_id)
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+
+	bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	var project = editor._project_menu
+	_check(project.row_button("undo") != null and project.row_button("redo") != null,
+		"the compact project menu carries Undo and Redo")
+	_check(project.row_button("undo").disabled and project.row_button("redo").disabled,
+		"both history rows start disabled")
+	_check(project.row_button("settings") != null and project.row_button("close") != null,
+		"the history rows join the existing project rows")
+	_check(project.row_button("settings").custom_minimum_size.y >= 43.5,
+		"the compact project menu keeps 44 dp rows")
+	_check(project._panel.size.x <= 320.0, "the compact project menu keeps its 320 dp cap")
+	project.close()
+	await get_tree().process_frame
+
+	var added: String = editor.doc.add_primitive("box")
+	await get_tree().process_frame
+	bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	_check(not project.row_button("undo").disabled,
+		"Undo enables when history exists")
+	_check(project.row_button("redo").disabled,
+		"Redo stays disabled at the head of history")
+	project.row_button("undo").pressed.emit()
+	await get_tree().process_frame
+	_check(editor.doc.get_object(added).is_empty(),
+		"the project-menu Undo row routes to the document")
+	bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	_check(not project.row_button("redo").disabled,
+		"Redo enables after an undo")
+	project.row_button("redo").pressed.emit()
+	await get_tree().process_frame
+	_check(not editor.doc.get_object(added).is_empty(),
+		"the project-menu Redo row routes to the document")
+
+	# At exactly 600 dp the bar owns history again and the menu rows go away.
+	await _resize_main(main, Vector2i(600, 960))
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	ids = bar.visible_action_ids()
+	_check(ids.has("undo") and ids.has("redo"),
+		"600 dp returns Undo and Redo to the bar")
+	bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	_check(project.row_button("undo") == null and project.row_button("redo") == null,
+		"the 600 dp project menu drops the duplicate history rows")
+	project.close()
+
+
+func _is_filled(button: Button) -> bool:
+	if button == null:
+		return false
+	var style := button.get_theme_stylebox("normal")
+	return style is StyleBoxFlat and \
+		(style as StyleBoxFlat).bg_color.is_equal_approx(Kit.FOCUS)
+
 
 
 func _test_context_bar_overflow_and_icons() -> void:
@@ -167,6 +327,108 @@ func _test_context_bar_overflow_and_icons() -> void:
 	editor.set_workspace("render")
 	await get_tree().process_frame
 	_check(bar.visible_action_ids().has("render"), "render keeps its primary action")
+
+	# The transform group is real in every transform workspace, 44 dp each,
+	# and keeps all four controls visible on the 360 dp context row.
+	var transforms := ["select", "move", "rotate", "scale"]
+	for workspace_id in ["scene", "shading", "animate", "render"]:
+		editor.set_workspace(workspace_id)
+		await get_tree().process_frame
+		var row: PackedStringArray = bar.visible_action_ids()
+		for id in transforms:
+			_check(row.has(id), "%s 360 dp keeps %s visible" % [workspace_id, id])
+			var button: Button = bar.action_button(id)
+			_check(button != null, "%s exposes %s" % [workspace_id, id])
+			if button == null:
+				continue
+			_check(button.custom_minimum_size.x >= 43.5 and
+				button.custom_minimum_size.y >= 43.5,
+				"%s %s keeps the 44 dp target" % [workspace_id, id])
+			_check(button.get_theme_constant("icon_max_width") == 18,
+				"%s %s uses an 18 px glyph" % [workspace_id, id])
+			_check(button.get_meta("action_icon", "") == "tool-" + id,
+				"%s %s uses the tool icon" % [workspace_id, id])
+			_check(button.toggle_mode, "%s %s is a toggle" % [workspace_id, id])
+
+	# Priority order: Shading after Assign, Animate first, Render after Render.
+	editor.set_workspace("shading")
+	await get_tree().process_frame
+	var order: PackedStringArray = bar.visible_action_ids()
+	_check(order.find("assign") >= 0 and order.find("select") > order.find("assign"),
+		"Shading puts the transform group after Assign")
+	editor.set_workspace("animate")
+	await get_tree().process_frame
+	order = bar.visible_action_ids()
+	_check(order.size() > 0 and order[0] == "select",
+		"Animate puts the transform group first")
+	editor.set_workspace("render")
+	await get_tree().process_frame
+	order = bar.visible_action_ids()
+	_check(order.find("render") >= 0 and order.find("select") > order.find("render"),
+		"Render puts the transform group after Render")
+
+	# The current tool survives a workspace switch and shows the active fill.
+	bar.action_button("move").pressed.emit()
+	await get_tree().process_frame
+	_check(editor._tool == "move", "Move becomes the current tool")
+	_check(_is_filled(bar.action_button("move")), "the active tool uses the fill")
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	_check(editor._tool == "move" and bar.action_button("move").button_pressed,
+		"the current tool survives a workspace switch")
+	editor.set_workspace("animate")
+	await get_tree().process_frame
+	_check(bar.action_button("move").button_pressed,
+		"Animate restores the active tool without a reset")
+
+	# No editable selection disables the four tools with a real reason.
+	editor.doc.set_selection("")
+	for id in transforms:
+		var button: Button = bar.action_button(id)
+		_check(button.disabled, "%s disables with no selection" % id)
+		_check(button.tooltip_text == "Select an object to transform.",
+			"%s states the real disabled reason" % id)
+	var added: String = editor.doc.add_primitive("box")
+	_check(added != "", "a real object exists for the enabled-tool check")
+	for id in transforms:
+		_check(not bar.action_button(id).disabled,
+			"%s enables with an editable selection" % id)
+
+	# Only the one primary action per workspace keeps the text form.
+	editor.set_workspace("shading")
+	await get_tree().process_frame
+	_check(bar.action_button("assign").get_meta("is_text", false),
+		"Shading Assign keeps the text form")
+	_check(bar.action_button("assign").custom_minimum_size.x >= 96.0,
+		"Shading Assign keeps the 96 dp width")
+	for id in ["material_new"]:
+		_check(not bar.action_button(id).get_meta("is_text", true),
+			"Shading %s became an icon action" % id)
+		_check(bar.action_button(id).custom_minimum_size.x <= 44.5,
+			"Shading %s is a 44 dp icon action" % id)
+	editor.set_workspace("render")
+	await get_tree().process_frame
+	_check(bar.action_button("render").get_meta("is_text", false),
+		"Render keeps the text primary action")
+	for id in ["preview", "still"]:
+		_check(not bar.action_button(id).get_meta("is_text", true),
+			"Render %s became an icon action" % id)
+		_check(bar.action_button(id).custom_minimum_size.x <= 44.5,
+			"Render %s is a 44 dp icon action" % id)
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	_check(bar.action_button("add").get_meta("is_text", false),
+		"Scene Add keeps the text form")
+
+	# Rig keeps its Pose/Edit and Rotate/Move pair and never offers Scale.
+	editor.set_workspace("rig")
+	await get_tree().process_frame
+	_check(bar.action_button("rig_rotate") != null and bar.action_button("rig_move") != null,
+		"Rig keeps Rotate and Move")
+	_check(bar.action_button("pose") != null and bar.action_button("edit") != null,
+		"Rig keeps Pose and Edit")
+	_check(bar.action_button("scale") == null and bar.action_button("select") == null,
+		"Rig has no generic transform group")
 
 	# Icon contract: no two visible action ids share an icon in one workspace,
 	# and every referenced icon file exists.
@@ -363,8 +625,8 @@ func _test_camera_view() -> void:
 		"look-through hides context and transport")
 	_check(editor._workspace_bar.action_button("undo").visible == false,
 		"look-through hides undo")
-	_check(editor._workspace_bar.workspace_chip().text == "Camera: A camera",
-		"the chip names the active camera")
+	_check(editor._workspace_bar.more_button().text == "Camera: A camera",
+		"the bar names the active camera")
 
 	var saved_before: Dictionary = editor._view._look_saved.duplicate(true)
 	editor._enter_camera_view(cam_b)
@@ -372,8 +634,8 @@ func _test_camera_view() -> void:
 	_check(editor._view.look_through_camera_id() == cam_b, "switching updates the camera")
 	_check(exits.is_empty(), "switching does not emit look_through_exited")
 	_check(editor._view._look_saved == saved_before, "switching preserves the saved editor state")
-	_check(editor._workspace_bar.workspace_chip().text == "Camera: B camera",
-		"the chip follows the switch")
+	_check(editor._workspace_bar.more_button().text == "Camera: B camera",
+		"the bar follows the camera switch")
 
 	editor._workspace_bar.action_button("exit_camera").pressed.emit()
 	await get_tree().process_frame
@@ -440,13 +702,13 @@ func _test_workspace_switch_with_open_surfaces() -> void:
 	_check(not editor._overlay.has_modal() and editor.workspace() == "scene",
 		"Back closes the modal before switching workspace")
 
-	# Workspace chip -> menu -> Back closes the menu, not the project.
-	editor._workspace_bar.workspace_chip().pressed.emit()
+	# More workspaces -> menu -> Back closes the menu, not the project.
+	editor._workspace_bar.more_button().pressed.emit()
 	await get_tree().process_frame
 	editor.handle_back()
 	await get_tree().process_frame
 	_check(not editor.workspace_menu_open() and editor.workspace() == "scene",
-		"Back closes the workspace menu first")
+		"Back closes the secondary-workspace menu first")
 
 func _test_back_precedence() -> void:
 	var main = await _boot_main(600, 960)
@@ -475,9 +737,16 @@ func _test_desktop_shell() -> void:
 	_check(editor._transport_bar.size.y >= 31.5 and editor._transport_bar.size.y <= 32.5,
 		"desktop transport is 32 dp")
 	_check(not editor._instrumentation.visible, "desktop strip is off by default")
-	editor._workspace_bar.workspace_chip().pressed.emit()
+	for id in ["scene", "shading", "animate"]:
+		var tab: Button = editor._workspace_bar.workspace_tab(id)
+		_check(tab != null and absf(tab.custom_minimum_size.y - 28.0) < 0.5,
+			"desktop %s tab is 28 dp" % id)
+	_check(absf(editor._workspace_bar.more_button().custom_minimum_size.y - 28.0) < 0.5,
+		"desktop More is 28 dp")
+	editor._workspace_bar.more_button().pressed.emit()
 	await get_tree().process_frame
-	_check(editor._workspace_menu.row_count() == 5, "desktop keeps the five-row menu")
+	_check(editor._workspace_menu.row_count() == 2,
+		"desktop keeps the two-row secondary menu")
 	editor._workspace_menu.close()
 	editor._workspace_bar.action_button("menu").pressed.emit()
 	await get_tree().process_frame
