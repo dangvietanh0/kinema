@@ -43,6 +43,7 @@ const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overla
 const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
 const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
 const RenderPanelScript = preload("res://src/ui/render_panel.gd")
+const ShadingPanelScript = preload("res://src/ui/shading_panel.gd")
 const GlbExportScript = preload("res://src/core/glb_export.gd")
 const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
 const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
@@ -105,6 +106,7 @@ var _workspace_menu: Control
 var _project_menu: Control
 var _view_menu: Control
 var _rig_axis_menu: Control
+var _light_menu: Control
 var _camera_menu: Control
 
 var _main: HBoxContainer
@@ -258,6 +260,10 @@ func _ready() -> void:
 	_rig_axis_menu.name = "RigAxisMenu"
 	_rig_axis_menu.row_selected.connect(_on_rig_axis_menu_row)
 	add_child(_rig_axis_menu)
+	_light_menu = MenuPanelScript.new()
+	_light_menu.name = "LightMenu"
+	_light_menu.row_selected.connect(_on_light_menu_row)
+	add_child(_light_menu)
 	_camera_menu = MenuPanelScript.new()
 	_camera_menu.name = "CameraMenu"
 	_camera_menu.row_selected.connect(_on_camera_menu_row)
@@ -428,8 +434,8 @@ func _build_panel_content() -> void:
 	_inspector = InspectorScript.new()
 	_inspector.add_requested.connect(_open_add_sheet)
 	_inspector.color_requested.connect(_open_color_sheet)
-	_inspector.choose_material_requested.connect(_open_material_sheet)
-	_inspector.edit_material_requested.connect(_open_material_editor_for_target)
+	_inspector.choose_material_requested.connect(_edit_material_in_shading)
+	_inspector.edit_material_requested.connect(_edit_material_in_shading)
 	_inspector.look_through_requested.connect(_enter_camera_view)
 	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("inspector", collapsed)
@@ -446,29 +452,14 @@ func _build_panel_content() -> void:
 	if doc != null:
 		_rig_panel.setup(doc)
 
-	# W4 replaces these provisional surfaces with the real Shading/Render
-	# panels. W1 does not mount a second MaterialSheet or MediaExportSheet; the
-	# existing modal aliases stay authoritative.
-	_shading_panel = VBoxContainer.new()
-	_shading_panel.add_theme_constant_override("separation", 8)
-	var shading_margin := MarginContainer.new()
-	shading_margin.add_theme_constant_override("margin_left", 12)
-	shading_margin.add_theme_constant_override("margin_right", 12)
-	shading_margin.add_theme_constant_override("margin_top", 12)
-	shading_margin.add_theme_constant_override("margin_bottom", 12)
-	var shading_box := VBoxContainer.new()
-	shading_box.add_theme_constant_override("separation", 8)
-	var shading_open := Kit.text_button("Open material library", "palette", false, true)
-	shading_open.custom_minimum_size = Vector2(96, 44)
-	shading_open.pressed.connect(func() -> void:
-		_open_material_sheet(_context_material_target())
-	)
-	shading_box.add_child(shading_open)
-	var shading_note := Kit.label("The embedded material library arrives in W4.", 11, Kit.TEXT_MUTED)
-	shading_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	shading_box.add_child(shading_note)
-	shading_margin.add_child(shading_box)
-	_shading_panel.add_child(shading_margin)
+	# The Shading workspace embeds the real library and editor. The document
+	# arrives with _adopt_document(); setup() is repeated there so both children
+	# build against the live MaterialSystem.
+	_shading_panel = ShadingPanelScript.new()
+	_shading_panel.name = "ShadingPanel"
+	_shading_panel.changed.connect(func() -> void: _on_material_sheet_changed(""))
+	_shading_panel.delete_requested.connect(_confirm_delete_material)
+	_shading_panel.color_requested.connect(_on_material_color_requested)
 
 	_render_panel = RenderPanelScript.new()
 	_render_panel.setup(doc, _view)
@@ -644,6 +635,8 @@ func _on_workspace_menu_row(id: String) -> void:
 
 func _on_workspace_changed(_id: String) -> void:
 	_update_header()
+	if _workspace == "shading":
+		_sync_shading_target()
 
 
 # -------------------------------------------------------------------------
@@ -773,7 +766,7 @@ func _sync_context_state() -> void:
 	var selected := doc.selected_id if doc != null else ""
 	_context_bar.set_action_enabled("assign",
 		selected != "" and doc != null and doc.material_system != null,
-		"Select an object with a material to assign.")
+		"Select an object to assign this material.")
 	for tool_id in ["select", "move", "rotate", "scale"]:
 		_context_bar.set_action_enabled(tool_id, selected != "",
 			"Select an object to transform.")
@@ -825,10 +818,12 @@ func _on_context_action(id: String) -> void:
 			_open_view_menu(_context_bar.action_button("view"))
 		"panel":
 			_toggle_workspace_panel()
-		"assign", "material_new":
-			_open_material_sheet(_context_material_target())
+		"assign":
+			_on_shading_assign()
+		"material_new":
+			_on_shading_new_material()
 		"light_add":
-			_open_add_sheet()
+			_open_light_menu(_context_bar.action_button("light_add"))
 		"pose", "edit", "rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done":
 			_on_rig_context_action(id)
 		"preview":
@@ -845,6 +840,108 @@ func _on_context_action(id: String) -> void:
 func _context_material_target() -> Dictionary:
 	var object_id := doc.selected_id if doc != null else ""
 	return {"object_id": object_id, "part_path": "", "surface": -1}
+
+
+## The inspector, the Shading context row and the Shading workspace all lead
+## here. The material library and editor are embedded children of the panel;
+## nothing opens a material modal.
+func _edit_material_in_shading(target: Dictionary) -> void:
+	if doc == null or _shading_panel == null:
+		return
+	var object_id := str(target.get("object_id", ""))
+	var part_path := str(target.get("part_path", ""))
+	var surface := int(target.get("surface", -1))
+	set_workspace("shading")
+	_workspace_panel_open = true
+	_shading_panel.set_target(object_id, part_path, surface)
+	var material_id := ""
+	if doc.material_system != null:
+		material_id = doc.material_system.resolve_assignment(object_id, part_path, surface)
+	if material_id != "":
+		_shading_panel.select_material(material_id)
+	_apply_shell()
+
+
+func _on_shading_assign() -> void:
+	if doc == null or _shading_panel == null:
+		return
+	set_workspace("shading")
+	_workspace_panel_open = true
+	_shading_panel.assign_selected()
+	_apply_shell()
+
+
+func _on_shading_new_material() -> void:
+	if doc == null or _shading_panel == null:
+		return
+	set_workspace("shading")
+	_workspace_panel_open = true
+	_shading_panel.new_material()
+	_apply_shell()
+
+
+## Keeps the embedded panel pointed at the current selection. A part selection
+## targets that part's surface; otherwise the whole object is the target.
+func _sync_shading_target() -> void:
+	if _shading_panel == null or doc == null:
+		return
+	var object_id := doc.selected_id
+	var part_path := ""
+	var surface := -1
+	if doc.selected_part_object_id != "":
+		object_id = doc.selected_part_object_id
+		part_path = doc.selected_part_path
+	if doc.get("selected_surface") != null:
+		surface = int(doc.selected_surface)
+	_shading_panel.set_target(object_id, part_path, surface)
+	if _workspace == "shading" and _workspace_panel != null:
+		_workspace_panel.set_badge(_shading_badge_text())
+
+
+func _shading_badge_text() -> String:
+	if doc == null or doc.selected_id == "":
+		return ""
+	var obj: Dictionary = doc.get_object(doc.selected_id)
+	return str(obj.get("name", "")) if not obj.is_empty() else ""
+
+
+func _open_light_menu(anchor: Control) -> void:
+	if _light_menu == null or doc == null:
+		return
+	_light_menu.set_layout_mode(layout_mode())
+	_light_menu.set_empty_text("")
+	_light_menu.open_menu(
+		anchor,
+		"Light",
+		"Add a light",
+		layout_mode() != "desktop"
+	)
+	_light_menu.add_row(
+		"directional", "Key light", "sun", "Directional light",
+		false, true, "", 44.0
+	)
+	_light_menu.add_row(
+		"omni", "Omni light", "circle-dot", "Omni light",
+		false, true, "", 44.0
+	)
+
+
+func _on_light_menu_row(id: String) -> void:
+	if id != "directional" and id != "omni":
+		return
+	_on_add_light(id)
+	_sync_context_state()
+
+
+## A light is a real document object: one undo entry from Document.add_light,
+## selected immediately and framed so it never lands out of view.
+func _on_add_light(kind: String) -> void:
+	if doc == null:
+		return
+	var at := Vector3(0, 5, 0) if kind == "directional" \
+		else _spawn_point() + Vector3(1.4, 2.4, 1.2)
+	doc.add_light(kind, at)
+	_focus_selection()
 
 
 func _open_view_menu(anchor: Control) -> void:
@@ -1291,6 +1388,12 @@ func _adopt_document(document: Node3D) -> void:
 	_inspector.setup(doc)
 	_timeline.setup(doc)
 	_rig_panel.setup(doc)
+	_shading_panel.setup(doc)
+	# Existing tests inspect the embedded children through these aliases; they
+	# are the only material library and editor instances.
+	_material_sheet = _shading_panel.material_sheet()
+	_material_editor_sheet = _shading_panel.material_editor()
+	_sync_shading_target()
 	_render_panel.setup(doc, _view)
 	if _video_overlay != null:
 		_video_overlay.setup(doc, _view)
@@ -1424,6 +1527,7 @@ func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
 	_sync_transport_state()
 	_sync_context_state()
+	_sync_shading_target()
 	if _render_panel != null:
 		_render_panel.refresh()
 
@@ -1819,6 +1923,7 @@ func _update_workspace_panel() -> void:
 		"shading":
 			_workspace_panel.set_content(_shading_panel)
 			_workspace_panel.set_title("Shading")
+			_workspace_panel.set_badge(_shading_badge_text())
 		"rig":
 			_workspace_panel.set_content(_rig_panel)
 			_workspace_panel.set_title("Rig")
@@ -3938,6 +4043,8 @@ func _delete_material(material_id: String) -> void:
 	doc.end_edit()
 	if ok:
 		_on_material_sheet_changed(material_id)
+		if _shading_panel != null:
+			_shading_panel.refresh()
 		_overlay.toast("Material deleted", "trash-2", Kit.TEXT_MUTED)
 
 

@@ -41,7 +41,6 @@ var _swatch_value := Color(0.6, 0.6, 0.6)
 var _field_drag := false
 ## Material section state. Surface -1 is the part-level slot ("All").
 var _object_material_label: Label
-var _object_choose: Button
 var _object_edit: Button
 var _part_material_label: Label
 var _part_choose: Button
@@ -231,7 +230,6 @@ func _rebuild() -> void:
 	_color_button = null
 	_name_edit = null
 	_object_material_label = null
-	_object_choose = null
 	_object_edit = null
 	_part_material_label = null
 	_part_choose = null
@@ -402,13 +400,13 @@ func _build_object_material(obj: Dictionary) -> void:
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 6)
 	_content.add_child(actions)
-	_object_choose = Kit.text_button("Choose material", "", false, false)
-	_object_choose.custom_minimum_size = Vector2(96.0, 44.0)
-	_object_choose.pressed.connect(func() -> void: _request_material(false, "", -1))
-	actions.add_child(_object_choose)
-	_object_edit = Kit.text_button("Edit material", "", false, false)
+	# One handoff, never a modal: the Shading workspace owns choosing,
+	# creating and editing library materials.
+	_object_edit = Kit.text_button(
+		"Edit in Shading" if not record.is_empty() else "Choose in Shading", "", false, false)
 	_object_edit.custom_minimum_size = Vector2(96.0, 44.0)
-	_object_edit.disabled = record.is_empty()
+	_object_edit.tooltip_text = "Open this material in the Shading workspace." if not record.is_empty() \
+		else "Choose or create a material in the Shading workspace."
 	_object_edit.pressed.connect(func() -> void: _request_material(true, "", -1))
 	actions.add_child(_object_edit)
 	if not record.is_empty():
@@ -515,6 +513,11 @@ func part_material_text() -> String:
 
 func object_material_text() -> String:
 	return _object_material_label.text if _object_material_label != null else ""
+
+
+## The single 44 dp Shading handoff for the selected object's material.
+func edit_material_button() -> Button:
+	return _object_edit
 
 
 func surface_chips() -> Array[Button]:

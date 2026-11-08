@@ -26,6 +26,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await _test_static_scene_export()
 	await _test_render_panel()
+	await _test_shading_panel()
 	_finish()
 
 
@@ -194,4 +195,70 @@ func _test_render_panel() -> void:
 	_check(requests.size() == 1 and bool(requests[0].get("animations", false)),
 		"Export GLB requests the real options")
 	panel.queue_free()
+	doc.queue_free()
+
+
+func _test_shading_panel() -> void:
+	print("EXPORT STEP: shading panel")
+	var doc := _new_doc("Shading Panel")
+	var cube: String = doc.add_primitive("box", Vector3.ZERO)
+	doc.set_selection(cube)
+	var panel = preload("res://src/ui/shading_panel.gd").new()
+	add_child(panel)
+	panel.setup(doc)
+	panel.set_target(cube)
+	await get_tree().process_frame
+	_check(panel.material_sheet() != null, "the material library is embedded")
+	_check(panel.material_editor() != null, "the material editor is embedded")
+	_check(panel.material_sheet().get_parent() != null, "the library is mounted, not modal")
+	_check(panel.material_editor().get_parent() != null, "the editor is mounted, not modal")
+	_check(panel.material_editor().visible == false or panel.material_editor().material_id() == "",
+		"with no material selected the editor shows the empty state")
+
+	var material: String = panel.new_material()
+	_check(material != "", "New creates a real material")
+	_check(doc.material_system.has_material(material), "the material exists in MaterialSystem")
+	_check(panel.material_sheet().row_count() >= 1, "the library gained a row")
+	_check(panel.material_editor().material_id() == material,
+		"New loads the created material in the editor")
+
+	var undo_before: int = (doc._undo_stack as Array).size()
+	panel.select_material(material)
+	_check(panel.assign_selected(), "Assign succeeds for the selected object")
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"Assign is one undo entry")
+	_check(doc.material_system.resolve_assignment(cube) == material,
+		"Assign writes the real target assignment")
+	doc.undo()
+	_check(doc.material_system.resolve_assignment(cube) != material,
+		"undo removes the assignment")
+
+	doc.set_selection("")
+	panel.set_target("")
+	panel.refresh()
+	_check(panel.assign_button().disabled, "Assign disables without an object")
+	_check(panel.assign_button().tooltip_text == "Select an object to assign this material.",
+		"Assign states the exact reason")
+
+	# The inspector only builds its Edit action for a selected object that
+	# really has a material; restore both before creating it.
+	doc.set_selection(cube)
+	panel.set_target(cube)
+	panel.select_material(material)
+	_check(panel.assign_selected(), "the cube is assigned again for the inspector handoff")
+
+	# The inspector hands off to Shading instead of opening a modal.
+	var inspector = preload("res://src/ui/inspector.gd").new()
+	add_child(inspector)
+	inspector.setup(doc)
+	_check(inspector.edit_material_button().custom_minimum_size.y >= 43.5,
+		"Edit in Shading is a 44 dp action")
+	_check(inspector.edit_material_button().text == "Edit in Shading",
+		"the inspector names the action Edit in Shading")
+	var targets: Array[Dictionary] = []
+	inspector.edit_material_requested.connect(func(target: Dictionary) -> void: targets.append(target))
+	inspector.edit_material_button().pressed.emit()
+	_check(targets.size() == 1, "the inspector emits the real target")
+	panel.queue_free()
+	inspector.queue_free()
 	doc.queue_free()
