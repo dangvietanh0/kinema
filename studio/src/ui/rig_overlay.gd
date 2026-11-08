@@ -106,6 +106,14 @@ func transform_mode() -> String:
 	return _transform
 
 
+## The gesture in flight. A bone body drag is "bone" in both Pose and Edit; the
+## rest handles and gizmo kinds only start in Edit.
+func current_drag_kind() -> String:
+	if _drag_kind != "":
+		return _drag_kind
+	return "bone" if _dragging else ""
+
+
 func axis_mode() -> String:
 	return _axis
 
@@ -425,12 +433,15 @@ func press_at(screen: Vector2) -> void:
 		if tail_handle_at(screen):
 			_begin_rest_drag("tail", screen)
 			return
-		# Edit mode still lets a tap select another bone to edit; it never
-		# rotates a pose.
-		var selected := bone_at(screen)
-		if selected != "":
-			rig_system.set_active_bone(_rig_id, selected)
-			bone_selected.emit(selected)
+		if _gizmo_enabled() and gizmo_handle_at(screen) != "":
+			_begin_gizmo_drag(gizmo_handle_at(screen), screen)
+			return
+		var edit_target := bone_at(screen)
+		if edit_target != "":
+			_begin_edit_body_drag(edit_target, screen)
+		return
+	if _gizmo_enabled() and gizmo_handle_at(screen) != "":
+		_begin_gizmo_drag(gizmo_handle_at(screen), screen)
 		return
 	var chain_id := _chain_at(screen)
 	if chain_id != "":
@@ -441,8 +452,28 @@ func press_at(screen: Vector2) -> void:
 		_begin_drag(bone, screen)
 
 
+## The three-axis touch gizmo arrives with Task 12.
+func _gizmo_enabled() -> bool:
+	return false
+
+
+func gizmo_handle_at(_screen: Vector2) -> String:
+	return ""
+
+
+func _begin_gizmo_drag(_handle: String, _screen: Vector2) -> void:
+	pass
+
+
 func drag_at(screen: Vector2) -> void:
-	if _drag_kind != "":
+	if _drag_kind == "bone":
+		if is_edit_mode():
+			_drag_edit_body(screen)
+		elif _transform == "move":
+			_move_drag(screen)
+		else:
+			_rotate_drag(screen)
+	elif _drag_kind != "":
 		_drag_rest(screen)
 	elif _drag_target != "":
 		_move_target(screen)
@@ -459,6 +490,7 @@ func release_drag() -> void:
 
 func _begin_drag(bone: String, screen: Vector2) -> void:
 	_dragging = true
+	_drag_kind = "bone"
 	_drag_bone = bone
 	_drag_origin = screen
 	var skeleton := _skeleton()
@@ -470,20 +502,16 @@ func _begin_drag(bone: String, screen: Vector2) -> void:
 			_drag_start_scale = skeleton.get_bone_pose_scale(index)
 			_drag_head_world = skeleton.to_global(skeleton.get_bone_global_pose(index).origin)
 	_readout_text = ""
-	var ray: Dictionary = view.screen_ray(screen) if view != null else {}
-	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
-	var normal := -direction
-	if normal.length_squared() <= 0.000001:
-		normal = Vector3.BACK
-	normal = normal.normalized()
-	_drag_plane = Plane(normal, normal.dot(_drag_head_world))
+	_drag_plane = _camera_plane(_drag_head_world)
 	rig_system.set_active_bone(_rig_id, bone)
 	bone_selected.emit(bone)
 	rig_system.begin_pose_edit("Pose bone")
 
 
 func _end_drag() -> void:
-	if _drag_kind != "" and _drag_bone != "" and not _drag_rest_current.is_empty():
+	var commits_rest := is_edit_mode() \
+		and _drag_kind in ["head", "tail", "gizmo_rotate", "gizmo_move", "bone"]
+	if commits_rest and _drag_bone != "" and not _drag_rest_current.is_empty():
 		if _rest_changed(_drag_rest_start, _drag_rest_current):
 			# One gesture, one undo entry: the preview only becomes a rest
 			# edit when the finger lifts.
@@ -494,9 +522,9 @@ func _end_drag() -> void:
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
-	_drag_kind = ""
 	_drag_rest_start = {}
 	_drag_rest_current = {}
+	_drag_kind = ""
 	queue_redraw()
 
 
@@ -557,13 +585,77 @@ func _begin_rest_drag(kind: String, screen: Vector2) -> void:
 	}
 	_drag_rest_current = _drag_rest_start.duplicate(true)
 	_drag_head_world = skeleton.to_global(segment["head"])
-	var ray: Dictionary = view.screen_ray(screen) if view != null else {}
-	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
+	_drag_plane = _camera_plane(_drag_head_world)
+
+
+## A plane facing the camera through the drag origin. Reads the viewport
+## camera when it exposes one, so a real perspective camera and the test view
+## share the same code path.
+func _camera_plane(origin_world: Vector3) -> Plane:
+	var direction := Vector3.FORWARD
+	if view != null and view.has_method("camera_transform"):
+		direction = (view.camera_transform().basis.z as Vector3)
+	elif view != null:
+		var camera = view.get("_camera")
+		if camera is Camera3D:
+			direction = (camera as Camera3D).global_transform.basis.z
 	var normal := -direction
 	if normal.length_squared() <= 0.000001:
 		normal = Vector3.BACK
 	normal = normal.normalized()
-	_drag_plane = Plane(normal, normal.dot(_drag_head_world))
+	return Plane(normal, normal.dot(origin_world))
+
+
+func _begin_edit_body_drag(bone: String, screen: Vector2) -> void:
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	if rig.is_empty() or bool(rig.get("imported", false)):
+		return
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return
+	var bones: Array = rig.get("bones", [])
+	var index := skeleton.find_bone(bone)
+	if index < 0 or index >= bones.size():
+		return
+	var segment := _bone_world_segment(bones, index, skeleton, true, {})
+	if segment.is_empty():
+		return
+	_drag_kind = "bone"
+	_drag_bone = bone
+	_drag_origin = screen
+	_drag_start_rotation = bones[index].get("r", Quaternion.IDENTITY)
+	_drag_start_position = bones[index].get("p", Vector3.ZERO)
+	_drag_rest_start = {
+		"p": _drag_start_position,
+		"r": _drag_start_rotation,
+		"s": bones[index].get("s", Vector3.ONE),
+		"length": float(bones[index].get("length", 0.4)),
+	}
+	_drag_rest_current = _drag_rest_start.duplicate(true)
+	_drag_head_world = skeleton.to_global(segment["head"])
+	_drag_plane = _camera_plane(_drag_head_world)
+	rig_system.set_active_bone(_rig_id, bone)
+	bone_selected.emit(bone)
+
+
+## Edit body drag is a free rotation of the rest bone around its own head. It
+## previews in _drag_rest_current and commits once, on release, through
+## set_bone_rest; the bone length is never touched.
+func _drag_edit_body(screen: Vector2) -> void:
+	if _drag_rest_current.is_empty():
+		return
+	var delta := screen - _drag_origin
+	var up := Vector3.UP
+	var right := Vector3.RIGHT
+	if view != null:
+		var camera = view.get("_camera")
+		if camera is Camera3D:
+			up = (camera as Camera3D).global_transform.basis.y.normalized()
+			right = (camera as Camera3D).global_transform.basis.x.normalized()
+	var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
+	var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
+	_drag_rest_current["r"] = (yaw * pitch * _drag_start_rotation).normalized()
+	queue_redraw()
 
 
 func _plane_hit(screen: Vector2):
@@ -578,6 +670,8 @@ func _plane_hit(screen: Vector2):
 
 
 func _drag_rest(screen: Vector2) -> void:
+	if _drag_kind != "head" and _drag_kind != "tail":
+		return
 	var hit = _plane_hit(screen)
 	if hit == null:
 		return

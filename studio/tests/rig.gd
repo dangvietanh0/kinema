@@ -68,6 +68,7 @@ func _ready() -> void:
 	await _test_pose_and_bone_keys()
 	await _test_pose_v2()
 	await _test_pose_transactions()
+	await _test_one_gesture_and_edit_parity()
 	await _test_touch_pose_editing()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
@@ -1107,6 +1108,76 @@ func _test_pose_transactions() -> void:
 	doc.queue_free()
 
 
+func _rest_bone(doc: Node3D, rig_id: String, name: String) -> Dictionary:
+	var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+	var index := _bone_index(rig, name)
+	return rig["bones"][index] if index >= 0 else {}
+
+
+func _test_one_gesture_and_edit_parity() -> void:
+	print("RIG STEP: one gesture and edit parity")
+	var doc := _new_doc("One Gesture")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var skel := _skeleton(doc, rig_id)
+	var spine := skel.find_bone("Spine")
+	var press: Vector2 = view.world_to_screen(Vector3(0.0, 1.4, 0.0))
+
+	var pose_before := skel.get_bone_pose_rotation(spine)
+	var undo_before: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	_check(str(rs.get_rig(rig_id).get("active_bone", "")) == "Spine",
+		"pressing a bone body makes that bone active")
+	_check(overlay.current_drag_kind() == "bone",
+		"pressing a bone body starts the drag in the same gesture")
+	overlay.drag_at(press + Vector2(46, 0))
+	_check(skel.get_bone_pose_rotation(spine).angle_to(pose_before) > 0.01,
+		"the pose rotation changes before release")
+	overlay.release_drag()
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"one pose gesture is one undo entry")
+
+	var undo_tap: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	overlay.release_drag()
+	_check((doc._undo_stack as Array).size() == undo_tap,
+		"a tap with no motion selects but adds no undo entry")
+
+	overlay.set_mode("edit")
+	overlay.set_transform_mode("rotate")
+	_check(overlay.transform_mode() == "rotate", "Edit mode accepts Rotate")
+	var rest_before: Dictionary = _rest_bone(doc, rig_id, "Spine")
+	var rest_rot: Quaternion = rest_before.get("r", Quaternion.IDENTITY)
+	var rest_len := float(rest_before.get("length", 0.0))
+	var edit_undo: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	_check(overlay.current_drag_kind() == "bone",
+		"pressing a bone body in Edit starts the drag")
+	overlay.drag_at(press + Vector2(40, 12))
+	overlay.release_drag()
+	var rest_after: Dictionary = _rest_bone(doc, rig_id, "Spine")
+	_check((rest_after.get("r", Quaternion.IDENTITY) as Quaternion).angle_to(rest_rot) > 0.01,
+		"Edit body drag rotates the rest bone")
+	_check(is_equal_approx(float(rest_after.get("length", 0.0)), rest_len),
+		"Edit body drag never changes the bone length")
+	_check((doc._undo_stack as Array).size() == edit_undo + 1,
+		"one Edit body gesture is one undo entry")
+
+	overlay.set_transform_mode("move")
+	_check(overlay.transform_mode() == "move", "Edit mode accepts Move")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
 # -------------------------------------------------------------------------
 # C4d — touch transform/axis editing and the Rest/Pose panel
 # -------------------------------------------------------------------------
@@ -1958,7 +2029,7 @@ func _test_rig_toolbar() -> void:
 		await get_tree().process_frame
 		_check(edit_button.disabled, "an imported rig disables the Edit segment")
 		_check(edit_button.tooltip_text ==
-			"Imported skeletons keep their rest pose; pose and IK still work.",
+			"Imported skeleton: rest editing is locked.",
 			"the disabled Edit segment states the imported reason")
 		doc.rig_system.get_rig(rig_id)["imported"] = false
 		editor._sync_context_state()

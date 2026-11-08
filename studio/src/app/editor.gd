@@ -801,7 +801,7 @@ func _sync_context_state() -> void:
 	_context_bar.set_action_active("rig_rotate", transform_mode == "rotate")
 	_context_bar.set_action_active("rig_move", transform_mode == "move")
 	_context_bar.set_action_enabled("edit", not imported,
-		"Imported skeletons keep their rest pose; pose and IK still work.")
+		"Imported skeleton: rest editing is locked.")
 	for id in ["rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done"]:
 		_context_bar.set_action_enabled(id, rig_id != "", "There is no rig in this project.")
 	var axis_button: Button = _context_bar.action_button("rig_axis")

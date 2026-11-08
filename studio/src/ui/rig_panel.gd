@@ -119,11 +119,11 @@ func set_mode(mode: String) -> void:
 	if _mode == "edit":
 		_mode_label.text = "Edit"
 		_mode_label.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
-		_mode_hint.text = "Edit · drag the head or tail handle. One drag is one undo."
+		_mode_hint.text = "Edit · drag the body to rotate, or the head/tail handles. One drag is one undo."
 	else:
 		_mode_label.text = "Pose"
 		_mode_label.add_theme_color_override("font_color", Kit.TEXT_MUTED)
-		_mode_hint.text = "Pose · drag a bone to rotate."
+		_mode_hint.text = "Pose · drag a bone to rotate, or use the gizmo."
 
 
 func _build_shell() -> void:
@@ -163,7 +163,7 @@ func _build_shell() -> void:
 	_mode_label = Kit.mono_label("Pose", Kit.TYPE_CAPTION, Kit.FOCUS_BRIGHT)
 	_mode_label.name = "RigModeLabel"
 	mode_box.add_child(_mode_label)
-	_mode_hint = Kit.label("Pose · drag a bone to rotate.", Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+	_mode_hint = Kit.label("Pose · drag a bone to rotate, or use the gizmo.", Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
 	_mode_hint.name = "RigModeHint"
 	_mode_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
 	mode_box.add_child(_mode_hint)
