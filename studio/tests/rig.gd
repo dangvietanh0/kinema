@@ -69,6 +69,7 @@ func _ready() -> void:
 	await _test_pose_v2()
 	await _test_pose_transactions()
 	await _test_one_gesture_and_edit_parity()
+	await _test_gizmo()
 	await _test_touch_pose_editing()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
@@ -1178,6 +1179,74 @@ func _test_one_gesture_and_edit_parity() -> void:
 	doc.queue_free()
 
 
+func _gizmo_sample(overlay, axis: String) -> Vector2:
+	# 3/8 of the ring avoids the projected crossings with the other two axis
+	# rings and with the free centre handle under the orthographic fake view.
+	var points: PackedVector2Array = overlay.gizmo_ring_points(axis)
+	return points[points.size() * 3 / 8] if not points.is_empty() else Vector2.ZERO
+
+
+func _gizmo_arrow_sample(overlay, axis: String) -> Vector2:
+	var points: PackedVector2Array = overlay.gizmo_arrow_points(axis)
+	return (points[0] + points[1]) * 0.5 if points.size() >= 2 else Vector2.ZERO
+
+
+func _test_gizmo() -> void:
+	print("RIG STEP: rig gizmo")
+	var doc := _new_doc("Rig Gizmo")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Spine")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+
+	_check(overlay.gizmo_axes() == PackedStringArray(["x", "y", "z", "free"]),
+		"the gizmo exposes x/y/z/free")
+	_check(overlay.gizmo_visible(), "the gizmo is visible with an active bone")
+	for axis in ["x", "y", "z", "free"]:
+		var sample := _gizmo_sample(overlay, axis)
+		_check(overlay.gizmo_handle_at(sample) == axis,
+			"a projected %s ring sample hits its axis" % axis)
+
+	overlay.set_mode("edit")
+	overlay.set_transform_mode("rotate")
+	_check(overlay.gizmo_visible(), "the gizmo stays visible in Edit")
+	var rest_before: Quaternion = _rest_bone(doc, rig_id, "Spine").get("r", Quaternion.IDENTITY)
+	var undo_before: int = (doc._undo_stack as Array).size()
+	var sample := _gizmo_sample(overlay, "x")
+	overlay.press_at(sample)
+	_check(overlay.current_drag_kind() == "gizmo_rotate",
+		"pressing a ring starts a gizmo rotate")
+	overlay.drag_at(sample + Vector2(60, 0))
+	overlay.release_drag()
+	var rest_after: Quaternion = _rest_bone(doc, rig_id, "Spine").get("r", Quaternion.IDENTITY)
+	_check(rest_after.angle_to(rest_before) > 0.01, "the X ring rotates the rest bone")
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"one gizmo rotation is one undo entry")
+
+	overlay.set_transform_mode("move")
+	var p_before: Vector3 = _rest_bone(doc, rig_id, "Spine").get("p", Vector3.ZERO)
+	var move_sample: Vector2 = _gizmo_arrow_sample(overlay, "x")
+	overlay.press_at(move_sample)
+	_check(overlay.current_drag_kind() == "gizmo_move",
+		"pressing an arrow starts a gizmo move")
+	overlay.drag_at(move_sample + Vector2(50, 0))
+	overlay.release_drag()
+	var p_after: Vector3 = _rest_bone(doc, rig_id, "Spine").get("p", Vector3.ZERO)
+	_check(absf(p_after.x - p_before.x) > 0.001, "the X arrow moves the rest bone")
+	_check(absf(p_after.y - p_before.y) < 0.001 and absf(p_after.z - p_before.z) < 0.001,
+		"the X arrow keeps Y and Z near zero")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
 # -------------------------------------------------------------------------
 # C4d — touch transform/axis editing and the Rest/Pose panel
 # -------------------------------------------------------------------------
@@ -1228,7 +1297,9 @@ func _test_touch_pose_editing() -> void:
 	overlay.set_axis_mode("x")
 	skel.set_bone_pose_position(0, Vector3.ZERO)
 	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
-	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	# Press the bone body, away from the gizmo's centre handle and arrows, so
+	# this exercises the bone move path rather than a gizmo drag.
+	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin)) + Vector2(20, -90)
 	undo_before = (doc._undo_stack as Array).size()
 	overlay.press_at(screen)
 	overlay.drag_at(screen + Vector2(50, 40))
