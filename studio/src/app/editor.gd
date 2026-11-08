@@ -42,6 +42,8 @@ const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
 const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overlay.gd")
 const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
 const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
+const RenderPanelScript = preload("res://src/ui/render_panel.gd")
+const GlbExportScript = preload("res://src/core/glb_export.gd")
 const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
 const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
 const MaterialEditorSheetScript = preload("res://src/ui/material_editor_sheet.gd")
@@ -153,6 +155,7 @@ var _restoring_clip := false
 var _media_busy := false
 var _media_cancel := false
 var _media_export: Control
+var _pending_glb_options: Dictionary = {}
 
 var _color_sheet_active := false
 var _color_id := ""
@@ -467,24 +470,16 @@ func _build_panel_content() -> void:
 	shading_margin.add_child(shading_box)
 	_shading_panel.add_child(shading_margin)
 
-	_render_panel = VBoxContainer.new()
-	_render_panel.add_theme_constant_override("separation", 8)
-	var render_margin := MarginContainer.new()
-	render_margin.add_theme_constant_override("margin_left", 12)
-	render_margin.add_theme_constant_override("margin_right", 12)
-	render_margin.add_theme_constant_override("margin_top", 12)
-	render_margin.add_theme_constant_override("margin_bottom", 12)
-	var render_box := VBoxContainer.new()
-	render_box.add_theme_constant_override("separation", 8)
-	var render_open := Kit.text_button("Open export", "clapperboard", false, true)
-	render_open.custom_minimum_size = Vector2(96, 44)
-	render_open.pressed.connect(_open_render_sheet)
-	render_box.add_child(render_open)
-	var render_note := Kit.label("The embedded export surface arrives in W4.", 11, Kit.TEXT_MUTED)
-	render_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	render_box.add_child(render_note)
-	render_margin.add_child(render_box)
-	_render_panel.add_child(render_margin)
+	_render_panel = RenderPanelScript.new()
+	_render_panel.setup(doc, _view)
+	_render_panel.export_requested.connect(_export_glb)
+	_render_panel.tab_changed.connect(func(_tab: String) -> void:
+		if _workspace == "render" and _workspace_panel != null:
+			_workspace_panel.set_badge(_render_panel.current_output())
+	)
+	_media_export = _render_panel.media_sheet()
+	_media_export.export_requested.connect(_run_media_export)
+	_media_export.cancel_requested.connect(func() -> void: _media_cancel = true)
 
 func _build_workspace_panel() -> void:
 	_workspace_panel = WorkspacePanelScript.new()
@@ -838,8 +833,10 @@ func _on_context_action(id: String) -> void:
 			_on_rig_context_action(id)
 		"preview":
 			_enter_render_mode()
-		"render", "still":
-			_open_render_sheet()
+		"render":
+			_start_render_output()
+		"still":
+			_start_render_still()
 		"fit":
 			_fit_animate_pane()
 	_sync_context_state()
@@ -1294,6 +1291,7 @@ func _adopt_document(document: Node3D) -> void:
 	_inspector.setup(doc)
 	_timeline.setup(doc)
 	_rig_panel.setup(doc)
+	_render_panel.setup(doc, _view)
 	if _video_overlay != null:
 		_video_overlay.setup(doc, _view)
 	if _rig_overlay != null:
@@ -1334,6 +1332,8 @@ func _on_document_scene_changed() -> void:
 	_update_header()
 	_sync_transport_state()
 	_guard_camera_view()
+	if _render_panel != null:
+		_render_panel.refresh()
 
 
 ## A deleted or hidden camera must never leave the editor stuck in a view whose
@@ -1424,6 +1424,8 @@ func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
 	_sync_transport_state()
 	_sync_context_state()
+	if _render_panel != null:
+		_render_panel.refresh()
 
 func _on_document_dirty_changed(_is_dirty: bool) -> void:
 	_update_header()
@@ -1823,6 +1825,7 @@ func _update_workspace_panel() -> void:
 		"render":
 			_workspace_panel.set_content(_render_panel)
 			_workspace_panel.set_title("Render")
+			_workspace_panel.set_badge(_render_panel.current_output())
 		_:
 			_workspace_panel_open = false
 	if _workspace in ["shading", "rig", "render"] and _workspace_panel_open:
@@ -2357,105 +2360,6 @@ func _open_import_sheet() -> void:
 	_pick_model()
 
 
-func _open_render_sheet() -> void:
-	if doc == null or _view == null:
-		return
-	_overlay.clear_toast()
-	doc.pause()
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 12)
-
-	var format_row := HBoxContainer.new()
-	format_row.add_theme_constant_override("separation", 8)
-	format_row.add_child(Kit.label("Output", 12, Kit.TEXT))
-	var format_spacer := Control.new()
-	format_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	format_row.add_child(format_spacer)
-	format_row.add_child(Kit.mono_label("PNG · still + sequence", 9, Kit.TEXT_MUTED))
-	body.add_child(format_row)
-
-	body.add_child(Kit.section_label("Still image"))
-	_graphics_choice(body, "Long edge", "px", [
-		{"label": "1280", "value": 1280},
-		{"label": "1920", "value": 1920},
-		{"label": "2560", "value": 2560},
-		{"label": "3840", "value": 3840},
-	], _render_resolution, func(value: Variant) -> void: _render_resolution = int(value))
-	_graphics_choice(body, "Anti-aliasing", "MSAA", [
-		{"label": "Off", "value": Viewport.MSAA_DISABLED},
-		{"label": "2×", "value": Viewport.MSAA_2X},
-		{"label": "4×", "value": Viewport.MSAA_4X},
-		{"label": "8×", "value": Viewport.MSAA_8X},
-	], _render_msaa, func(value: Variant) -> void: _render_msaa = int(value))
-
-	var still_actions := HBoxContainer.new()
-	still_actions.add_theme_constant_override("separation", 8)
-	body.add_child(still_actions)
-	_render_still_button = Kit.text_button("Quick still", "image", true, true)
-	_render_still_button.tooltip_text = "Capture now and save in app storage"
-	_render_still_button.pressed.connect(_quick_still)
-	still_actions.add_child(_render_still_button)
-	_render_save_button = Kit.text_button("Save still…", "download", false, true)
-	_render_save_button.pressed.connect(_render_still)
-	still_actions.add_child(_render_save_button)
-
-	body.add_child(Kit.vsep())
-	body.add_child(Kit.section_label("Frame sequence"))
-	var frame_count := _sequence_frame_count()
-	var info := Kit.label(
-		"%d frames · %.2f s · %d fps" % [frame_count, doc.duration, maxi(1, doc.fps)],
-		10, Kit.TEXT_MUTED
-	)
-	body.add_child(info)
-	_graphics_choice(body, "Frame size", "px", [
-		{"label": "720", "value": 720},
-		{"label": "1080", "value": 1080},
-		{"label": "1440", "value": 1440},
-	], _sequence_resolution, func(value: Variant) -> void: _sequence_resolution = int(value))
-	_graphics_choice(body, "Anti-aliasing", "MSAA", [
-		{"label": "Off", "value": Viewport.MSAA_DISABLED},
-		{"label": "2×", "value": Viewport.MSAA_2X},
-		{"label": "4×", "value": Viewport.MSAA_4X},
-	], _sequence_msaa, func(value: Variant) -> void: _sequence_msaa = int(value))
-
-	_render_sequence_button = Kit.text_button("Render PNG sequence", "film", true, true)
-	_render_sequence_button.pressed.connect(_render_sequence)
-	body.add_child(_render_sequence_button)
-
-	var progress_box := VBoxContainer.new()
-	progress_box.add_theme_constant_override("separation", 5)
-	progress_box.visible = false
-	body.add_child(progress_box)
-	_render_progress = ProgressBar.new()
-	_render_progress.min_value = 0.0
-	_render_progress.max_value = 1.0
-	_render_progress.step = 0.001
-	_render_progress.show_percentage = false
-	_render_progress.custom_minimum_size.y = 5
-	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Kit.BORDER_SOFT, 0))
-	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, Kit.R_CONTROL, Kit.FOCUS, 0))
-	progress_box.add_child(_render_progress)
-	_render_status = Kit.mono_label("", 9, Kit.TEXT_MUTED)
-	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	progress_box.add_child(_render_status)
-
-	_media_export = MediaExportSheetScript.new()
-	_media_export.setup(doc, _view)
-	_media_export.export_requested.connect(_run_media_export)
-	_media_export.cancel_requested.connect(func() -> void: _media_cancel = true)
-	body.add_child(Kit.vsep())
-	body.add_child(Kit.section_label("Formats"))
-	var format_note := Kit.label(
-		"GIF encodes in the app. MP4 uses the Android encoder; on this platform it reports unavailable. Captures keep the reviewing renderer, IK included.",
-		9, Kit.TEXT_DIM)
-	format_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(format_note)
-	body.add_child(_media_export)
-
-	_overlay.show_modal("Render", "Real engine captures, saved as image files.", body, [
-		{"text": "Done", "primary": true},
-	])
-
 ## Every capture entry point shares this guard. A still or sequence must not
 ## start while another render or a media export owns the probe renderer:
 ## overlapping captures would interleave their chrome suppression and their
@@ -2477,6 +2381,83 @@ func _quick_still() -> void:
 		return
 	_save_still_internal(image)
 	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
+
+# -------------------------------------------------------------------------
+# Render workspace: GLB scene export
+# -------------------------------------------------------------------------
+
+func _start_render_output() -> void:
+	if doc == null or _media_export == null:
+		return
+	_media_export.start_export()
+
+
+func _start_render_still() -> void:
+	if doc == null or _media_export == null:
+		return
+	_media_export.set_format("png")
+	_media_export.start_export()
+
+
+func _export_glb(options: Dictionary) -> void:
+	if doc == null or _render_panel == null:
+		return
+	var desktop := OS.get_name() in ["Windows", "macOS", "Linux", "FreeBSD"] \
+		and DisplayServer.get_name() != "headless"
+	if desktop and DisplayServer.has_method("file_dialog_show"):
+		_pending_glb_options = options.duplicate(true)
+		var suggested := "Kinema_%s.glb" % _glb_project_slug()
+		DisplayServer.file_dialog_show(
+			"Export GLB", "", suggested, false,
+			DisplayServer.FILE_DIALOG_MODE_SAVE_FILE,
+			PackedStringArray(["*.glb"]), _on_glb_path_selected)
+		return
+	_export_glb_to(_default_glb_path(), options)
+
+
+func _on_glb_path_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
+	if not status or paths.is_empty():
+		return
+	var path := str(paths[0])
+	if path.get_extension().to_lower() != "glb":
+		path += ".glb"
+	_export_glb_to(path, _pending_glb_options)
+
+
+func _export_glb_to(path: String, options: Dictionary) -> void:
+	if doc == null or _render_panel == null:
+		return
+	var resolved := ProjectSettings.globalize_path(path)
+	var dir := resolved.get_base_dir()
+	if dir != "" and not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	_render_panel.set_export_status("Exporting…")
+	var exporter = GlbExportScript.new()
+	var result: Dictionary = exporter.export_scene(doc, resolved, options)
+	if bool(result.get("ok", false)):
+		_render_panel.set_export_result(result)
+		if _overlay != null:
+			_overlay.toast("GLB exported", "check", Kit.SUCCESS)
+	else:
+		var reason := str(result.get("error", "The GLB export failed."))
+		_render_panel.set_export_status(reason)
+		if _overlay != null:
+			_overlay.toast(reason, "triangle-alert", Kit.DANGER)
+
+
+func _default_glb_path() -> String:
+	var now := Time.get_datetime_dict_from_system()
+	var stamp := "%04d%02d%02d_%02d%02d%02d" % [
+		int(now.get("year", 0)), int(now.get("month", 1)), int(now.get("day", 1)),
+		int(now.get("hour", 0)), int(now.get("minute", 0)), int(now.get("second", 0)),
+	]
+	return "user://exports/Kinema_%s_%s.glb" % [_glb_project_slug(), stamp]
+
+
+func _glb_project_slug() -> String:
+	var title: String = doc.title if doc != null else ""
+	var slug := title.strip_edges().to_snake_case()
+	return slug if slug != "" else "project"
 
 # -------------------------------------------------------------------------
 # Media export sheet (PNG sequence / GIF / MP4 / camera). The quick still and
@@ -3483,6 +3464,12 @@ func _open_graphics_settings() -> void:
 	_open_settings("graphics")
 
 
+func _open_render_workspace() -> void:
+	if _overlay != null and _overlay.has_modal():
+		_overlay.close_modal()
+	set_workspace("render")
+
+
 func _open_settings(category: String = "general") -> void:
 	if doc == null:
 		return
@@ -3491,7 +3478,7 @@ func _open_settings(category: String = "general") -> void:
 	panel.renderer_restart_requested.connect(_on_settings_renderer_restart)
 	panel.orientation_requested.connect(_on_settings_orientation)
 	panel.risk_change_requested.connect(_on_settings_risk_change)
-	panel.open_render_requested.connect(_open_render_sheet)
+	panel.open_render_requested.connect(_open_render_workspace)
 	panel.open_import_requested.connect(_open_import_sheet)
 	_settings_panel = panel
 	panel.open(category)

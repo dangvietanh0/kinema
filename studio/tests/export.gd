@@ -25,6 +25,7 @@ func _check(condition: bool, message: String) -> void:
 func _ready() -> void:
 	await get_tree().process_frame
 	await _test_static_scene_export()
+	await _test_render_panel()
 	_finish()
 
 
@@ -157,4 +158,40 @@ func _test_static_scene_export() -> void:
 	_check(doc.objects.size() == 4, "export never mutates the live object list")
 	_check(doc.nodes[hidden].visible == false, "export never unhides a live node")
 	_check(_scene_names(doc) == live_names, "export never renames a live node")
+	doc.queue_free()
+
+
+func _test_render_panel() -> void:
+	print("EXPORT STEP: render panel")
+	var doc := _new_doc("Render Panel")
+	var cube: String = doc.add_primitive("box", Vector3.ZERO)
+	var camera: String = doc.add_camera(Vector3(4, 3, 5))
+	var panel = preload("res://src/ui/render_panel.gd").new()
+	add_child(panel)
+	panel.setup(doc, null)
+	await get_tree().process_frame
+	_check(panel.active_tab() == "render", "Render is the default tab")
+	_check(panel.media_sheet() != null, "the existing media export sheet is embedded")
+	_check(panel.media_sheet().get_parent() != null, "the media sheet is mounted, not modal")
+	_check(panel.media_sheet().format_ids().has("mp4"),
+		"MP4 stays in the format list")
+	if not panel.media_sheet().mp4_available():
+		_check(panel.media_sheet().mp4_reason() != "",
+			"MP4 keeps its exact reason when the backend is unavailable")
+	panel.set_active_tab("3d")
+	_check(panel.active_tab() == "3d", "the 3D export tab can be selected")
+	_check(panel.export_button().custom_minimum_size == Vector2(96, 44),
+		"Export GLB is a 96x44 target")
+	_check(panel.scope_text().contains("Whole scene"), "the scope is stated")
+	doc.set_selection("")
+	panel.refresh()
+	_check(panel.selection_toggle().disabled, "selection-only disables without one selected object")
+	_check(panel.selection_toggle().tooltip_text == "Select one object to export.",
+		"selection-only states the exact reason")
+	var requests: Array[Dictionary] = []
+	panel.export_requested.connect(func(options: Dictionary) -> void: requests.append(options))
+	panel.export_button().pressed.emit()
+	_check(requests.size() == 1 and bool(requests[0].get("animations", false)),
+		"Export GLB requests the real options")
+	panel.queue_free()
 	doc.queue_free()
