@@ -237,12 +237,12 @@ func _build_inspector() -> void:
 	_inspector_title = Kit.section_label("Bone")
 	_inspector_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(_inspector_title)
-	_reset_button = Kit.text_button("Reset pose", "restart", false, true)
+	_reset_button = Kit.text_button("Reset pose", "rotate-ccw", false, true)
 	_reset_button.name = "ResetPoseButton"
 	_reset_button.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_reset_button.pressed.connect(_on_reset_pose)
 	head.add_child(_reset_button)
-	_reset_all_button = Kit.icon_button("restart", "Reset all bone poses", 44, 18)
+	_reset_all_button = Kit.icon_button("rotate-ccw", "Reset all bone poses", 44, 18)
 	_reset_all_button.name = "ResetAllPoseButton"
 	_reset_all_button.pressed.connect(_on_reset_all_poses)
 	head.add_child(_reset_all_button)
@@ -427,7 +427,7 @@ func _build_keys() -> void:
 	_key_bone.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_key_bone.pressed.connect(_on_key_bone)
 	row.add_child(_key_bone)
-	_key_pose = Kit.text_button("Key pose", "diamond", false, true)
+	_key_pose = Kit.text_button("Key pose", "diamond-plus", false, true)
 	_key_pose.name = "KeyPoseButton"
 	_key_pose.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_key_pose.pressed.connect(_on_key_pose)

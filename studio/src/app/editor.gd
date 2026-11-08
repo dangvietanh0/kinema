@@ -1,10 +1,10 @@
 extends Control
 ## Editor workspace.
 ##
-## The editor is deliberately quiet: one top bar, a slim transform rail, the
-## viewport, a single-object dope sheet, and a right dock with the scene list
-## and object properties. On compact screens the dock becomes a drawer instead
-## of shrinking the viewport into a postage stamp.
+## One stage-first shell for every workspace: a top bar, the current
+## workspace's context row, the stage, and the transport (or the Animate pane).
+## The scene tree, inspector, rig and shading surfaces share one workspace
+## panel, reserved on wide windows and floating on narrow ones.
 ##
 ## The document owns all scene and animation state. This script only presents
 ## it and routes user intent; every mutation goes through Document so undo,
@@ -13,7 +13,8 @@ extends Control
 signal exit_requested
 ## Emitted when the workbench arrangement changes, including when Main
 ## resolves a different mode for the same preference.
-signal workspace_mode_changed(mode: String)
+signal layout_mode_changed(mode: String)
+signal workspace_changed(id: String)
 
 const DocumentScript = preload("res://src/core/document.gd")
 const RenderExport = preload("res://src/core/render_export.gd")
@@ -21,25 +22,23 @@ const EditorViewScript = preload("res://src/viewport/editor_view.gd")
 const OutlinerScript = preload("res://src/ui/outliner.gd")
 const InspectorScript = preload("res://src/ui/inspector.gd")
 const TimelineScript = preload("res://src/ui/timeline.gd")
-const SpeedGraphScript = preload("res://src/ui/speed_graph.gd")
 const OverlayScript = preload("res://src/ui/overlay.gd")
-const TopBarScript = preload("res://src/ui/components/top_bar.gd")
-const ViewportHeaderScript = preload("res://src/ui/components/viewport_header.gd")
-const ToolRailScript = preload("res://src/ui/components/tool_rail.gd")
-const StatusBarScript = preload("res://src/ui/components/status_bar.gd")
-const BottomBarScript = preload("res://src/ui/components/bottom_bar.gd")
-const PanelRailScript = preload("res://src/ui/components/panel_rail.gd")
+const WorkspaceBarScript = preload("res://src/ui/components/workspace_bar.gd")
+const ContextBarScript = preload("res://src/ui/components/context_bar.gd")
+const TransportBarScript = preload("res://src/ui/components/transport_bar.gd")
+const MenuPanelScript = preload("res://src/ui/components/menu_panel.gd")
+const StageHostScript = preload("res://src/ui/components/stage_host.gd")
+const WorkspacePanelScript = preload("res://src/ui/components/workspace_panel.gd")
+const AnimatePaneScript = preload("res://src/ui/animate_pane.gd")
 const PerfOverlayScript = preload("res://src/ui/components/perf_overlay.gd")
 const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
-const WorkspaceSheetScript = preload("res://src/ui/workspace_sheet.gd")
+const InterfaceSheetScript = preload("res://src/ui/interface_sheet.gd")
 const LayoutMathScript = preload("res://src/app/layout_math.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
+const PoseLibrary = preload("res://src/core/pose_library.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
-const ClipLaneScript = preload("res://src/ui/clip_lane.gd")
-const MediaLanesScript = preload("res://src/ui/media_lanes.gd")
 const RigPanelScript = preload("res://src/ui/rig_panel.gd")
 const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
-const RigToolbarScript = preload("res://src/ui/rig_toolbar.gd")
 const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overlay.gd")
 const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
 const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
@@ -65,40 +64,13 @@ const RISK_RESTORED_TOAST := "Mobile-safe graphics restored"
 
 const AUTOSAVE_SECONDS := 30.0
 const SHORT_MAX_HEIGHT := 520.0
-## The rail is a column only once the shell reaches Studio's minimum logical
-## width. Below that, 48 + 44 dp of rails would push the transport and the
-## media lanes past the canvas edge; the top-bar panel button opens the same
-## flyout instead.
-const PANEL_RAIL_MIN_WIDTH := 480.0
-## 44 dp transport plus its 1 px rules and vertical padding. Leaving the
-## folded strip at 52 clipped the ruler baseline on landscape phones.
-const FOLDED_TIMELINE := 56.0
-## The landscape workspace needs enough room for a 56 dp header, a 56 dp
-## footer and a real speed graph. Below this it closes instead of shrinking
-## the plot into a sliver.
-const WORKSPACE_MIN := Vector2(720.0, 360.0)
-const WORKSPACE_HEADER_H := 56.0
-const WORKSPACE_FOOTER_H := 56.0
-const WORKSPACE_GUTTER := 8.0
-const WORKSPACE_LEFT_RATIO := 0.52
-## The narrow SpeedGraph header needs about 392 dp: Presets collapses to a
-## 44 dp curve icon below 420 dp, but the rest of the row stays 44 dp. When
-## the 52 percent split would starve that row at the 720 dp minimum, the left
-## column yields down to 45 percent instead of letting the graph overflow.
-const WORKSPACE_GRAPH_MIN := 392.0
-const WORKSPACE_RESIZE_REASON := "The timeline workspace needs at least 720 × 360 dp."
-const WORKSPACE_DISABLED_REASON := "Landscape workspace needs at least 720 × 360 dp"
-## The scene panel is persistent on Studio and Desktop once the shell can hold
-## the 44 dp rail without starving the stage.
-const SCENE_PANEL_MIN_WIDTH := 480.0
-## Above this width the stored preference decides between the expanded panel
-## and the rail. Below it the rail is the default and expansion is transient.
-const SCENE_EXPANDED_MIN_WIDTH := 760.0
-const SCENE_RAIL_WIDTH := 44.0
-const SCENE_EXPANDED_MIN := 196.0
-const SCENE_EXPANDED_MAX := 280.0
-## A transient scene expansion must not leave the stage narrower than this.
-const SCENE_STAGE_FLOOR := 320.0
+## At this width the Shading/Rig/Render panel becomes part of the layout; the
+## stage keeps at least 487 dp (768 - 280 - 1 dp gutter).
+const PANEL_RESERVE_MIN_WIDTH := 768.0
+const PANEL_RESERVED_MIN := 280.0
+const PANEL_RESERVED_MAX := 360.0
+const PANEL_OVERLAY_MAX := 400.0
+const PANEL_OVERLAY_MARGIN := 16.0
 
 ## Material swatches are a graphite ramp. The hex field still accepts any
 ## colour, but the default palette never pulls the workbench off-message.
@@ -108,91 +80,66 @@ const COLOR_PALETTE := [
 	"#D8D8D8", "#BDBDBD", "#A0A0A0", "#7A7A7A", "#4A4A4A", "#202020",
 ]
 
+## The five workspaces are the shell's top-level mental model. They are
+## independent from the layout preset: a phone can show any workspace in
+## Compact or Studio, and the choice survives project open.
+const WORKSPACES := ["scene", "shading", "rig", "animate", "render"]
+const WORKSPACE_LABELS := {
+	"scene": "Scene", "shading": "Shading", "rig": "Rig",
+	"animate": "Animate", "render": "Render",
+}
+
 var doc: DocumentScript = null
 
 var _project_meta: Dictionary = {}
 var _layout: VBoxContainer
-var _top_bar: PanelContainer
-var _status_bar: PanelContainer
-var _bottom_bar: PanelContainer
+var _workspace_bar: PanelContainer
+var _context_bar: PanelContainer
+var _transport_bar: PanelContainer
+var _instrumentation: PanelContainer
+var _instrumentation_label: Label
+var _instrumentation_visible := false
+var _workspace_menu: Control
+var _project_menu: Control
+var _view_menu: Control
+var _rig_axis_menu: Control
+var _camera_menu: Control
 
-var _body: HBoxContainer
-var _rail: PanelContainer
-var _scene_column: PanelContainer
-var _scene_rail: PanelContainer
-var _scene_rail_expand: Button
-var _scene_rail_count: Label
+var _main: HBoxContainer
 var _center: VBoxContainer
-var _view_header: PanelContainer
+var _stage_host: Control
+var _workspace_panel: Control
+var _workspace_panel_open := false
+var _panel_spacer: Control
+var _animate_pane: VBoxContainer
 var _viewport_host: Control
 var _view: Control
 var _perf_overlay: PanelContainer
 var _rig_overlay: Control
-var _rig_toolbar: Control
 var _rig_mode := false
 var _video_overlay: Control
-var _timeline_panel: PanelContainer
-var _timeline_frame: VBoxContainer
-var _timeline_stack: VBoxContainer
-var _lane_scroll: ScrollContainer
-var _lane_body: VBoxContainer
-var _clip_lane: VBoxContainer
 var _timeline: VBoxContainer
-var _media_lanes: VBoxContainer
-## The landscape workspace is a separate surface over the whole editor. It
-## temporarily adopts the live dope sheet, lane scroll and transport, then
-## restores their exact original parents and indices on close.
-var _timeline_workspace: PanelContainer
-var _workspace_header: PanelContainer
-var _workspace_title: Label
-var _workspace_close_button: Button
-var _workspace_body: HBoxContainer
-var _workspace_left: VBoxContainer
-var _workspace_right: VBoxContainer
-var _workspace_graph: Control
-var _workspace_footer: PanelContainer
-var _workspace_open := false
-var _workspace_saved: Dictionary = {}
-var _workspace_previous_mode := "dope"
-var _panel_rail: PanelContainer
-var _dock: PanelContainer
-var _dock_box: VBoxContainer
-var _dock_close_row: MarginContainer
-var _dock_title_label: Label
-var _dock_close_button: Button
-var _drawer_scene_tab: Button
-var _drawer_props_tab: Button
 var _outliner_panel: PanelContainer
 var _inspector_panel: PanelContainer
 var _outliner: VBoxContainer
 var _inspector: VBoxContainer
 var _rig_frame: PanelContainer
 var _rig_panel: VBoxContainer
-var _drawer_rig_tab: Button
-var _drawer_scrim: ColorRect
+var _shading_panel: VBoxContainer
+var _render_panel: VBoxContainer
 var _overlay: Control
 var _autosave: Timer
 
 var _tool := "select"
 var _short := false
-## True when the user has folded or opened the dope sheet themselves. A manual
-## choice survives rotation; automatic landscape folding does not override it.
-var _timeline_user_override := false
 var _fit_percent := 100.0
 var _fit_user_scale_enabled := true
 var _fit_clamped := false
-var _drawer_open := false
-var _compact_tab := "scene"
-## A sub-760 expansion is a transient gesture: it is keyed to the current shell
-## width and never writes `editor.scene_panel_expanded`.
-var _scene_transient := false
-var _scene_transient_width := -1.0
 var layout_info: Dictionary = {}
-var workbench_mode := "studio"
-var _timeline_visible := false
-## Session-only "More" state: raises the overlay budget to the full cap until
-## the sheet is closed or reopened. It is never persisted.
-var _timeline_more := false
+var _layout_preset := "studio"
+var _workspace := "scene"
+var _workspace_menu_open := false
+var _context_workspace := ""
 var _closing := false
 var _last_save_auto := false
 
@@ -219,6 +166,10 @@ var _color_hex: LineEdit
 var _color_rgb: Array = []
 var _color_updating := false
 
+var _time_frame_field: LineEdit
+var _time_seconds_field: LineEdit
+var _time_error: Label
+
 var _settings_duration_field
 var _settings_fps_field
 var _settings_linear: Button
@@ -241,7 +192,7 @@ var _render_save_button: Button
 var _preset_buttons: Array[Button] = []
 var _renderer_pending := ""
 var _settings_panel: Control = null
-var _workspace_sheet: Control = null
+var _interface_sheet: Control = null
 ## The material library and editor sheets, kept for smoke/test inspection.
 var _material_sheet: Control = null
 var _material_editor_sheet: Control = null
@@ -258,7 +209,6 @@ var _render_ui_state: Dictionary = {}
 ## chrome; the editor owns header visibility and Android back precedence.
 var _look_through := false
 var _look_camera_id := ""
-var _look_header_was_visible := true
 var _look_perf_was_visible := false
 
 func _ready() -> void:
@@ -269,14 +219,12 @@ func _ready() -> void:
 	_layout.add_theme_constant_override("separation", int(Kit.GUTTER))
 	add_child(_layout)
 
-	_build_top_bar()
+	_build_workspace_bar()
+	_build_context_bar()
 	_build_body()
-	_build_status_bar()
-	_build_bottom_bar()
-	# The scrim is added before the dock so GUI picking gives the drawer the
-	# first chance at taps inside it; the scrim only sees taps outside.
-	_build_drawer_scrim()
-	_build_dock()
+	_build_transport_bar()
+	_build_instrumentation()
+	_build_workspace_panel()
 	_build_render_hud()
 	_apply_collapsed_sections()
 
@@ -286,6 +234,32 @@ func _ready() -> void:
 	_overlay.modal_opened.connect(_on_modal_opened)
 	_overlay.set_toast_anchor(_viewport_host)
 
+	# The two shell menus are persistent nodes so their rows and scrim do not
+	# have to be rebuilt on every open. They paint above the workbench and below
+	# the modal overlay (z 100).
+	_workspace_menu = MenuPanelScript.new()
+	_workspace_menu.name = "WorkspaceMenu"
+	_workspace_menu.row_selected.connect(_on_workspace_menu_row)
+	_workspace_menu.closed.connect(func() -> void: _workspace_menu_open = false)
+	add_child(_workspace_menu)
+	_project_menu = MenuPanelScript.new()
+	_project_menu.name = "ProjectMenu"
+	_project_menu.row_selected.connect(_on_project_menu_row)
+	add_child(_project_menu)
+
+	_view_menu = MenuPanelScript.new()
+	_view_menu.name = "ViewMenu"
+	_view_menu.row_selected.connect(_on_view_menu_row)
+	add_child(_view_menu)
+	_rig_axis_menu = MenuPanelScript.new()
+	_rig_axis_menu.name = "RigAxisMenu"
+	_rig_axis_menu.row_selected.connect(_on_rig_axis_menu_row)
+	add_child(_rig_axis_menu)
+	_camera_menu = MenuPanelScript.new()
+	_camera_menu.name = "CameraMenu"
+	_camera_menu.row_selected.connect(_on_camera_menu_row)
+	add_child(_camera_menu)
+
 	_autosave = Timer.new()
 	_autosave.wait_time = _autosave_seconds()
 	_autosave.autostart = _autosave.wait_time > 0.0
@@ -293,6 +267,7 @@ func _ready() -> void:
 	add_child(_autosave)
 
 	Perf.sample_updated.connect(_on_perf_sample)
+	workspace_changed.connect(_on_workspace_changed)
 	_apply_editor_preferences()
 	_apply_perf_preferences()
 
@@ -303,59 +278,78 @@ func _ready() -> void:
 # Construction
 # -------------------------------------------------------------------------
 
-func _build_top_bar() -> void:
-	_top_bar = TopBarScript.new()
-	_top_bar.action_requested.connect(_on_chrome_action)
-	_top_bar.layout_requested.connect(_open_workspace_sheet)
-	_layout.add_child(_top_bar)
+func _build_workspace_bar() -> void:
+	_workspace_bar = WorkspaceBarScript.new()
+	_workspace_bar.action_requested.connect(_on_chrome_action)
+	_workspace_bar.workspace_tab_requested.connect(_on_workspace_tab_requested)
+	_workspace_bar.more_workspaces_requested.connect(_toggle_workspace_menu)
+	_workspace_bar.camera_exit_requested.connect(_exit_look_through)
+	_layout.add_child(_workspace_bar)
+
+func _build_context_bar() -> void:
+	_context_bar = ContextBarScript.new()
+	_context_bar.action_requested.connect(_on_context_action)
+	_layout.add_child(_context_bar)
+
+func _build_transport_bar() -> void:
+	_transport_bar = TransportBarScript.new()
+	_transport_bar.play_requested.connect(_on_transport_play)
+	_transport_bar.skip_start_requested.connect(_on_transport_skip)
+	_transport_bar.time_requested.connect(_open_time_entry_sheet)
+	_transport_bar.add_key_requested.connect(_on_transport_add_key)
+	_transport_bar.animate_requested.connect(_on_transport_animate)
+	_layout.add_child(_transport_bar)
+
+func _build_instrumentation() -> void:
+	_instrumentation = PanelContainer.new()
+	_instrumentation.name = "Instrumentation"
+	_instrumentation.custom_minimum_size.y = 20
+	_instrumentation.visible = false
+	var style := Kit.flat_style(Kit.SURFACE_2, 0, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
+	_instrumentation.add_theme_stylebox_override("panel", style)
+	_instrumentation_label = Kit.mono_label("", 11, Kit.TEXT_MUTED)
+	_instrumentation_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_instrumentation.add_child(_instrumentation_label)
+	_layout.add_child(_instrumentation)
+	_update_instrumentation()
 
 func _build_body() -> void:
-	_body = HBoxContainer.new()
-	_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_body.add_theme_constant_override("separation", int(Kit.GUTTER))
-	_layout.add_child(_body)
-
-	_rail = ToolRailScript.new()
-	_rail.tool_selected.connect(_select_tool)
-	_rail.frame_requested.connect(_focus_selection)
-	_rail.add_requested.connect(_open_add_sheet)
-	_body.add_child(_rail)
+	_main = HBoxContainer.new()
+	_main.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_main.add_theme_constant_override("separation", int(Kit.GUTTER))
+	_layout.add_child(_main)
 
 	_center = VBoxContainer.new()
 	_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_center.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	# A one-pixel gutter lets the black shell show between the stage, the
-	# header and the sheet instead of stacking same-valued panels edge to edge.
+	# A one-pixel gutter separates the stage from the Animate pane without
+	# stacking same-valued panels edge to edge.
 	_center.add_theme_constant_override("separation", int(Kit.GUTTER))
-	_body.add_child(_center)
+	_main.add_child(_center)
 
-	# The view header is part of the layout, not a floating plate: it owns the
-	# camera preset, Add, grid and frame without covering the image.
-	_view_header = ViewportHeaderScript.new()
-	_view_header.add_requested.connect(_open_add_sheet)
-	_view_header.frame_requested.connect(_focus_selection)
-	_center.add_child(_view_header)
-
-	_viewport_host = Control.new()
-	_viewport_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_viewport_host.custom_minimum_size.y = 120
-	_viewport_host.clip_contents = true
-	_center.add_child(_viewport_host)
+	_stage_host = StageHostScript.new()
+	_stage_host.name = "StageHost"
+	_stage_host.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_stage_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_stage_host.custom_minimum_size.y = 120
+	_stage_host.clip_contents = true
+	_center.add_child(_stage_host)
 
 	_view = EditorViewScript.new()
 	_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_viewport_host.add_child(_view)
+	_stage_host.setup(_view)
+	# Existing overlay code and tests keep their viewport hook; it is the one
+	# real viewport host, now owned by StageHost.
+	_viewport_host = _stage_host.view_host()
 	_view.set_tool(_tool)
 	_view.quick_render_requested.connect(_enter_render_mode)
 	_view.performance_requested.connect(_toggle_performance_overlay)
-	# The header and the view share one source of truth. The view reports a
-	# free-orbit camera or a grid change; the header writes intent back.
-	_view.view_changed.connect(_on_view_changed)
 	_view.grid_changed.connect(_on_view_grid_changed)
 	_view.look_through_exited.connect(_on_view_look_through_exited)
-	_view.bind_header_controls(_view_header.grid_button(), _view_header.frame_button())
-	_view_header.view_requested.connect(_on_view_requested)
-	_view_header.grid_toggled.connect(_on_view_header_grid_toggled)
 
 	# The overlay is a sibling of the view so it floats above the 3D surface
 	# without becoming part of the viewport's own HUD layout.
@@ -368,17 +362,12 @@ func _build_body() -> void:
 	_viewport_host.add_child(_rig_overlay)
 	_rig_overlay.mode_changed.connect(_on_overlay_mode_changed)
 
-	# The floating Pose/Edit toolbar belongs to the stage, not the dock. It
-	# sits above the overlay so it stays reachable after the Rig dock closes.
-	_rig_toolbar = RigToolbarScript.new()
-	_rig_toolbar.name = "RigToolbar"
-	_viewport_host.add_child(_rig_toolbar)
-	_rig_toolbar.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_rig_toolbar.position = Vector2(12, 12)
-	_rig_toolbar.visible = false
-	_rig_toolbar.mode_changed.connect(_on_toolbar_mode_changed)
-	_rig_toolbar.add_bone_requested.connect(_on_rig_add_bone)
-	_rig_toolbar.done_requested.connect(_on_rig_done)
+	# The Animate pane is a real sibling below the stage. It owns the one
+	# Timeline instance for the whole shell.
+	_animate_pane = AnimatePaneScript.new()
+	_animate_pane.name = "AnimatePane"
+	_animate_pane.visible = false
+	_center.add_child(_animate_pane)
 
 	# The rotoscope layer sits on the preview surface itself: above the 3D
 	# texture (which renders behind its parent) and below the HUD layer, so
@@ -391,523 +380,54 @@ func _build_body() -> void:
 
 	_build_timeline()
 
-	# The persistent scene column lives between the stage and the panel rail,
-	# on the right edge of the body (user override 2026-11-01: the scene tree
-	# belongs on the right). It is hidden on Compact and on shells too narrow
-	# to host the rail; the outliner then returns to the dock, which is the
-	# only modal surface left.
-	_scene_column = PanelContainer.new()
-	_scene_column.visible = false
-	_scene_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var scene_style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	# The inner edge faces the stage on the column's left side now that the
-	# column hangs off the right edge.
-	scene_style.border_width_left = 1
-	scene_style.content_margin_left = 0
-	scene_style.content_margin_right = 0
-	scene_style.content_margin_top = 0
-	scene_style.content_margin_bottom = 0
-	_scene_column.add_theme_stylebox_override("panel", scene_style)
-	_body.add_child(_scene_column)
-	_build_scene_rail()
+	# The reserved panel takes real layout width here. The panel surface itself
+	# is a full-rect sibling of the shell; this spacer is the only thing that
+	# changes the stage width.
+	_panel_spacer = Control.new()
+	_panel_spacer.name = "PanelSpacer"
+	_panel_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_panel_spacer.custom_minimum_size.x = 0.0
+	_main.add_child(_panel_spacer)
 
-	# The right rail is the only permanent panel chrome. The dock itself is an
-	# overlay, so the stage keeps every pixel the old 320 dp column reserved.
-	_panel_rail = PanelRailScript.new()
-	# The rail stays above the scrim and the flyout: pages are one tap away
-	# while a panel is open, not close-then-reopen.
-	_panel_rail.z_index = 13
-	_panel_rail.page_requested.connect(_toggle_drawer)
-	_body.add_child(_panel_rail)
-
-## The collapsed scene rail is a mount point, not a header: one 44 dp expand
-## action, the layers icon and the object count. It never pretends to own a
-## list it does not show.
-func _build_scene_rail() -> void:
-	_scene_rail = PanelContainer.new()
-	_scene_rail.custom_minimum_size = Vector2(SCENE_RAIL_WIDTH, 0.0)
-	_scene_rail.visible = false
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	# The rail hangs off the right edge; its inner edge faces the stage.
-	style.border_width_left = 1
-	style.content_margin_left = 0
-	style.content_margin_right = 0
-	style.content_margin_top = 0
-	style.content_margin_bottom = 0
-	_scene_rail.add_theme_stylebox_override("panel", style)
-	_scene_column.add_child(_scene_rail)
-
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_top", 4)
-	margin.add_theme_constant_override("margin_bottom", 8)
-	_scene_rail.add_child(margin)
-
-	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 4)
-	margin.add_child(column)
-
-	_scene_rail_expand = Kit.icon_button("panel-right", "Expand the scene panel", 44, 20)
-	_scene_rail_expand.pressed.connect(_on_scene_rail_expand)
-	column.add_child(_scene_rail_expand)
-
-	# Spec: layers icon plus the object count. The rail is 44 dp wide, so the
-	# icon and its badge stack vertically instead of hanging a word off the
-	# glyph column.
-	var layers := Kit.icon("layers", Kit.TEXT_DIM, 18)
-	layers.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	column.add_child(layers)
-
-	var badge := PanelContainer.new()
-	badge.custom_minimum_size = Vector2(24, 24)
-	badge.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	badge.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 1))
-	column.add_child(badge)
-	_scene_rail_count = Kit.label("0", 10, Kit.TEXT_MUTED, 600)
-	_scene_rail_count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_scene_rail_count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	badge.add_child(_scene_rail_count)
-
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_child(spacer)
-
-
-func _build_status_bar() -> void:
-	_status_bar = StatusBarScript.new()
-	_status_bar.action_requested.connect(_on_chrome_action)
-	_layout.add_child(_status_bar)
-
-
-func _build_bottom_bar() -> void:
-	_bottom_bar = BottomBarScript.new()
-	_bottom_bar.action_requested.connect(_on_bottom_action)
-	_layout.add_child(_bottom_bar)
+	_build_panel_content()
 
 func _build_timeline() -> void:
-	# The timeline is a bottom-anchored overlay inside the stage host, not a
-	# child of the center column. Opening it grows over the image instead of
-	# resizing the 3D view.
-	_timeline_panel = PanelContainer.new()
-	_timeline_panel.z_index = 9
-	_timeline_panel.anchor_left = 0.0
-	_timeline_panel.anchor_right = 1.0
-	_timeline_panel.anchor_top = 1.0
-	_timeline_panel.anchor_bottom = 1.0
-	_timeline_panel.offset_left = 0.0
-	_timeline_panel.offset_right = 0.0
-	_timeline_panel.offset_top = -FOLDED_TIMELINE
-	_timeline_panel.offset_bottom = 0.0
-	var style := Kit.flat_style(Kit.SURFACE, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_top = 1
-	style.shadow_color = Color(0.0, 0.0, 0.0, 0.55)
-	style.shadow_size = 10
-	style.shadow_offset = Vector2(0.0, -2.0)
-	_timeline_panel.add_theme_stylebox_override("panel", style)
-	_viewport_host.add_child(_timeline_panel)
-	_viewport_host.resized.connect(_on_viewport_resized)
-
-	# The frame keeps the transport below the sheet stack so the clip lane,
-	# dope sheet and media lanes grow upward over the stage while the transport
-	# stays on the bottom edge.
-	_timeline_frame = VBoxContainer.new()
-	_timeline_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_timeline_frame.add_theme_constant_override("separation", 0)
-	_timeline_panel.add_child(_timeline_frame)
-
-	# The timeline area is two stacked surfaces: the dope sheet (whose transport
-	# is mounted below) and one lane stack. The lane stack holds the clip lane
-	# and the media lanes inside a scroll viewport, so More can reveal both even
-	# when the 46 percent cap cannot fit their natural heights.
-	_timeline_stack = VBoxContainer.new()
-	_timeline_stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_timeline_stack.add_theme_constant_override("separation", int(Kit.GUTTER))
-	_timeline_frame.add_child(_timeline_stack)
-
 	_timeline = TimelineScript.new()
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
-	_timeline.close_requested.connect(_on_timeline_close_requested)
-	_timeline.mode_changed.connect(_on_timeline_mode_changed)
-	_timeline.more_requested.connect(_on_timeline_more_requested)
-	_timeline.duration_row_changed.connect(_on_timeline_duration_row_changed)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
-	_timeline.channel_selected.connect(_on_timeline_channel_selected)
-	_timeline.workspace_requested.connect(_on_timeline_workspace_requested)
-	_timeline_stack.add_child(_timeline)
+	# The Animate pane is permanent, so fold is a sheet state, not a shell
+	# state. The transport's chevron and the compact header's close action both
+	# collapse the dope sheet and leave the transport reachable.
+	_timeline.close_requested.connect(func() -> void:
+		_timeline.set_sheet_visible(not _timeline.sheet_visible())
+	)
+	_animate_pane.setup(_timeline)
 
-	_lane_scroll = ScrollContainer.new()
-	_lane_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_lane_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	_lane_scroll.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	_lane_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_timeline_stack.add_child(_lane_scroll)
-
-	_lane_body = VBoxContainer.new()
-	_lane_body.add_theme_constant_override("separation", int(Kit.GUTTER))
-	_lane_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_lane_scroll.add_child(_lane_body)
-
-	_clip_lane = ClipLaneScript.new()
-	_clip_lane.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	_clip_lane.notice.connect(_on_timeline_notice)
-	_clip_lane.sheet_requested.connect(_on_lane_sheet_requested)
-	_lane_body.add_child(_clip_lane)
-
-	_media_lanes = MediaLanesScript.new()
-	_media_lanes.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	_media_lanes.audio_selected.connect(_open_audio_sheet)
-	_media_lanes.video_selected.connect(_open_video_reference_sheet)
-	_media_lanes.video_dragged.connect(_on_media_video_dragged)
-	_media_lanes.add_audio_requested.connect(_open_media_import_sheet)
-	_media_lanes.add_video_requested.connect(_open_media_import_sheet)
-	_media_lanes.collapsed_changed.connect(_on_media_lanes_collapsed_changed)
-	# Media stays out of the way until imported media exists; an expanded
-	# media row would eat dope-sheet height for nothing.
-	_media_lanes.set_collapsed(true)
-	if doc != null:
-		_media_lanes.setup(doc)
-	_lane_body.add_child(_media_lanes)
-
-	# The transport is one instance owned by the timeline; mount it below the
-	# stack instead of building a second row.
-	_timeline.mount_transport(_timeline_frame)
-	_build_timeline_workspace()
-
-## The landscape workspace temporarily adopts the live timeline nodes instead
-## of building a second dope sheet or transport. It is a full-editor surface so
-## the 56 dp header and footer still leave the graph a real plot; the stage
-## host itself is only 322 dp tall on a 915x412 landscape phone.
-func _build_timeline_workspace() -> void:
-	_timeline_workspace = PanelContainer.new()
-	_timeline_workspace.name = "TimelineWorkspace"
-	_timeline_workspace.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_timeline_workspace.z_index = 50
-	_timeline_workspace.visible = false
-	_timeline_workspace.mouse_filter = Control.MOUSE_FILTER_STOP
-	var panel_style := Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0)
-	panel_style.content_margin_left = 0
-	panel_style.content_margin_right = 0
-	panel_style.content_margin_top = 0
-	panel_style.content_margin_bottom = 0
-	_timeline_workspace.add_theme_stylebox_override("panel", panel_style)
-	add_child(_timeline_workspace)
-
-	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 0)
-	_timeline_workspace.add_child(column)
-
-	# 56 dp header: the clip name on the left, one 96x44 Close on the right.
-	_workspace_header = PanelContainer.new()
-	_workspace_header.custom_minimum_size.y = WORKSPACE_HEADER_H
-	var head_style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
-	head_style.border_width_bottom = 1
-	head_style.content_margin_left = 12
-	head_style.content_margin_right = 12
-	head_style.content_margin_top = 6
-	head_style.content_margin_bottom = 6
-	_workspace_header.add_theme_stylebox_override("panel", head_style)
-	column.add_child(_workspace_header)
-	var head_row := HBoxContainer.new()
-	head_row.add_theme_constant_override("separation", 8)
-	_workspace_header.add_child(head_row)
-	_workspace_title = Kit.section_label("Timeline")
-	_workspace_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_workspace_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	head_row.add_child(_workspace_title)
-	_workspace_close_button = Kit.text_button("Close", "x", false, true)
-	_workspace_close_button.custom_minimum_size = Vector2(96, 44)
-	_workspace_close_button.pressed.connect(func() -> void: close_timeline_workspace())
-	head_row.add_child(_workspace_close_button)
-
-	# 52/48 body: the live dope sheet owns the left column, the real speed
-	# graph owns the right.
-	_workspace_body = HBoxContainer.new()
-	_workspace_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_workspace_body.add_theme_constant_override("separation", int(WORKSPACE_GUTTER))
-	column.add_child(_workspace_body)
-	_workspace_left = VBoxContainer.new()
-	_workspace_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_workspace_left.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_workspace_left.size_flags_stretch_ratio = WORKSPACE_LEFT_RATIO
-	_workspace_left.add_theme_constant_override("separation", 4)
-	_workspace_body.add_child(_workspace_left)
-	_workspace_right = VBoxContainer.new()
-	_workspace_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_workspace_right.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_workspace_right.size_flags_stretch_ratio = 1.0 - WORKSPACE_LEFT_RATIO
-	_workspace_right.add_theme_constant_override("separation", 0)
-	_workspace_body.add_child(_workspace_right)
-	_workspace_graph = SpeedGraphScript.new()
-	_workspace_graph.name = "SpeedGraph"
-	_workspace_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_workspace_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_workspace_right.add_child(_workspace_graph)
-
-	# 56 dp footer: the one existing transport instance mounts here.
-	_workspace_footer = PanelContainer.new()
-	_workspace_footer.custom_minimum_size.y = WORKSPACE_FOOTER_H
-	var foot_style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
-	foot_style.border_width_top = 1
-	foot_style.content_margin_left = 0
-	foot_style.content_margin_right = 0
-	foot_style.content_margin_top = 0
-	foot_style.content_margin_bottom = 0
-	_workspace_footer.add_theme_stylebox_override("panel", foot_style)
-	column.add_child(_workspace_footer)
-
-
-func _layout_timeline_workspace() -> void:
-	if _workspace_body == null or _workspace_left == null or _workspace_right == null:
-		return
-	var width: float = _workspace_body.size.x
-	if width <= 1.0 and _timeline_workspace != null:
-		width = _timeline_workspace.size.x
-	if width <= 1.0:
-		return
-	var available := maxf(0.0, width - WORKSPACE_GUTTER)
-	var ratio := WORKSPACE_LEFT_RATIO
-	if available > 0.0 and available * (1.0 - ratio) < WORKSPACE_GRAPH_MIN:
-		ratio = clampf(1.0 - WORKSPACE_GRAPH_MIN / available, 0.45, WORKSPACE_LEFT_RATIO)
-	_workspace_left.custom_minimum_size.x = floorf(available * ratio)
-	_workspace_right.custom_minimum_size.x = floorf(available * (1.0 - ratio))
-
-
-func _active_clip_name() -> String:
-	if doc == null or doc.animation_system == null:
-		return "Timeline"
-	var clip_id: String = doc.animation_system.active_clip_id()
-	if clip_id == "":
-		return "Timeline"
-	var clip: Dictionary = doc.animation_system.get_clip(clip_id)
-	var title := str(clip.get("name", "")).strip_edges()
-	return title if title != "" else "Timeline"
-
-
-func timeline_workspace_open() -> bool:
-	return _workspace_open and _timeline_workspace != null and _timeline_workspace.visible
-
-
-func open_timeline_workspace() -> bool:
-	if _timeline_workspace == null or _timeline == null:
-		return false
-	if _workspace_open:
-		return true
-	if not _timeline.sheet_visible():
-		return false
-	if size.x < WORKSPACE_MIN.x or size.y < WORKSPACE_MIN.y:
-		return false
-	_workspace_previous_mode = _timeline.mode()
-	_workspace_saved = {
-		"timeline": _capture_child(_timeline),
-		"lane": _capture_child(_lane_scroll),
-		"transport": _capture_child(_timeline.transport_panel()),
-		"panel_visible": _timeline_panel.visible if _timeline_panel != null else true,
-	}
-	_workspace_open = true
-	var transport: Control = _timeline.transport_panel()
-	if transport != null:
-		transport.reparent(_workspace_footer, false)
-	_timeline.reparent(_workspace_left, false)
-	_lane_scroll.reparent(_workspace_left, false)
-	_workspace_left.move_child(_lane_scroll, 0)
-	_workspace_left.move_child(_timeline, 1)
-	# The workspace is the dope sheet and the graph, not a second clip/media
-	# lane stack. The lane scroll is still adopted so the restore is exact.
-	_lane_scroll.visible = false
-	_timeline.set_workspace_mode(true)
-	if _timeline_panel != null:
-		_timeline_panel.visible = false
-	_workspace_title.text = _active_clip_name()
-	_workspace_graph.setup(doc)
-	_workspace_graph.set_context(doc.selected_id if doc != null else "")
-	_workspace_graph.set_channel(_timeline.channel())
-	_timeline_workspace.visible = true
-	_layout_timeline_workspace()
-	return true
-
-
-func close_timeline_workspace(restore_focus: bool = true) -> void:
-	if not _workspace_open:
-		return
-	_workspace_open = false
-	_restore_workspace_child("transport")
-	_restore_workspace_child("timeline")
-	_restore_workspace_child("lane")
-	_timeline.set_workspace_mode(false)
-	_timeline.set_mode(_workspace_previous_mode)
-	if _timeline_panel != null:
-		_timeline_panel.visible = bool(_workspace_saved.get("panel_visible", true))
-	_timeline_workspace.visible = false
-	_sync_timeline_visibility()
-	if restore_focus:
-		var expand: Button = _timeline.expand_button()
-		if expand != null and expand.is_visible_in_tree():
-			expand.grab_focus()
-
-
-func _capture_child(node: Node) -> Dictionary:
-	if node == null or node.get_parent() == null:
-		return {"node": node, "parent": null, "index": -1}
-	return {"node": node, "parent": node.get_parent(), "index": node.get_index()}
-
-
-func _restore_workspace_child(key: String) -> void:
-	var saved: Dictionary = _workspace_saved.get(key, {})
-	var node: Node = saved.get("node") as Node
-	var parent: Node = saved.get("parent") as Node
-	if node == null or parent == null or not is_instance_valid(node) or not is_instance_valid(parent):
-		return
-	if node.get_parent() != parent:
-		node.reparent(parent, false)
-	var index: int = int(saved.get("index", -1))
-	if index >= 0 and index < parent.get_child_count():
-		parent.move_child(node, index)
-
-
-func _on_timeline_workspace_requested() -> void:
-	open_timeline_workspace()
-
-
-func _on_timeline_channel_selected(channel: String) -> void:
-	if _workspace_graph != null:
-		_workspace_graph.set_channel(channel)
-
-
-func _on_timeline_workspace_selection(object_id: String) -> void:
-	if _workspace_open and _workspace_graph != null:
-		_workspace_graph.set_context(object_id)
-
-
-## Close the workspace when its window falls below the 720x360 minimum. The
-## toast is emitted once because the close flips `_workspace_open` first.
-func _on_timeline_workspace_bounds() -> void:
-	if not _workspace_open:
-		return
-	if size.x >= WORKSPACE_MIN.x and size.y >= WORKSPACE_MIN.y:
-		_layout_timeline_workspace()
-		return
-	close_timeline_workspace(false)
-	if _overlay != null:
-		_overlay.toast(WORKSPACE_RESIZE_REASON, "triangle-alert", Kit.WARNING)
-
-
-func _on_lane_sheet_requested(body: Control, title: String, subtitle: String) -> void:
-	_overlay.show_sheet(title, subtitle, body, [
-		{"text": "Close", "compact": true},
-	])
-
-func _open_audio_sheet(id: String) -> void:
-	if doc == null:
-		return
-	var sheet := AudioSheetScript.new()
-	sheet.setup(doc.media_system)
-	sheet.open(id)
-	_overlay.show_sheet("Audio track", "Start, trim, fades and mute.", sheet, [
-		{"text": "Close", "compact": true},
-	])
-
-func _open_video_reference_sheet(id: String) -> void:
-	if doc == null:
-		return
-	var sheet := VideoReferencePanelScript.new()
-	sheet.setup(doc.media_system)
-	sheet.open(id)
-	_overlay.show_sheet("Video reference", "Opacity, fit, offset, scale and flip.", sheet, [
-		{"text": "Close", "compact": true},
-	])
-
-func _on_media_video_dragged(id: String, patch: Dictionary) -> void:
-	if doc == null:
-		return
-	doc.media_system.update_video_reference(id, patch)
-
-func _build_dock() -> void:
-	_dock = PanelContainer.new()
-	_dock.z_index = 12
-	_dock.anchor_left = 1.0
-	_dock.anchor_right = 1.0
-	_dock.anchor_top = 0.0
-	_dock.anchor_bottom = 1.0
-	_dock.offset_top = 44.0
-	_dock.offset_bottom = 0.0
-	_dock.offset_left = -320.0
-	# Black chrome: the flyout separates from the stage by elevation and the
-	# scrim behind it, not by a hairline along the stage edge.
-	_dock.add_theme_stylebox_override("panel",
-		Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
-	add_child(_dock)
-
-	_dock_box = VBoxContainer.new()
-	_dock_box.add_theme_constant_override("separation", int(Kit.GUTTER))
-	_dock.add_child(_dock_box)
-
-	_dock_close_row = MarginContainer.new()
-	_dock_close_row.add_theme_constant_override("margin_left", 8)
-	_dock_close_row.add_theme_constant_override("margin_right", 6)
-	_dock_close_row.add_theme_constant_override("margin_top", 2)
-	_dock_close_row.add_theme_constant_override("margin_bottom", 2)
-	_dock_close_row.visible = false
-	_dock_box.add_child(_dock_close_row)
-
-	var tabs := HBoxContainer.new()
-	tabs.add_theme_constant_override("separation", 4)
-	_dock_close_row.add_child(tabs)
-	_dock_title_label = Kit.label("Scene", 13, Kit.TEXT, 600)
-	_dock_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_dock_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_dock_title_label.visible = false
-	tabs.add_child(_dock_title_label)
-	_drawer_scene_tab = Kit.text_toggle("Scene", "layers", true)
-	_drawer_scene_tab.custom_minimum_size.y = 44
-	_drawer_scene_tab.pressed.connect(func() -> void: _set_compact_tab("scene"))
-	tabs.add_child(_drawer_scene_tab)
-	_drawer_props_tab = Kit.text_toggle("Properties", "sliders-horizontal", true)
-	_drawer_props_tab.custom_minimum_size.y = 44
-	_drawer_props_tab.pressed.connect(func() -> void: _set_compact_tab("inspector"))
-	tabs.add_child(_drawer_props_tab)
-	_drawer_rig_tab = Kit.text_toggle("Rig", "bone", true)
-	_drawer_rig_tab.custom_minimum_size.y = 44
-	_drawer_rig_tab.pressed.connect(func() -> void: _set_compact_tab("rig"))
-	tabs.add_child(_drawer_rig_tab)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	tabs.add_child(spacer)
-	_dock_close_button = Kit.icon_button("x", "Close panels", 44, 20)
-	_dock_close_button.pressed.connect(_close_drawer)
-	tabs.add_child(_dock_close_button)
-
-	_dock_box.add_child(Kit.vsep())
-
+## The panel host owns the existing content. The outliner, inspector and rig
+## panel keep their signals and state; only their mount point moves.
+func _build_panel_content() -> void:
 	_outliner_panel = PanelContainer.new()
-	_outliner_panel.custom_minimum_size.y = 172
-	_outliner_panel.size_flags_vertical = Control.SIZE_FILL
-	var out_style := Kit.flat_style(Kit.SURFACE, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
-	_outliner_panel.add_theme_stylebox_override("panel", out_style)
-	_dock_box.add_child(_outliner_panel)
+	_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_outliner_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
 
 	_outliner = OutlinerScript.new()
 	_outliner.add_requested.connect(_open_add_sheet)
 	_outliner.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("outliner", collapsed)
 	)
-	_outliner.panel_collapse_requested.connect(func() -> void:
-		_set_scene_expanded_from_ui(false)
-	)
 	_outliner_panel.add_child(_outliner)
 
 	_inspector_panel = PanelContainer.new()
 	_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_inspector_panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
-	_dock_box.add_child(_inspector_panel)
 
 	_inspector = InspectorScript.new()
 	_inspector.add_requested.connect(_open_add_sheet)
 	_inspector.color_requested.connect(_open_color_sheet)
 	_inspector.choose_material_requested.connect(_open_material_sheet)
 	_inspector.edit_material_requested.connect(_open_material_editor_for_target)
-	_inspector.look_through_requested.connect(_enter_look_through)
+	_inspector.look_through_requested.connect(_enter_camera_view)
 	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("inspector", collapsed)
 	)
@@ -916,13 +436,62 @@ func _build_dock() -> void:
 	_rig_frame = PanelContainer.new()
 	_rig_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_rig_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
-	_dock_box.add_child(_rig_frame)
 
 	_rig_panel = RigPanelScript.new()
 	_rig_panel.rig_mode_changed.connect(_on_rig_mode_changed)
 	_rig_frame.add_child(_rig_panel)
 	if doc != null:
 		_rig_panel.setup(doc)
+
+	# W4 replaces these provisional surfaces with the real Shading/Render
+	# panels. W1 does not mount a second MaterialSheet or MediaExportSheet; the
+	# existing modal aliases stay authoritative.
+	_shading_panel = VBoxContainer.new()
+	_shading_panel.add_theme_constant_override("separation", 8)
+	var shading_margin := MarginContainer.new()
+	shading_margin.add_theme_constant_override("margin_left", 12)
+	shading_margin.add_theme_constant_override("margin_right", 12)
+	shading_margin.add_theme_constant_override("margin_top", 12)
+	shading_margin.add_theme_constant_override("margin_bottom", 12)
+	var shading_box := VBoxContainer.new()
+	shading_box.add_theme_constant_override("separation", 8)
+	var shading_open := Kit.text_button("Open material library", "palette", false, true)
+	shading_open.custom_minimum_size = Vector2(96, 44)
+	shading_open.pressed.connect(func() -> void:
+		_open_material_sheet(_context_material_target())
+	)
+	shading_box.add_child(shading_open)
+	var shading_note := Kit.label("The embedded material library arrives in W4.", 11, Kit.TEXT_MUTED)
+	shading_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	shading_box.add_child(shading_note)
+	shading_margin.add_child(shading_box)
+	_shading_panel.add_child(shading_margin)
+
+	_render_panel = VBoxContainer.new()
+	_render_panel.add_theme_constant_override("separation", 8)
+	var render_margin := MarginContainer.new()
+	render_margin.add_theme_constant_override("margin_left", 12)
+	render_margin.add_theme_constant_override("margin_right", 12)
+	render_margin.add_theme_constant_override("margin_top", 12)
+	render_margin.add_theme_constant_override("margin_bottom", 12)
+	var render_box := VBoxContainer.new()
+	render_box.add_theme_constant_override("separation", 8)
+	var render_open := Kit.text_button("Open export", "clapperboard", false, true)
+	render_open.custom_minimum_size = Vector2(96, 44)
+	render_open.pressed.connect(_open_render_sheet)
+	render_box.add_child(render_open)
+	var render_note := Kit.label("The embedded export surface arrives in W4.", 11, Kit.TEXT_MUTED)
+	render_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	render_box.add_child(render_note)
+	render_margin.add_child(render_box)
+	_render_panel.add_child(render_margin)
+
+func _build_workspace_panel() -> void:
+	_workspace_panel = WorkspacePanelScript.new()
+	_workspace_panel.name = "WorkspacePanel"
+	_workspace_panel.setup("Panel", _workspace_bar.custom_minimum_size.y)
+	_workspace_panel.closed.connect(_on_workspace_panel_closed)
+	add_child(_workspace_panel)
 
 func _build_render_hud() -> void:
 	_render_hud = PanelContainer.new()
@@ -979,28 +548,6 @@ func _build_render_hud() -> void:
 	row.add_child(exit)
 
 
-func _build_drawer_scrim() -> void:
-	_drawer_scrim = ColorRect.new()
-	_drawer_scrim.color = Color(0, 0, 0, 0.58)
-	_drawer_scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_drawer_scrim.offset_top = 44.0
-	# The scrim is built before the dock, so the drawer receives taps inside
-	# its own rectangle first. Only taps outside reach the scrim and close it.
-	_drawer_scrim.mouse_filter = Control.MOUSE_FILTER_STOP
-	_drawer_scrim.visible = false
-	_drawer_scrim.z_index = 11
-	_drawer_scrim.gui_input.connect(_on_drawer_scrim_input)
-	add_child(_drawer_scrim)
-
-
-func _on_drawer_scrim_input(event: InputEvent) -> void:
-	if not _drawer_open:
-		return
-	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
-		_close_drawer()
-	elif event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
-		_close_drawer()
-
 # -------------------------------------------------------------------------
 # Documents
 # -------------------------------------------------------------------------
@@ -1010,7 +557,7 @@ func _on_drawer_scrim_input(event: InputEvent) -> void:
 func apply_layout(layout: Dictionary) -> void:
 	layout_info = layout
 	# Main already knows the mode it resolved, so this path never notifies it.
-	_apply_workspace_mode(str(layout.get("mode", "studio")), false)
+	_apply_layout_mode(str(layout.get("mode", "studio")), false)
 	apply_fit_info(
 		float(layout.get("fit_percent", 100.0)),
 		bool(layout.get("user_scale_enabled", true)),
@@ -1018,40 +565,648 @@ func apply_layout(layout: Dictionary) -> void:
 	)
 
 
-func workspace_mode() -> String:
-	return workbench_mode
+func layout_mode() -> String:
+	return _layout_preset
+
+
+func workspace() -> String:
+	return _workspace
+
+
+## Switches the workspace and, unless asked otherwise, remembers it for the
+## next project open. An unknown id falls back to Scene rather than leaving the
+## shell on a surface that does not exist.
+func set_workspace(id: String, persist := true) -> void:
+	var next := id if id in WORKSPACES else "scene"
+	if persist:
+		Prefs.set_value("editor.workspace", next)
+	if next == _workspace:
+		return
+	_workspace = next
+	_workspace_panel_open = next in ["shading", "rig", "render"]
+	_workspace_menu_open = false
+	workspace_changed.emit(next)
+	call_deferred("_apply_shell")
+
+
+func workspace_menu_open() -> bool:
+	return _workspace_menu_open
+
+
+## One compact menu for the two secondary workspaces. Rig and Render no longer
+## own permanent tabs; the More control carries the active name while either is
+## current. The header carries the project title the removed chip used to hold.
+func _toggle_workspace_menu() -> void:
+	if doc == null or _workspace_menu == null or _workspace_bar == null:
+		return
+	if _workspace_menu_open:
+		_workspace_menu.close()
+		_workspace_menu_open = false
+		return
+	if _project_menu != null:
+		_project_menu.close()
+	_workspace_menu.set_layout_mode(layout_mode())
+	_workspace_menu.set_empty_text("")
+	_workspace_menu.set_max_width(280.0)
+	_workspace_menu.open_menu(
+		_workspace_bar.more_button(),
+		"Workspaces",
+		doc.title if doc != null else "Untitled",
+		false
+	)
+	var copy := {
+		"rig": ["Skeletons, poses and IK", "bone"],
+		"render": ["Stills, video, camera tracks and GLB", "clapperboard"],
+	}
+	for id in ["rig", "render"]:
+		var detail: Array = copy[id]
+		_workspace_menu.add_row(
+			id,
+			str(WORKSPACE_LABELS.get(id, id)),
+			str(detail[1]),
+			str(detail[0]),
+			id == _workspace,
+			true,
+			"",
+			44.0
+		)
+	_workspace_menu_open = true
+
+
+func _on_workspace_tab_requested(id: String) -> void:
+	if _workspace_menu_open and _workspace_menu != null:
+		_workspace_menu.close()
+		_workspace_menu_open = false
+	set_workspace(id)
+	_update_header()
+
+
+func _on_workspace_menu_row(id: String) -> void:
+	_workspace_menu_open = false
+	set_workspace(id)
+	_update_header()
+
+
+func _on_workspace_changed(_id: String) -> void:
+	_update_header()
+
+
+# -------------------------------------------------------------------------
+# Context row
+# -------------------------------------------------------------------------
+
+func _act(id: String, label: String, icon: String, priority: int,
+		text := false, toggle := false, width := 0.0, group := "") -> Dictionary:
+	return {
+		"id": id,
+		"label": label,
+		"icon": icon,
+		"priority": priority,
+		"text": text,
+		"toggle": toggle,
+		"menu": [],
+		"disabled_reason": "",
+		"width": width,
+		"group": group,
+	}
+
+
+func _context_actions(id: String) -> Array:
+	match id:
+		"scene":
+			return [
+				_act("select", "Select", "tool-select", 100, false, true),
+				_act("move", "Move", "tool-move", 90, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 80, false, true),
+				_act("scale", "Scale", "tool-scale", 70, false, true),
+				_act("add", "Add", "plus", 60, true),
+				_act("camera_view", "Camera", "camera", 50),
+				_act("scene_tree", "Scene tree", "layers", 40, false, true),
+				_act("inspector", "Properties", "sliders-horizontal", 30, false, true),
+				_act("frame", "Frame selection", "focus", 20),
+				_act("grid", "Grid", "grid-3x3", 10, false, true),
+				_act("view", "View", "orbit", 5),
+			]
+		"shading":
+			return [
+				_act("assign", "Assign", "check", 100, true),
+				_act("select", "Select", "tool-select", 98, false, true),
+				_act("move", "Move", "tool-move", 97, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
+				_act("scale", "Scale", "tool-scale", 95, false, true),
+				_act("material_new", "New", "plus", 90),
+				_act("light_add", "Add light", "lightbulb", 80),
+				_act("panel", "Materials panel", "panel-right", 70),
+				_act("frame", "Frame selection", "focus", 60),
+				_act("grid", "Grid", "grid-3x3", 50, false, true),
+				_act("view", "View", "orbit", 40),
+				_act("camera_view", "Camera", "camera", 30),
+			]
+		"rig":
+			return [
+				_act("pose", "Pose", "", 100, true, false, 60.0, "rig_mode"),
+				_act("edit", "Edit", "", 95, true, false, 60.0, "rig_mode"),
+				_act("rig_rotate", "Rotate", "tool-rotate", 90, false, true),
+				_act("rig_move", "Move", "tool-move", 85, false, true),
+				_act("rig_axis", "Free", "", 80, true),
+				_act("rig_add", "Add bone", "plus", 70, true),
+				_act("rig_reset", "Reset pose", "rotate-ccw", 60),
+				_act("rig_done", "Done", "check", 50, true),
+				_act("frame", "Frame selection", "focus", 40),
+				_act("panel", "Rig panel", "panel-right", 30),
+			]
+		"animate":
+			# W1 scope only; W3 inserts dope/graph/stage_toggle here.
+			return [
+				_act("select", "Select", "tool-select", 100, false, true),
+				_act("move", "Move", "tool-move", 95, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 90, false, true),
+				_act("scale", "Scale", "tool-scale", 85, false, true),
+				_act("fit", "Fit", "focus", 80),
+			]
+		"render":
+			return [
+				_act("render", "Render", "clapperboard", 100, true),
+				_act("select", "Select", "tool-select", 98, false, true),
+				_act("move", "Move", "tool-move", 97, false, true),
+				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
+				_act("scale", "Scale", "tool-scale", 95, false, true),
+				_act("preview", "Preview", "eye", 90),
+				_act("still", "Still", "image", 80),
+				_act("panel", "Render panel", "panel-right", 70),
+				_act("camera_view", "Camera", "camera", 60),
+				_act("frame", "Frame selection", "focus", 50),
+				_act("grid", "Grid", "grid-3x3", 40, false, true),
+				_act("view", "View", "orbit", 30),
+			]
+	return []
+
+
+func _sync_context_actions(force := false) -> void:
+	if _context_bar == null:
+		return
+	if force or _context_workspace != _workspace:
+		_context_bar.set_actions(_context_actions(_workspace))
+		_context_workspace = _workspace
+	_sync_context_state()
+
+
+## Reads the document and the shell back into the row. It never changes either;
+## hidden controls keep their real disabled state for the overflow popup.
+func _sync_context_state() -> void:
+	if _context_bar == null:
+		return
+	for tool in ["select", "move", "rotate", "scale"]:
+		_context_bar.set_action_active(tool, _tool == tool)
+	if _view != null:
+		_context_bar.set_action_active("grid", _view.grid_enabled())
+	var panel_mode: int = _workspace_panel.mode() if _workspace_panel != null \
+		else WorkspacePanelScript.Mode.HIDDEN
+	var panel_overlay: bool = panel_mode == WorkspacePanelScript.Mode.OVERLAY
+	var panel_reserved: bool = panel_mode == WorkspacePanelScript.Mode.RESERVED
+	_context_bar.set_action_active(
+		"scene_tree",
+		_workspace == "scene" and panel_overlay and _workspace_panel.content() == _outliner_panel)
+	_context_bar.set_action_active(
+		"inspector",
+		_workspace == "scene" and panel_overlay and _workspace_panel.content() == _inspector_panel)
+	if _workspace in ["shading", "rig", "render"]:
+		_context_bar.set_action_enabled(
+			"panel", not panel_reserved, "The panel is already open.")
+		_context_bar.set_action_active("panel", panel_reserved or panel_overlay)
+
+	var selected := doc.selected_id if doc != null else ""
+	_context_bar.set_action_enabled("assign",
+		selected != "" and doc != null and doc.material_system != null,
+		"Select an object with a material to assign.")
+	for tool_id in ["select", "move", "rotate", "scale"]:
+		_context_bar.set_action_enabled(tool_id, selected != "",
+			"Select an object to transform.")
+
+	var rig_id := ""
+	var imported := false
+	var mode := "pose"
+	var transform_mode := "rotate"
+	var axis := "free"
+	if doc != null and doc.rig_system != null:
+		rig_id = doc.rig_system.active_rig_id()
+		if rig_id != "":
+			imported = bool(doc.rig_system.get_rig(rig_id).get("imported", false))
+	if _rig_overlay != null:
+		mode = _rig_overlay.mode()
+		transform_mode = _rig_overlay.transform_mode()
+		axis = _rig_overlay.axis_mode()
+	_context_bar.set_action_active("pose", mode == "pose")
+	_context_bar.set_action_active("edit", mode == "edit")
+	_context_bar.set_action_active("rig_rotate", transform_mode == "rotate")
+	_context_bar.set_action_active("rig_move", transform_mode == "move")
+	_context_bar.set_action_enabled("edit", not imported,
+		"Imported skeletons keep their rest pose; pose and IK still work.")
+	for id in ["rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done"]:
+		_context_bar.set_action_enabled(id, rig_id != "", "There is no rig in this project.")
+	var axis_button: Button = _context_bar.action_button("rig_axis")
+	if axis_button != null:
+		axis_button.text = "Free" if axis == "free" else axis.to_upper()
+
+
+func _on_context_action(id: String) -> void:
+	match id:
+		"select", "move", "rotate", "scale":
+			_select_tool(id)
+		"add":
+			_open_add_sheet()
+		"camera_view":
+			_open_camera_menu()
+		"scene_tree":
+			_toggle_scene_panel("scene")
+		"inspector":
+			_toggle_scene_panel("inspector")
+		"frame":
+			_focus_selection()
+		"grid":
+			if _view != null:
+				_view.toggle_grid()
+		"view":
+			_open_view_menu(_context_bar.action_button("view"))
+		"panel":
+			_toggle_workspace_panel()
+		"assign", "material_new":
+			_open_material_sheet(_context_material_target())
+		"light_add":
+			_open_add_sheet()
+		"pose", "edit", "rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done":
+			_on_rig_context_action(id)
+		"preview":
+			_enter_render_mode()
+		"render", "still":
+			_open_render_sheet()
+		"fit":
+			_fit_animate_pane()
+	_sync_context_state()
+
+
+func _context_material_target() -> Dictionary:
+	var object_id := doc.selected_id if doc != null else ""
+	return {"object_id": object_id, "part_path": "", "surface": -1}
+
+
+func _open_view_menu(anchor: Control) -> void:
+	if _view_menu == null or _view == null:
+		return
+	_view_menu.set_layout_mode(layout_mode())
+	_view_menu.set_empty_text("")
+	_view_menu.open_menu(anchor, "View", "Camera preset", layout_mode() != "desktop")
+	var presets := [
+		["Persp", "orbit"],
+		["Front", "scan"],
+		["Right", "rotate-3d"],
+		["Top", "panel-top"],
+	]
+	for pair in presets:
+		_view_menu.add_row(
+			str(pair[0]), str(pair[0]), str(pair[1]), "",
+			_view.view_preset() == str(pair[0]), true, "", 44.0
+		)
+
+
+func _on_view_menu_row(id: String) -> void:
+	if _view != null:
+		_view.set_view_preset(id)
+	_sync_context_state()
+
+
+func _open_rig_axis_menu(anchor: Control) -> void:
+	if _rig_axis_menu == null or _rig_overlay == null:
+		return
+	_rig_axis_menu.set_layout_mode(layout_mode())
+	_rig_axis_menu.set_empty_text("")
+	_rig_axis_menu.open_menu(anchor, "Axis", "Rotation axis", layout_mode() != "desktop")
+	for axis in ["free", "x", "y", "z"]:
+		var label: String = "Free" if axis == "free" else axis.to_upper()
+		_rig_axis_menu.add_row(
+			axis, label, "", "",
+			_rig_overlay.axis_mode() == axis, true, "", 44.0
+		)
+
+
+func _on_rig_axis_menu_row(id: String) -> void:
+	if _rig_overlay != null:
+		_rig_overlay.set_axis_mode(id)
+	_sync_context_state()
+
+
+func _on_rig_context_action(id: String) -> void:
+	match id:
+		"pose", "edit":
+			_rig_mode = true
+			if doc != null and doc.rig_system != null and _rig_overlay != null:
+				var rig_id: String = doc.rig_system.active_rig_id()
+				if rig_id != "":
+					_rig_overlay.set_rig(rig_id)
+				_rig_overlay.set_mode(id)
+				if _rig_panel != null:
+					_rig_panel.set_mode(_rig_overlay.mode())
+			_sync_rig_overlay()
+		"rig_rotate":
+			if _rig_overlay != null:
+				_rig_overlay.set_transform_mode("rotate")
+		"rig_move":
+			if _rig_overlay != null:
+				_rig_overlay.set_transform_mode("move")
+		"rig_axis":
+			_open_rig_axis_menu(_context_bar.action_button("rig_axis"))
+		"rig_add":
+			_on_rig_add_bone()
+		"rig_reset":
+			_confirm_reset_pose()
+		"rig_done":
+			_on_rig_done()
+			set_workspace("scene")
+
+
+## Reset is a document change, so it asks first. With nothing posed it does
+## nothing at all instead of showing a confirmation with no effect.
+func _confirm_reset_pose() -> void:
+	if doc == null or doc.rig_system == null or _overlay == null:
+		return
+	var rig_id: String = doc.rig_system.active_rig_id()
+	if rig_id == "":
+		return
+	var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+	if not _rig_has_rest_offset(rig):
+		return
+	_overlay.confirm(
+		"Reset pose?",
+		"Every posed bone returns to the rig's rest pose. Undo keeps the previous pose.",
+		"Reset pose",
+		func() -> void:
+			doc.rig_system.reset_all_poses(rig_id)
+			if _rig_overlay != null:
+				_rig_overlay.set_rig(rig_id)
+			if _rig_panel != null:
+				_rig_panel.refresh()
+			_sync_rig_overlay()
+	)
+
+
+func _rig_has_rest_offset(rig: Dictionary) -> bool:
+	if rig.is_empty():
+		return false
+	var pose: Dictionary = rig.get("pose", {})
+	var posed: Dictionary = pose.get("bones", {}) if pose.has("bones") else pose
+	if posed.is_empty():
+		return false
+	var rest: Dictionary = {}
+	for bone in rig.get("bones", []):
+		rest[str(bone.get("name", ""))] = bone
+	for bone_name in posed.keys():
+		if not rest.has(bone_name):
+			continue
+		var entry: Dictionary = posed[bone_name]
+		var rest_bone: Dictionary = rest[bone_name]
+		if entry.has("p"):
+			if PoseLibrary.array_to_vec3(entry["p"]).distance_to(
+					rest_bone.get("p", Vector3.ZERO)) > 0.0001:
+				return true
+		if entry.has("r"):
+			var posed_rotation: Quaternion = PoseLibrary.array_to_quat(entry["r"])
+			var rest_rotation: Quaternion = rest_bone.get("r", Quaternion.IDENTITY)
+			if absf(posed_rotation.angle_to(rest_rotation)) > 0.0001:
+				return true
+		if entry.has("s"):
+			if PoseLibrary.array_to_vec3(entry["s"]).distance_to(
+					rest_bone.get("s", Vector3.ONE)) > 0.0001:
+				return true
+	return false
+
+
+func _fit_animate_pane() -> void:
+	if doc == null or _timeline == null:
+		return
+	_timeline.set_time_view(0.0, maxf(doc.duration, 0.1))
+
+
+func _visible_shell_action_ids() -> PackedStringArray:
+	var ids := PackedStringArray()
+	for bar in [_workspace_bar, _context_bar, _transport_bar]:
+		if bar == null or not bar.visible:
+			continue
+		for id in bar.visible_action_ids():
+			ids.append(id)
+	return ids
+
+
+func _shell_action_icon(id: String) -> String:
+	for bar in [_workspace_bar, _context_bar, _transport_bar]:
+		if bar == null:
+			continue
+		var button: Button = bar.action_button(id)
+		if button != null:
+			return str(button.get_meta("action_icon", ""))
+	return ""
+
+
+## The camera menu is the Scene/Render look-through entry point. It lists the
+## document cameras, the Add camera row and, only while active, Exit.
+func _open_camera_menu() -> void:
+	if doc == null or _camera_menu == null:
+		return
+	_camera_menu.set_layout_mode(layout_mode())
+	_camera_menu.set_empty_text("")
+	var anchor: Control = _context_bar.action_button("camera_view") \
+		if _context_bar != null else _workspace_bar.more_button()
+	_camera_menu.open_menu(anchor, "CAMERA", "", layout_mode() != "desktop")
+	var cameras: Array = []
+	for obj in doc.objects:
+		if str(obj.get("kind", "")) == "camera":
+			cameras.append(obj)
+	cameras.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.get("name", "")) < str(b.get("name", ""))
+	)
+	for obj in cameras:
+		var camera_id := str(obj.get("id", ""))
+		var visible := bool(obj.get("visible", true))
+		_camera_menu.add_row(
+			camera_id, str(obj.get("name", camera_id)), "camera", "",
+			camera_id == _look_camera_id, visible,
+			"" if visible else "Camera is hidden.", 44.0
+		)
+	_camera_menu.set_empty_text(
+		"No scene cameras. Add one to look through it." if cameras.is_empty() else "")
+	_camera_menu.add_separator()
+	_camera_menu.add_action(
+		"add_camera", "Add camera…", "plus", not _look_through,
+		"Exit camera view to add a camera.")
+	if _look_through:
+		_camera_menu.add_action("exit_camera", "Exit camera view", "x")
+
+
+func _on_camera_menu_row(id: String) -> void:
+	if id == "add_camera":
+		# The camera lives in the Add sheet with every other scene element.
+		_open_add_sheet()
+	elif id == "exit_camera":
+		_exit_look_through()
+	else:
+		_enter_camera_view(id)
+
+
+# -------------------------------------------------------------------------
+# Stage transport and time entry
+# -------------------------------------------------------------------------
+
+func _on_transport_play() -> void:
+	if doc != null:
+		doc.toggle_play()
+	_sync_transport_state()
+
+
+func _on_transport_skip() -> void:
+	if doc == null:
+		return
+	doc.pause()
+	doc.seek(0.0)
+	_sync_transport_state()
+
+
+func _on_transport_add_key() -> void:
+	if doc == null or doc.selected_id == "":
+		return
+	doc.insert_transform_keys()
+	_sync_transport_state()
+
+
+func _on_transport_animate() -> void:
+	set_workspace("animate")
+
+
+func _sync_transport_state() -> void:
+	if _transport_bar == null:
+		return
+	if doc == null:
+		_transport_bar.set_playing(false)
+		_transport_bar.set_timecode("00:00:00")
+		_transport_bar.set_add_key_enabled(false, "Select an object to add a key.")
+		return
+	_transport_bar.set_playing(doc.is_playing)
+	_transport_bar.set_timecode(doc.format_timecode(doc.current_time))
+	_transport_bar.set_add_key_enabled(
+		doc.selected_id != "", "Select an object to add a key.")
+
+
+## Real frame/time entry. The frame field wins when both are filled; the time
+## field is converted to frames when the frame field is empty. Invalid input
+## stays in the sheet with an inline message and never seeks.
+func _open_time_entry_sheet() -> void:
+	if doc == null or _overlay == null:
+		return
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	row.custom_minimum_size.y = 44.0
+	body.add_child(row)
+
+	var frame_box := VBoxContainer.new()
+	frame_box.add_theme_constant_override("separation", 2)
+	frame_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	frame_box.add_child(Kit.mono_label("FRAME", 10, Kit.TEXT_DIM))
+	_time_frame_field = Kit.line_edit("Frame")
+	_time_frame_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	_time_frame_field.custom_minimum_size.y = 44.0
+	frame_box.add_child(_time_frame_field)
+	row.add_child(frame_box)
+
+	var seconds_box := VBoxContainer.new()
+	seconds_box.add_theme_constant_override("separation", 2)
+	seconds_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	seconds_box.add_child(Kit.mono_label("SECONDS", 10, Kit.TEXT_DIM))
+	_time_seconds_field = Kit.line_edit("Seconds")
+	_time_seconds_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	_time_seconds_field.custom_minimum_size.y = 44.0
+	seconds_box.add_child(_time_seconds_field)
+	row.add_child(seconds_box)
+
+	_time_error = Kit.label("", 11, Kit.DANGER)
+	_time_error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_time_error.visible = false
+	body.add_child(_time_error)
+
+	_time_frame_field.text_submitted.connect(func(_text: String) -> void:
+		_apply_time_entry()
+	)
+	_time_seconds_field.text_submitted.connect(func(_text: String) -> void:
+		_apply_time_entry()
+	)
+
+	_overlay.show_sheet(
+		"Go to time",
+		"Enter a frame or a time in seconds.",
+		body,
+		[
+			{"text": "Cancel", "compact": true},
+			{"text": "Go", "primary": true, "callback": _apply_time_entry},
+		]
+	)
+	_time_frame_field.grab_focus()
+
+
+func _apply_time_entry() -> void:
+	if doc == null or _overlay == null:
+		return
+	if _time_frame_field == null or not is_instance_valid(_time_frame_field):
+		return
+	var frame_text := _time_frame_field.text.strip_edges()
+	var seconds_text := _time_seconds_field.text.strip_edges() if _time_seconds_field != null else ""
+	var frame := -1.0
+	if frame_text != "":
+		if frame_text.is_valid_float():
+			frame = frame_text.to_float()
+	elif seconds_text != "":
+		if seconds_text.is_valid_float():
+			frame = seconds_text.to_float() * float(doc.fps)
+	if frame < 0.0:
+		if _time_error != null:
+			_time_error.text = "Enter a frame or a time in seconds."
+			_time_error.visible = true
+		return
+	var last_frame := maxf(roundf(doc.duration * float(doc.fps)), 0.0)
+	frame = clampf(roundf(frame), 0.0, last_frame)
+	doc.pause()
+	doc.seek(frame / float(doc.fps))
+	_overlay.close_modal()
+	_sync_transport_state()
+
+
+
 
 
 ## User intent. Persists the preference and, when the shell is hosted by Main,
 ## asks it to re-resolve; without a host the mode is resolved here so pure
 ## scenes and tests behave identically.
-func set_workspace_mode(mode: String) -> void:
+func set_layout_mode(mode: String) -> void:
 	var next := mode if mode in ["auto", "compact", "studio", "desktop"] else "auto"
 	Prefs.set_value("display.layout", next)
 	if _layout_hosted():
 		# Main re-resolves and calls apply_layout, which applies the mode and
-		# emits workspace_mode_changed if the arrangement actually changed.
+		# emits layout_mode_changed if the arrangement actually changed.
 		var host := get_parent()
 		while host != null and not host.has_method("refresh_layout_scale"):
 			host = host.get_parent()
 		if host != null:
 			host.call("refresh_layout_scale")
 		return
-	_apply_workspace_mode(_resolve_local(next), true)
+	_apply_layout_mode(_resolve_local(next), true)
 
 
 func apply_fit_info(fit_percent: float, user_scale_enabled: bool, clamped: bool) -> void:
 	_fit_percent = clampf(fit_percent, 1.0, 100.0)
 	_fit_user_scale_enabled = user_scale_enabled
 	_fit_clamped = clamped
-	if _top_bar != null:
-		_top_bar.set_fit(_fit_percent, _fit_percent < 60.0)
-	if _status_bar != null:
-		_update_chrome_sample()
 	if _settings_panel != null and is_instance_valid(_settings_panel) and _settings_panel.has_method("refresh_fit"):
 		_settings_panel.call("refresh_fit")
-	if _workspace_sheet != null and is_instance_valid(_workspace_sheet) and _workspace_sheet.has_method("refresh_fit"):
-		_workspace_sheet.call("refresh_fit", _fit_percent, _fit_clamped)
+	if _interface_sheet != null and is_instance_valid(_interface_sheet) and _interface_sheet.has_method("refresh_fit"):
+		_interface_sheet.call("refresh_fit", _fit_percent, _fit_clamped)
 
 
 func fit_percent() -> float:
@@ -1066,24 +1221,13 @@ func fit_clamped() -> bool:
 	return _fit_clamped
 
 
-func _apply_workspace_mode(mode: String, notify: bool) -> void:
+func _apply_layout_mode(mode: String, notify: bool) -> void:
 	var next := mode if mode in ["compact", "studio", "desktop"] else "studio"
-	var changed := next != workbench_mode
-	workbench_mode = next
-	if changed:
-		# A mode switch is a deliberate arrangement change, so it resets the
-		# manual sheet choice and uses the mode default.
-		_timeline_user_override = false
-		_timeline_visible = _default_timeline_visible()
+	var changed := next != _layout_preset
+	_layout_preset = next
 	_apply_shell()
 	if changed and notify:
-		workspace_mode_changed.emit(next)
-
-
-## The stage is the reason the editor exists. The dope sheet opens only when
-## the user asks for it; every mode starts with the 56 dp transport row.
-func _default_timeline_visible() -> bool:
-	return false
+		layout_mode_changed.emit(next)
 
 
 func _layout_hosted() -> bool:
@@ -1110,7 +1254,7 @@ func _resolve_local(preference: String) -> String:
 	if dpi <= 0.0:
 		dpi = 160.0
 	var user_scale := float(Prefs.get_value("display.user_scale", 1.0))
-	var fit_desktop := workbench_mode != "compact"
+	var fit_desktop := layout_mode() != "compact"
 	var result: Dictionary = LayoutMathScript.resolve(physical, dpi, OS.get_name(), user_scale, preference, fit_desktop)
 	return str(result.get("mode", "studio"))
 
@@ -1147,14 +1291,9 @@ func _adopt_document(document: Node3D) -> void:
 		_view.set_document(doc)
 		_view.set_tool(_tool)
 	_outliner.setup(doc)
-	_update_scene_rail_count()
 	_inspector.setup(doc)
 	_timeline.setup(doc)
-	_clip_lane.setup(doc)
-	_media_lanes.setup(doc)
 	_rig_panel.setup(doc)
-	if not doc.selection_changed.is_connected(_on_timeline_workspace_selection):
-		doc.selection_changed.connect(_on_timeline_workspace_selection)
 	if _video_overlay != null:
 		_video_overlay.setup(doc, _view)
 	if _rig_overlay != null:
@@ -1183,13 +1322,31 @@ func _adopt_document(document: Node3D) -> void:
 	_update_header()
 	_update_history_buttons()
 	_select_tool(_tool)
+	var saved_workspace := str(Prefs.get_value("editor.workspace", "scene"))
+	_workspace = saved_workspace if saved_workspace in WORKSPACES else "scene"
+	_workspace_panel_open = _workspace in ["shading", "rig", "render"]
+	_workspace_menu_open = false
 	# Both calls end with a deferred reframe; arrange the shell once the new
 	# document's deferred work has run so the first frame is already correct.
 	call_deferred("_apply_shell")
 
 func _on_document_scene_changed() -> void:
 	_update_header()
-	_update_scene_rail_count()
+	_sync_transport_state()
+	_guard_camera_view()
+
+
+## A deleted or hidden camera must never leave the editor stuck in a view whose
+## source object is gone. The exit restores the saved editing layout first, then
+## the toast explains the jump.
+func _guard_camera_view() -> void:
+	if not _look_through or _look_camera_id == "":
+		return
+	if _camera_target_valid(_look_camera_id):
+		return
+	_exit_look_through()
+	if _overlay != null:
+		_overlay.toast("Camera removed — returned to the editor view.", "camera", Kit.WARNING)
 
 func _on_document_rigs_changed() -> void:
 	if doc != null and _rig_overlay != null and _rig_mode:
@@ -1200,8 +1357,6 @@ func _on_rig_mode_changed(_enabled: bool) -> void:
 	_sync_rig_overlay()
 
 func _on_overlay_mode_changed(mode: String) -> void:
-	if _rig_toolbar != null:
-		_rig_toolbar.set_mode(mode)
 	if _rig_panel != null:
 		_rig_panel.set_mode(mode)
 
@@ -1231,13 +1386,11 @@ func _on_rig_add_bone() -> void:
 
 func _on_rig_done() -> void:
 	# Done leaves the rig in the document. It only clears the workbench state:
-	# the overlay stops drawing and the floating toolbar goes away.
+	# the overlay stops drawing and the workbench returns to Scene.
 	_rig_mode = false
 	if _rig_overlay != null:
 		_rig_overlay.set_rig("")
 		_rig_overlay.set_enabled(false)
-	if _rig_toolbar != null:
-		_rig_toolbar.visible = false
 	_sync_rig_overlay()
 
 func _sync_rig_overlay() -> void:
@@ -1248,7 +1401,7 @@ func _sync_rig_overlay() -> void:
 		if active != "":
 			imported = bool(doc.rig_system.get_rig(active).get("imported", false))
 	# Look-through is the document camera's clean view: the rig workbench layer
-	# and its floating toolbar are suppressed until the view exits.
+	# is suppressed until the view exits.
 	var engaged := _rig_mode and active != "" and not _render_mode and not _look_through
 	if _rig_overlay != null:
 		if engaged:
@@ -1259,11 +1412,6 @@ func _sync_rig_overlay() -> void:
 		if imported and _rig_overlay.mode() == "edit":
 			_rig_overlay.set_mode("pose")
 		_rig_overlay.set_enabled(engaged and bool(Prefs.get_value("rig.show_overlay", true)))
-	if _rig_toolbar != null:
-		_rig_toolbar.visible = engaged
-		_rig_toolbar.set_imported(imported)
-		if _rig_overlay != null:
-			_rig_toolbar.set_mode(_rig_overlay.mode())
 	if _rig_panel != null and _rig_overlay != null:
 		_rig_panel.set_mode(_rig_overlay.mode())
 
@@ -1274,6 +1422,8 @@ func _on_graphics_changed() -> void:
 
 func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
+	_sync_transport_state()
+	_sync_context_state()
 
 func _on_document_dirty_changed(_is_dirty: bool) -> void:
 	_update_header()
@@ -1287,19 +1437,20 @@ func _on_document_history_changed() -> void:
 # -------------------------------------------------------------------------
 
 func _update_header() -> void:
-	if _top_bar == null:
+	if _workspace_bar == null:
 		return
+	_workspace_bar.set_workspace(_workspace)
 	if doc == null:
-		_top_bar.set_project("Untitled", false, false)
+		_workspace_bar.set_project("Untitled", false)
 		return
-	_top_bar.set_project(doc.title, doc.is_dirty(), true)
+	_workspace_bar.set_project(doc.title, doc.is_dirty())
 
 func _update_history_buttons() -> void:
-	if _top_bar == null:
+	if _workspace_bar == null:
 		return
 	var has_undo := doc != null and doc.can_undo()
 	var has_redo := doc != null and doc.can_redo()
-	_top_bar.set_history(has_undo, has_redo)
+	_workspace_bar.set_history(has_undo, has_redo)
 
 ## Reports the renderer the engine is actually running. Godot selects a
 ## renderer when the process starts; the chips request one for the next launch
@@ -1479,7 +1630,7 @@ func _on_perf_sample(sample: Dictionary) -> void:
 		var objects := 0 if doc == null else doc.objects.size()
 		var preview: Vector2i = _view.preview_size() if _view != null else Vector2i.ZERO
 		_perf_overlay.set_sample(sample, objects, _total_keys(), preview)
-	_update_chrome_sample(sample)
+	_update_instrumentation(sample)
 
 
 func _on_timeline_notice(text_value: String) -> void:
@@ -1520,13 +1671,6 @@ func request_close() -> void:
 	if _overlay != null and _overlay.has_modal():
 		_overlay.close_modal()
 		return
-	if _drawer_open:
-		_close_drawer()
-		return
-	# Every project close path leaves the landscape workspace before the close
-	# sheet so the sheet never mounts over a reparented timeline.
-	if _workspace_open:
-		close_timeline_workspace(false)
 	if doc == null or not doc.is_dirty():
 		_leave(false)
 		return
@@ -1560,7 +1704,6 @@ func _save_and_leave() -> void:
 func _leave(save_first: bool = false) -> void:
 	if _closing:
 		return
-	close_timeline_workspace(false)
 	if _render_busy:
 		if _overlay != null:
 			_overlay.toast("Wait for the render to finish", "film", Kit.WARNING)
@@ -1581,11 +1724,15 @@ func handle_back() -> bool:
 	if _overlay != null and _overlay.has_modal():
 		_overlay.close_modal()
 		return true
-	if _drawer_open:
-		_close_drawer()
+	if _workspace_panel != null and _workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY:
+		_close_workspace_panel()
 		return true
-	if _workspace_open:
-		close_timeline_workspace()
+	if _workspace_menu_open and _workspace_menu != null:
+		_workspace_menu.close()
+		_workspace_menu_open = false
+		return true
+	if _workspace != "scene":
+		set_workspace("scene")
 		return true
 	request_close()
 	return true
@@ -1600,321 +1747,175 @@ func _notification(what: int) -> void:
 # -------------------------------------------------------------------------
 
 func _on_resized() -> void:
-	_on_timeline_workspace_bounds()
 	_apply_shell()
-
-
-func _on_viewport_resized() -> void:
-	# The stage host finishes its container pass after the shell has applied,
-	# so recompute the overlay against the real stage height.
-	_on_timeline_workspace_bounds()
-	if _timeline_panel != null and not _render_mode:
-		_sync_timeline_visibility()
 
 
 ## Arranges the shell for the current workbench mode. Idempotent: it is safe to
 ## call on every resize, mode change and preference change.
 func _apply_shell() -> void:
-	if _dock == null or not is_inside_tree():
+	if _workspace_panel == null or not is_inside_tree():
 		return
 	# Render mode owns the whole frame. A resize or preference change must not
 	# re-show the workbench chrome over the live image; exiting render mode
 	# reapplies the shell in one pass.
 	if _render_mode:
 		return
-	var compact := workbench_mode == "compact"
-	# The dock is always an overlay. Studio and Desktop keep a 44 dp rail as
-	# the permanent affordance; Compact uses its bottom action bar. The stage
-	# never pays for a reserved panel column again. Below the Studio minimum
-	# width the rail would squeeze the transport, so the top-bar button opens
-	# the same flyout and the stage keeps every pixel.
-	var panel_rail_visible := not compact and size.x >= PANEL_RAIL_MIN_WIDTH
-	var rail_fallback := not compact and not panel_rail_visible
-	var was_short := _short
 	_short = size.y < SHORT_MAX_HEIGHT
-	_viewport_host.custom_minimum_size.y = 96.0 if _short else 120.0
+	_stage_host.custom_minimum_size.y = 96.0 if _short else 120.0
 	_timeline.set_short_layout(_short)
-	# Rotation between portrait and landscape changes the default. A manual
-	# fold/open choice is respected until the next mode switch.
-	if _short != was_short and not _timeline_user_override:
-		_timeline_visible = _default_timeline_visible()
-	_top_bar.set_mode(workbench_mode)
-	_top_bar.set_available_width(size.x)
-	_rail.set_mode(workbench_mode)
-	_rail.set_available_height(size.y)
-	_view_header.set_mode(workbench_mode)
-	if _view != null:
-		_view_header.set_view_label(_view.view_preset())
-		_view_header.set_grid(_view.grid_enabled())
-	_bottom_bar.set_mode(workbench_mode)
-	_status_bar.set_mode(workbench_mode)
+	_workspace_bar.set_layout_mode(layout_mode())
+	_workspace_bar.set_available_width(size.x)
+	_context_bar.set_layout_mode(layout_mode())
+	_context_bar.set_available_width(size.x)
+	_transport_bar.set_layout_mode(layout_mode())
+	_instrumentation.visible = _instrumentation_visible and layout_mode() == "desktop"
 	if _overlay != null:
-		_overlay.set_layout_mode(workbench_mode)
-	_timeline.set_chrome_mode(workbench_mode)
+		_overlay.set_layout_mode(layout_mode())
+	_timeline.set_chrome_mode(layout_mode())
+	_workspace_panel.set_top_bar_height(_workspace_bar.custom_minimum_size.y)
+	_workspace_bar.set_workspace(_workspace)
 
-	# The rail is a column on wide screens and a strip under the header on
-	# phones, so it is re-parented instead of duplicated.
-	var want_parent: Control = _center if compact else _body
-	if _rail.get_parent() != want_parent:
-		_rail.reparent(want_parent, false)
-		want_parent.move_child(_rail, 0)
+	# Camera look-through is the clean document view: the top bar keeps only
+	# Back, the camera chip and Exit, while every editing row and the workspace
+	# panel yield their height to the stage. The branch survives every resize
+	# and preference change because it is derived from the live flags.
+	if _look_through:
+		_workspace_bar.set_camera_mode(_camera_name(_look_camera_id))
+		_context_bar.visible = false
+		_transport_bar.visible = false
+		_workspace_panel.set_mode(WorkspacePanelScript.Mode.HIDDEN)
+		_panel_spacer.custom_minimum_size.x = 0.0
+		_animate_pane.visible = false
+		_timeline.set_available_width(size.x)
+		_refresh_chrome_values()
+		return
 
-	# One outliner instance, one selection model, one search state. The scene
-	# column owns it on Studio/Desktop; Compact and sub-480 shells hand it back
-	# to the dock. Re-parenting never rebuilds the tree.
-	var scene_enabled: bool = not compact and size.x >= SCENE_PANEL_MIN_WIDTH
-	var scene_expanded: bool = scene_enabled and _scene_target_expanded()
-	var scene_width := 0.0
-	if scene_enabled:
-		scene_width = _scene_expanded_width() if scene_expanded else SCENE_RAIL_WIDTH
-		_scene_column.custom_minimum_size.x = scene_width
-		_scene_column.visible = true
-	else:
-		_scene_column.custom_minimum_size.x = 0.0
-		_scene_column.visible = false
-	_scene_rail.visible = scene_enabled and not scene_expanded
-	_outliner.set_persistent_panel(scene_enabled)
-	if scene_enabled:
-		if _outliner_panel.get_parent() != _scene_column:
-			_outliner_panel.reparent(_scene_column, false)
-		_outliner_panel.visible = scene_expanded
-	else:
-		if _outliner_panel.get_parent() != _dock_box:
-			_outliner_panel.reparent(_dock_box, false)
-		_outliner_panel.visible = _compact_tab == "scene"
-	_update_scene_rail_state(scene_enabled and not scene_expanded)
-	if _panel_rail != null:
-		_panel_rail.visible = panel_rail_visible
-		if _drawer_open:
-			_panel_rail.set_page(_compact_tab, true)
-		else:
-			_panel_rail.set_page("scene", scene_expanded)
-
-	_dock.visible = _drawer_open
-	_drawer_scrim.visible = _drawer_open
-	_dock.modulate.a = 1.0
-	_dock_close_row.visible = true
-	_dock_title_label.visible = not compact
-	# The tabs are visible whenever the rail is hidden: Compact has no rail,
-	# and a sub-480 Studio stage folds the rail into the top-bar button. In
-	# both cases the flyout itself has to carry the three pages or a page
-	# becomes unreachable.
-	var tabbed := compact or rail_fallback
-	_drawer_scene_tab.visible = tabbed
-	_drawer_props_tab.visible = tabbed
-	if _drawer_rig_tab != null:
-		_drawer_rig_tab.visible = tabbed
-	_dock_close_button.visible = true
-	if _top_bar != null:
-		# The rail replaced the old narrow-Studio top-bar toggle. A shell below
-		# the Studio minimum width falls back to it instead of squeezing the
-		# stage with two rails.
-		_top_bar.set_panels_button_visible(rail_fallback)
-		_top_bar.set_panels_open(_drawer_open)
-	# One page at a time: the flyout is not the old stacked wide dock. The
-	# outliner is only a dock page when the scene column does not own it.
-	if _outliner_panel.get_parent() == _dock_box:
-		_outliner_panel.visible = _compact_tab == "scene"
-	_inspector_panel.visible = _compact_tab == "inspector"
-	_rig_frame.visible = _compact_tab == "rig"
-	# The panel stays mounted and reachable; only its dock frame follows tabs.
-	_rig_panel.visible = true
-	var outliner_collapsed: bool = _outliner != null and _outliner.collapsed
-	if outliner_collapsed:
-		_outliner_panel.custom_minimum_size.y = 44.0
-		_outliner_panel.size_flags_vertical = Control.SIZE_FILL
-	else:
-		_outliner_panel.custom_minimum_size.y = 0.0
-		_outliner_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var inspector_collapsed: bool = _inspector != null and _inspector.collapsed
-	if inspector_collapsed:
-		_inspector_panel.custom_minimum_size.y = 44.0
-		_inspector_panel.size_flags_vertical = Control.SIZE_FILL
-	else:
-		_inspector_panel.custom_minimum_size.y = 0.0
-		_inspector_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-
-	# The 400 dp flyout maximum from the spec is an upper bound, not a target:
-	# clamp to it after the content minimum so a growing inspector can never
-	# push the dock past the edge. Compact uses the same cap under its 8%
-	# side margin.
-	var content_min := _dock.get_combined_minimum_size().x
-	var dock_width := 0.0
-	if compact:
-		dock_width = clampf(size.x * 0.92, 280.0, 400.0)
-	else:
-		dock_width = clampf(size.x * 0.34, 320.0, 400.0)
-	# The inspector's transform fields have a real floor; a dock narrower than
-	# its content would clip controls instead of growing past the edge.
-	dock_width = maxf(dock_width, content_min)
-	dock_width = minf(dock_width, 400.0)
-	# The timeline decides between its full transport and the overflow header.
-	# Give it the width the shell can actually reserve, including the new rail.
-	var rail_reserve := 0.0
-	if not compact:
-		rail_reserve = float(_rail.call("rail_width"))
-	var panel_reserve := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
-	_timeline.set_available_width(size.x - rail_reserve - panel_reserve - scene_width)
-	var bottom_inset := 0.0
-	if _status_bar.visible:
-		bottom_inset += _status_bar.custom_minimum_size.y
-	if _bottom_bar.visible:
-		bottom_inset += _bottom_bar.custom_minimum_size.y
-	# The flyout stops at the rail instead of covering it. Panel pages stay
-	# switchable while a panel is open. Where the stage is tighter than the
-	# 400 dp cap the flyout takes the width that is actually left, inside the
-	# rail inset (or the compact margin).
-	var rail_inset := Kit.Tokens.PANEL_RAIL_WIDTH if panel_rail_visible else 0.0
-	var available := size.x * 0.92 if compact else size.x - rail_inset
-	dock_width = minf(dock_width, maxf(available, content_min))
-	_dock.offset_left = -(dock_width + rail_inset)
-	_dock.offset_right = -rail_inset
-	_dock.offset_top = _top_bar.custom_minimum_size.y
-	_dock.offset_bottom = -bottom_inset
-	_drawer_scrim.offset_top = _top_bar.custom_minimum_size.y
-	_drawer_scrim.offset_bottom = -(_bottom_bar.custom_minimum_size.y if _bottom_bar.visible else 0.0)
-	_sync_timeline_visibility()
-	_update_bottom_bar()
-	_update_drawer_tabs()
-	_sync_view_header_visibility()
+	_workspace_bar.set_camera_mode("")
+	_context_bar.visible = true
+	_transport_bar.visible = _workspace != "animate"
+	_animate_pane.visible = _workspace == "animate"
+	_update_workspace_panel()
+	_sync_context_actions()
+	_sync_transport_state()
+	var reserved: float = _panel_spacer.custom_minimum_size.x
+	_timeline.set_available_width(maxf(size.x - reserved, 320.0))
 	_refresh_chrome_values()
 
 
-# -------------------------------------------------------------------------
-# Persistent scene panel
-# -------------------------------------------------------------------------
-
-func _scene_panel_enabled() -> bool:
-	return workbench_mode != "compact" and size.x >= SCENE_PANEL_MIN_WIDTH
-
-
-func _scene_expanded_width() -> float:
-	return clampf(size.x * 0.20, SCENE_EXPANDED_MIN, SCENE_EXPANDED_MAX)
-
-
-## A sub-760 expansion is legal only while the stage keeps 320 dp. The two
-## rails and the body gutters come out of the shell width first.
-func _scene_expansion_legal() -> bool:
-	if not _scene_panel_enabled():
-		return false
-	var rail_width := float(_rail.call("rail_width")) if _rail != null else SCENE_RAIL_WIDTH
-	var panel_rail := SCENE_RAIL_WIDTH if size.x >= PANEL_RAIL_MIN_WIDTH else 0.0
-	var stage := size.x - rail_width - _scene_expanded_width() - panel_rail - float(Kit.GUTTER) * 3.0
-	return stage >= SCENE_STAGE_FLOOR
-
-
-func _scene_can_expand() -> bool:
-	if not _scene_panel_enabled():
-		return false
-	if size.x >= SCENE_EXPANDED_MIN_WIDTH:
-		return true
-	return _scene_expansion_legal()
-
-
-func _scene_target_expanded() -> bool:
-	if not _scene_panel_enabled():
-		return false
-	if size.x >= SCENE_EXPANDED_MIN_WIDTH:
-		return bool(Prefs.get_value("editor.scene_panel_expanded", true))
-	return _scene_transient and absf(size.x - _scene_transient_width) < 0.5 and _scene_expansion_legal()
+## One panel host for the scene overlays and the three workspace panels.
+## Scene overlays are always floating; Shading, Rig and Render reserve layout
+## width at 768 dp and above and become overlays below it.
+func _update_workspace_panel() -> void:
+	var mode := WorkspacePanelScript.Mode.HIDDEN
+	var width := 0.0
+	var spacer := 0.0
+	match _workspace:
+		"scene":
+			if _workspace_panel_open:
+				mode = WorkspacePanelScript.Mode.OVERLAY
+				width = maxf(0.0, minf(size.x - PANEL_OVERLAY_MARGIN, PANEL_OVERLAY_MAX))
+		"shading":
+			_workspace_panel.set_content(_shading_panel)
+			_workspace_panel.set_title("Shading")
+		"rig":
+			_workspace_panel.set_content(_rig_panel)
+			_workspace_panel.set_title("Rig")
+		"render":
+			_workspace_panel.set_content(_render_panel)
+			_workspace_panel.set_title("Render")
+		_:
+			_workspace_panel_open = false
+	if _workspace in ["shading", "rig", "render"] and _workspace_panel_open:
+		if size.x >= PANEL_RESERVE_MIN_WIDTH:
+			mode = WorkspacePanelScript.Mode.RESERVED
+			width = clampf(size.x * 0.34, PANEL_RESERVED_MIN, PANEL_RESERVED_MAX)
+			spacer = width
+		else:
+			mode = WorkspacePanelScript.Mode.OVERLAY
+			width = maxf(0.0, minf(size.x - PANEL_OVERLAY_MARGIN, PANEL_OVERLAY_MAX))
+	_workspace_panel.set_panel_width(width)
+	_workspace_panel.set_mode(mode)
+	_panel_spacer.custom_minimum_size.x = spacer
 
 
-func _scene_is_expanded() -> bool:
-	return _scene_panel_enabled() and _scene_target_expanded()
-
-
-## Public for the layout/smoke suites and the capture harness: persist the
-## choice at or above 760 dp, keep a sub-760 expansion transient.
-func set_scene_panel_expanded(expanded: bool, persist: bool = true) -> void:
-	if persist:
-		Prefs.set_value("editor.scene_panel_expanded", expanded)
-		_scene_transient = false
-	else:
-		_scene_transient = expanded
-		_scene_transient_width = size.x
-	if is_inside_tree():
-		_apply_shell()
-
-
-func _set_scene_expanded_from_ui(expanded: bool) -> void:
-	set_scene_panel_expanded(expanded, size.x >= SCENE_EXPANDED_MIN_WIDTH)
-
-
-func _toggle_scene_panel() -> void:
-	if not _scene_panel_enabled():
+## Scene tree and Inspector share the one overlay slot. Opening either closes
+## the other; tapping the action that is already showing closes the panel.
+func _toggle_scene_panel(kind := "scene") -> void:
+	if _workspace != "scene" or _workspace_panel == null:
 		return
-	if _drawer_open:
-		# Scene from a Properties/Rig flyout focuses the panel and dismisses
-		# the overlay instead of opening a second scene surface.
-		_close_drawer()
-		if not _scene_is_expanded() and _scene_can_expand():
-			_set_scene_expanded_from_ui(true)
+	var target: Control = _outliner_panel if kind == "scene" else _inspector_panel
+	var title := "Scene tree" if kind == "scene" else "Inspector"
+	if _workspace_panel_open and _workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY 			and _workspace_panel.content() == target:
+		_close_workspace_panel()
 		return
-	if _scene_is_expanded():
-		_set_scene_expanded_from_ui(false)
-	elif _scene_can_expand():
-		_set_scene_expanded_from_ui(true)
+	_workspace_panel_open = true
+	_workspace_panel.set_content(target)
+	_workspace_panel.set_title(title)
+	_workspace_panel.set_badge("")
+	_apply_shell()
 
 
-func _on_scene_rail_expand() -> void:
-	if _scene_can_expand():
-		_set_scene_expanded_from_ui(true)
-
-
-func _update_scene_rail_state(rail_visible: bool) -> void:
-	if _scene_rail_expand == null:
+## The context-row panel action: a reserved panel is permanent, so the action
+## reports why instead of pretending it can toggle. Narrow overlays toggle.
+func _toggle_workspace_panel() -> void:
+	if _workspace not in ["shading", "rig", "render"]:
 		return
-	var can_expand := _scene_can_expand()
-	_scene_rail_expand.disabled = rail_visible and not can_expand
-	if can_expand:
-		_scene_rail_expand.tooltip_text = "Expand the scene panel"
-	else:
-		_scene_rail_expand.tooltip_text = "The stage needs 320 dp; widen the window to expand the scene panel"
-
-
-func _update_scene_rail_count() -> void:
-	if _scene_rail_count == null:
+	if _workspace_panel != null and _workspace_panel.mode() == WorkspacePanelScript.Mode.RESERVED:
 		return
-	var objects: int = 0 if doc == null else doc.objects.size()
-	_scene_rail_count.text = str(objects)
+	_workspace_panel_open = not _workspace_panel_open
+	_apply_shell()
 
 
-## A drawer or sheet can begin inside the camera label and cut it mid-word
-## ("Persp"). The header is layout, so it yields the space while a surface
-## covers the viewport instead of leaving a clipped fragment behind an edge.
-func _sync_view_header_visibility() -> void:
-	if _view_header == null:
-		return
-	var covered := _render_mode or _drawer_open or _look_through
-	if _overlay != null and _overlay.has_modal():
-		covered = true
-	_view_header.visible = not covered
+func _close_workspace_panel() -> void:
+	_workspace_panel_open = false
+	if _workspace_panel != null:
+		_workspace_panel.set_mode(WorkspacePanelScript.Mode.HIDDEN)
+	if _panel_spacer != null:
+		_panel_spacer.custom_minimum_size.x = 0.0
+	_apply_shell()
+
+
+func _on_workspace_panel_closed() -> void:
+	_workspace_panel_open = false
+	_apply_shell()
 
 
 func _refresh_chrome_values() -> void:
 	if doc != null:
 		_update_header()
 	_update_history_buttons()
-	_update_chrome_sample()
+	_update_instrumentation()
 
 
-func _update_chrome_sample(sample: Dictionary = {}) -> void:
-	if _status_bar == null:
+## The desktop-only instrumentation strip. It shares the Performance sample but
+## has its own session flag; nothing is written to preferences.
+func _update_instrumentation(sample: Dictionary = {}) -> void:
+	if _instrumentation == null or _instrumentation_label == null:
+		return
+	if not _instrumentation.visible:
 		return
 	if sample.is_empty():
 		sample = Perf.sample()
-	var keys := 0
-	if doc != null and doc.animation != null:
-		for track in range(doc.animation.get_track_count()):
-			keys += doc.animation.track_get_key_count(track)
-	sample["renderer"] = Gfx.renderer_name()
-	var objects := 0 if doc == null else doc.objects.size()
-	var saved := doc == null or not doc.is_dirty()
-	_status_bar.update(sample, objects, keys, saved, _fit_percent)
+	var fps := int(round(float(sample.get("fps", 0.0))))
+	var frame_ms := float(sample.get("frame_ms", 0.0))
+	_instrumentation_label.text = "%d FPS  ·  %.1f ms  ·  %s" % [
+		fps, frame_ms, Gfx.renderer_name(),
+	]
 
 
-func _timeline_should_show() -> bool:
-	return _timeline_visible
+func _toggle_instrumentation() -> void:
+	_instrumentation_visible = not _instrumentation_visible
+	_apply_shell()
+	if _instrumentation_visible:
+		_update_instrumentation()
+
+
+## The stage host's height drives any stage-relative layout. During the first
+## shell pass the container has not been laid out yet, so keep a real floor.
+func _stage_height() -> float:
+	if _stage_host == null:
+		return 120.0
+	return maxf(_stage_host.stage_rect().size.y, 120.0)
 
 
 func _apply_collapsed_sections() -> void:
@@ -1944,220 +1945,9 @@ func _set_section_collapsed(section: String, collapsed: bool, persist: bool = tr
 		elif not collapsed and found:
 			sections.erase(section)
 		Prefs.set_value("editor.collapsed_sections", sections)
-	if is_inside_tree() and _dock != null:
+	if is_inside_tree() and _workspace_panel != null:
 		_apply_shell()
 
-
-## The stage host's height drives the overlay budget. During the first shell
-## pass the container has not been laid out yet, so measure the real chrome
-## controls (top bar, view header, status bar, bottom bar) instead of
-## duplicating their heights as literals.
-func _stage_height() -> float:
-	if _viewport_host != null and _viewport_host.size.y > 1.0:
-		return _viewport_host.size.y
-	var height: float = size.y
-	var chrome := [_top_bar, _view_header, _status_bar, _bottom_bar]
-	for control in chrome:
-		if control != null and control.visible:
-			height -= control.custom_minimum_size.y
-	# Layout separations: the shell column (top/body/status/bottom) and the
-	# center column (header/stage).
-	height -= float(Kit.GUTTER) * 4.0
-	return maxf(height, 120.0)
-
-
-## The expanded sheet defaults to the compact budget: 34 percent of the stage
-## host, capped at 208 dp and never below 104 dp (transport 56 + a 48 dp sheet
-## floor). The explicit More control raises the session-only cap to 46 percent
-## / 260 dp; it is never the default and is capped independently of the view
-## height so the stage always keeps over half of its height.
-func _timeline_overlay_budget(stage_height: float) -> float:
-	if not _timeline_should_show():
-		return FOLDED_TIMELINE
-	# Graph mode is an explicit request, so the sheet gets the stage share
-	# (capped at 300 dp) instead of the dope sheet's quick-edit budget.
-	if _timeline != null and _timeline.mode() == "graph":
-		return minf(300.0, maxf(104.0, stage_height))
-	var ratio := 0.46 if _timeline_more else 0.34
-	var cap := 260.0 if _timeline_more else 208.0
-	return minf(cap, maxf(104.0, stage_height * ratio))
-
-
-func _set_timeline_overlay_height(value: float) -> void:
-	if _timeline_panel == null:
-		return
-	_timeline_panel.offset_top = -value
-	_timeline_panel.offset_bottom = 0.0
-	_timeline_panel.custom_minimum_size.y = value
-
-
-## The nav gizmo hugs the bottom-right of the stage, where the always-present
-## transport strip now lives. Lift it by the current overlay height plus the
-## 12 dp inset it already keeps from the edges so its axis tips stay tappable
-## instead of landing under the transport.
-func _sync_nav_gizmo_inset(timeline_height: float) -> void:
-	if _view == null:
-		return
-	var nav = _view.get("_nav_gizmo")
-	if nav == null or not is_instance_valid(nav):
-		return
-	var nav_size := 116.0
-	var inset := maxf(FOLDED_TIMELINE, timeline_height) + 12.0
-	nav.offset_bottom = -inset
-	nav.offset_top = -(nav_size + inset)
-
-
-func _sync_timeline_visibility() -> void:
-	if _workspace_open:
-		return
-	if _timeline_panel == null or _timeline == null:
-		return
-	# The transport row is always present; only the sheet folds away, so the
-	# stage keeps its 3D height until the sheet is asked for.
-	var sheet := _timeline_should_show()
-	_timeline.set_sheet_visible(sheet)
-	if not sheet:
-		_timeline.set_header_folded(false)
-		if _media_lanes != null:
-			_media_lanes.visible = false
-			_media_lanes.fit_height(-1.0)
-		if _clip_lane != null:
-			_clip_lane.visible = false
-		if _lane_scroll != null:
-			_lane_scroll.visible = false
-			_lane_scroll.custom_minimum_size.y = 0.0
-		_set_timeline_overlay_height(FOLDED_TIMELINE)
-		_sync_nav_gizmo_inset(FOLDED_TIMELINE)
-		return
-
-	var budget := _timeline_overlay_budget(_stage_height())
-	if _timeline.mode() == "graph":
-		# The compact graph owns the sheet's stage share. Clips and media fold
-		# whole and are excluded from the budget so the plot can reach 120 dp.
-		_timeline.set_header_folded(true)
-		if _media_lanes != null:
-			_media_lanes.fit_height(-1.0)
-			_media_lanes.visible = false
-		if _clip_lane != null:
-			_clip_lane.visible = false
-		if _lane_scroll != null:
-			_lane_scroll.visible = false
-			_lane_scroll.custom_minimum_size.y = 0.0
-		_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
-		_set_timeline_overlay_height(budget)
-		_sync_nav_gizmo_inset(budget)
-		return
-	# Resolve content in the binding fold order: the media lanes fold first
-	# (their body is capped inside a scrollable shell, so the header stays
-	# reachable), then the clip lane folds, then the sheet shrinks. The
-	# resolution starts lean (compact header folded) and the header comes
-	# back only when the pass leaves 48 dp of slack for it.
-	_timeline.set_header_folded(true)
-	_timeline.fit_sheet_height(10000.0)
-	var tl_content: float = _timeline.get_combined_minimum_size().y
-	var lane_min := 0.0
-	if _clip_lane != null:
-		lane_min = _clip_lane.get_combined_minimum_size().y
-	var media_want := 0.0
-	if _media_lanes != null:
-		media_want = _media_lanes.get_combined_minimum_size().y
-	var show_lane := _clip_lane != null and lane_min > 0.0
-	var show_media := _media_lanes != null
-	var lane_part := 0.0
-	var media_part := 0.0
-	var lane_total := 0.0
-	var more_lanes := false
-	if _timeline_more:
-		# The explicit More state must mount both lanes. The sheet keeps its
-		# 48 dp floor and the lane stack gets everything above it, capped at the
-		# natural height and scrolled inside the cap when it does not fit.
-		var lane_natural := lane_min if show_lane else 0.0
-		if show_media:
-			lane_natural += media_want
-		if show_lane and show_media:
-			lane_natural += float(Kit.GUTTER)
-		var lane_room := budget - FOLDED_TIMELINE - 48.0
-		if lane_natural > 0.0 and lane_room >= 44.0:
-			lane_total = minf(lane_natural, lane_room)
-			lane_part = lane_total
-			more_lanes = true
-		else:
-			show_lane = false
-			show_media = false
-	else:
-		# Room left next to the transport row and the preferred sheet.
-		var room := budget - FOLDED_TIMELINE - tl_content
-		if room >= lane_min + media_want:
-			lane_part = lane_min
-			media_part = media_want
-		elif room >= lane_min + 44.0:
-			lane_part = lane_min
-			media_part = 44.0
-		elif room >= 44.0:
-			show_lane = false
-			media_part = minf(media_want, room)
-		else:
-			# The preferred sheet is unaffordable: keep the header folded, drop
-			# the sequence lane and shrink the sheet to its 48 dp floor so the
-			# collapsed media header gets one more chance.
-			show_lane = false
-			var floor_room := budget - FOLDED_TIMELINE - 48.0
-			if floor_room >= 44.0:
-				_timeline.fit_sheet_height(budget - FOLDED_TIMELINE)
-				media_part = minf(media_want, floor_room)
-			else:
-				# Even the floor cannot host the header. Fold the lanes whole and
-				# collapse the media lanes explicitly so the next pass (a taller
-				# stage, a resize) shows the header again instead of burying it.
-				show_media = false
-				media_part = 0.0
-		lane_total = lane_part + media_part
-		if show_lane and show_media:
-			lane_total += float(Kit.GUTTER)
-	if more_lanes:
-		if _media_lanes != null:
-			_media_lanes.fit_height(-1.0)
-			_media_lanes.visible = show_media
-		if _clip_lane != null:
-			_clip_lane.visible = show_lane
-	else:
-		if _media_lanes != null:
-			_media_lanes.fit_height(media_part if show_media else -1.0)
-			_media_lanes.visible = show_media and media_part >= 44.0
-			if not _media_lanes.visible:
-				_media_lanes.set_collapsed(true)
-		if _clip_lane != null:
-			_clip_lane.visible = show_lane
-	if _lane_scroll != null:
-		_lane_scroll.visible = lane_total >= 44.0 and \
-			(show_lane or (_media_lanes != null and _media_lanes.visible))
-		_lane_scroll.custom_minimum_size.y = lane_total if _lane_scroll.visible else 0.0
-	# The compact header returns only when it can coexist with a 48 dp sheet:
-	# available >= header + 48 + the 1 px rule. The sheet then takes what is
-	# left, never below 48 dp.
-	var can_host_header: bool = _timeline.header_allowed() and \
-		budget - FOLDED_TIMELINE - lane_part - media_part >= \
-		_timeline.header_height() + 48.0 + _timeline.sheet_rule_height()
-	if can_host_header:
-		_timeline.set_header_folded(false)
-	# Final pass: the sheet takes what is left, never below 48 dp.
-	_timeline.fit_sheet_height(budget - FOLDED_TIMELINE - lane_part - media_part)
-	_set_timeline_overlay_height(budget)
-	_sync_nav_gizmo_inset(budget)
-
-func _on_timeline_mode_changed(mode: String) -> void:
-	# Entering graph mode is the explicit request that raises the session
-	# budget. Returning to dope keeps More on; closing the sheet resets both.
-	if mode == "graph":
-		_timeline_more = true
-		if _timeline != null:
-			_timeline.set_more_state(true)
-	_sync_timeline_visibility()
-
-func _on_media_lanes_collapsed_changed(_collapsed: bool) -> void:
-	# Folding media is a layout change only; the document and its media are
-	# untouched. The panel must reserve the new stack height immediately.
-	_sync_timeline_visibility()
 
 ## Puts the clip clock back where the sequence took over. Runs on the actual
 ## sequence stop (lane pause, Space, natural end or stop_sequence), never while
@@ -2172,195 +1962,18 @@ func _restore_clip_after_sequence() -> void:
 	_clip_time_before_sequence = float(doc.current_time)
 	_restoring_clip = false
 
-func _toggle_drawer(tab: String) -> void:
-	# On Studio/Desktop the scene tree is the persistent column. The rail and
-	# the Scene page toggle that column; only Compact still opens the dock.
-	if tab == "scene" and _scene_panel_enabled():
-		_toggle_scene_panel()
-		return
-	if _drawer_open and _compact_tab == tab:
-		_close_drawer()
-		return
-	_compact_tab = tab
-	_open_drawer()
-
-func _open_drawer() -> void:
-	_drawer_open = true
-	_overlay.clear_toast()
-	_drawer_scrim.visible = true
-	_dock.visible = true
-	_dock.modulate.a = 0.0
-	_drawer_scrim.modulate.a = 0.0
-	_sync_view_header_visibility()
-	var tween := create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(_dock, "modulate:a", 1.0, 0.13)
-	tween.tween_property(_drawer_scrim, "modulate:a", 1.0, 0.13)
-	_set_compact_tab(_compact_tab)
-	_update_bottom_bar()
-
-func _close_drawer() -> void:
-	_drawer_open = false
-	_drawer_scrim.visible = false
-	_dock.visible = false
-	_dock.modulate.a = 1.0
-	_sync_view_header_visibility()
-	_update_drawer_tabs()
-	_update_bottom_bar()
-
-func _dock_overlay_mode() -> bool:
-	# Kept for the existing call sites and tests: the dock is an overlay in
-	# every mode now. Compact opens it from the bottom bar; Studio and Desktop
-	# open it from the 44 dp panel rail.
-	return true
-
-func _compact_shell() -> bool:
-	return workbench_mode == "compact"
-
-
-func _set_compact_tab(tab: String) -> void:
-	_compact_tab = tab if tab in ["scene", "inspector", "rig"] else "scene"
-	if _compact_tab == "rig":
-		# Selecting the Rig page is how the workbench enters rig mode. Closing
-		# the dock or showing another page does not leave it.
-		_rig_mode = true
-	if _dock != null:
-		if _outliner_panel.get_parent() == _dock_box:
-			_outliner_panel.visible = _compact_tab == "scene"
-		_inspector_panel.visible = _compact_tab == "inspector"
-		_rig_frame.visible = _compact_tab == "rig"
-		_rig_panel.visible = true
-	_update_drawer_tabs()
-	_update_bottom_bar()
-	_sync_rig_overlay()
-
-func _update_drawer_tabs() -> void:
-	if _drawer_scene_tab == null:
-		return
-	# Same rule as _apply_shell: the tabs light up wherever the flyout is the
-	# only panel navigation (Compact, or Studio below the rail's minimum).
-	var tabbed := workbench_mode == "compact" \
-		or (workbench_mode != "compact" and size.x < PANEL_RAIL_MIN_WIDTH)
-	_drawer_scene_tab.set_pressed_no_signal(tabbed and _compact_tab == "scene")
-	_drawer_props_tab.set_pressed_no_signal(tabbed and _compact_tab == "inspector")
-	if _drawer_rig_tab != null:
-		_drawer_rig_tab.set_pressed_no_signal(tabbed and _compact_tab == "rig")
-	if _dock_title_label != null:
-		_dock_title_label.text = _panel_page_title(_compact_tab)
-	if _panel_rail != null:
-		if _drawer_open:
-			_panel_rail.set_page(_compact_tab, true)
-		else:
-			_panel_rail.set_page("scene", _scene_panel_enabled() and _scene_is_expanded())
-	if _top_bar != null:
-		_top_bar.set_panels_open(_drawer_open)
-
-
-func _panel_page_title(page: String) -> String:
-	match page:
-		"inspector":
-			return "Properties"
-		"rig":
-			return "Rig"
-	return "Scene"
-
-func _update_bottom_bar() -> void:
-	if _bottom_bar == null:
-		return
-	_bottom_bar.set_timeline_open(_timeline_should_show())
-	_bottom_bar.set_active(BottomBarScript.ACTION_SCENE, _drawer_open and _compact_tab == "scene")
-	_bottom_bar.set_active(BottomBarScript.ACTION_PROPS, _drawer_open and _compact_tab == "inspector")
-
-
-func _on_bottom_action(action: String) -> void:
-	match action:
-		BottomBarScript.ACTION_ADD:
-			_open_add_sheet()
-		BottomBarScript.ACTION_SCENE:
-			_toggle_drawer("scene")
-		BottomBarScript.ACTION_PROPS:
-			_toggle_drawer("inspector")
-		BottomBarScript.ACTION_TIMELINE:
-			_toggle_timeline()
-
-
 func _on_chrome_action(action: String) -> void:
 	match action:
-		TopBarScript.ACTION_BACK:
-			request_close()
-		TopBarScript.ACTION_UNDO:
+		"back":
+			handle_back()
+		"undo":
 			_undo()
-		TopBarScript.ACTION_REDO:
+		"redo":
 			_redo()
-		TopBarScript.ACTION_SAVE:
+		"save":
 			_save_project(true)
-		TopBarScript.ACTION_RENDER:
-			_open_render_sheet()
-		TopBarScript.ACTION_RENDER_STILL:
-			_open_render_sheet()
-		TopBarScript.ACTION_RENDER_SEQUENCE:
-			_open_render_sheet()
-		TopBarScript.ACTION_SETTINGS:
-			_open_settings()
-		TopBarScript.ACTION_PANELS:
-			_toggle_drawer(_compact_tab)
-		TopBarScript.ACTION_TIMELINE:
-			_toggle_timeline()
-		TopBarScript.ACTION_PERFORMANCE:
-			_open_performance_overlay()
-		TopBarScript.ACTION_IMPORT:
-			_pick_model()
-		TopBarScript.ACTION_FRAME:
-			_focus_selection()
-		TopBarScript.ACTION_FRAME_ALL:
-			if _view != null:
-				_view.frame_all()
-		TopBarScript.ACTION_TOGGLE_GRID:
-			if _view != null:
-				_view.toggle_grid()
-		TopBarScript.ACTION_DUPLICATE:
-			if doc != null:
-				doc.duplicate_selected()
-		TopBarScript.ACTION_DELETE:
-			if doc != null:
-				doc.delete_selected()
-		TopBarScript.ACTION_RESET_LAYOUT:
-			set_workspace_mode("auto")
-		TopBarScript.ACTION_ABOUT:
-			_show_about()
-		TopBarScript.ACTION_SHORTCUTS:
-			_open_shortcuts_sheet()
-
-
-func _toggle_timeline() -> void:
-	_timeline_user_override = true
-	_timeline_visible = not _timeline_visible
-	# The sheet always opens and closes as the compact dope surface. More is
-	# session-only and belongs to one open sheet, so a reopened sheet can never
-	# inherit the full-stage graph budget.
-	_timeline_more = false
-	if _timeline != null:
-		_timeline.set_more_state(false)
-		_timeline.set_mode("dope")
-	_sync_timeline_visibility()
-	# The gesture hint belongs to the user's open action, not to boot/resize
-	# syncs. The timeline itself guarantees it only appears once.
-	if _timeline_visible and _timeline != null:
-		_timeline.show_gesture_hint_once()
-	_update_bottom_bar()
-
-
-## The timeline's explicit More control. Toggling only changes the overlay
-## budget; the document and the sheet content are untouched.
-func _on_timeline_more_requested() -> void:
-	_timeline_more = not _timeline_more
-	if _timeline != null:
-		_timeline.set_more_state(_timeline_more)
-	_sync_timeline_visibility()
-
-
-func _on_timeline_duration_row_changed(_open: bool) -> void:
-	_sync_timeline_visibility()
+		"menu":
+			_open_project_menu(_workspace_bar.action_button("menu"))
 
 
 ## A shrink that would delete keys asks first. The timeline has already left
@@ -2373,13 +1986,6 @@ func _on_timeline_duration_confirmation(value: float, message: String) -> void:
 	)
 
 
-func _on_timeline_close_requested() -> void:
-	# The transport stays on screen while the sheet folds, so the same control
-	# has to reopen it. Treating close as one-way left a folded timeline with
-	# no way back on Studio and Desktop.
-	_toggle_timeline()
-
-
 # -------------------------------------------------------------------------
 # Tools, editing and shortcuts
 # -------------------------------------------------------------------------
@@ -2388,28 +1994,16 @@ func _select_tool(tool_id: String) -> void:
 	_tool = tool_id
 	if _view != null:
 		_view.set_tool(_tool)
-	if _rail != null:
-		_rail.set_tool(_tool)
+	if _context_bar != null:
+		_sync_context_state()
 
 func _focus_selection() -> void:
 	if _view != null:
 		_view.focus_selection()
 
-func _on_view_requested(label: String) -> void:
-	if _view != null:
-		_view.set_view_preset(label)
-
-func _on_view_changed(label: String) -> void:
-	if _view_header != null:
-		_view_header.set_view_label(label)
-
 func _on_view_grid_changed(enabled: bool) -> void:
-	if _view_header != null:
-		_view_header.set_grid(enabled)
-
-func _on_view_header_grid_toggled(enabled: bool) -> void:
-	if _view != null:
-		_view.set_grid_enabled(enabled)
+	if _context_bar != null:
+		_sync_context_state()
 
 func _undo() -> void:
 	if doc == null or not doc.can_undo():
@@ -2472,8 +2066,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_4:
 			_select_tool("scale")
 		KEY_ESCAPE:
-			if _drawer_open:
-				_close_drawer()
+			if _workspace_panel != null and \
+					_workspace_panel.mode() == WorkspacePanelScript.Mode.OVERLAY:
+				_close_workspace_panel()
+				get_viewport().set_input_as_handled()
+			elif _workspace != "scene":
+				set_workspace("scene")
 				get_viewport().set_input_as_handled()
 
 # -------------------------------------------------------------------------
@@ -2483,8 +2081,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _open_add_sheet() -> void:
 	if doc == null:
 		return
-	if _drawer_open:
-		_close_drawer()
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 6)
 
@@ -2511,7 +2107,7 @@ func _open_add_sheet() -> void:
 	scene_grid.add_child(_sheet_button("Empty", "circle-dot-dashed", _add_empty))
 	scene_grid.add_child(_sheet_button("Camera", "camera", _add_camera))
 	scene_grid.add_child(_sheet_button("Key light", "sun", _add_directional_light))
-	scene_grid.add_child(_sheet_button("Omni light", "lightbulb", _add_omni_light))
+	scene_grid.add_child(_sheet_button("Omni light", "circle-dot", _add_omni_light))
 	scene_grid.add_child(_sheet_button("Rig", "bone", _add_rig))
 
 	body.add_child(Kit.vsep())
@@ -2523,7 +2119,7 @@ func _open_add_sheet() -> void:
 	body.add_child(asset_grid)
 	asset_grid.add_child(_sheet_button("Import 3D model", "upload", _pick_model))
 	asset_grid.add_child(_sheet_button("Audio", "audio-wave", _add_audio_entry))
-	asset_grid.add_child(_sheet_button("Video reference", "film", _add_video_reference_entry))
+	asset_grid.add_child(_sheet_button("Video reference", "video", _add_video_reference_entry))
 
 	_overlay.show_modal("Add object", "Scene elements are independent and can be keyed immediately. Primitives are placed on the ground at the center of the current view.", body, [
 		{"text": "Close", "compact": true},
@@ -2577,7 +2173,7 @@ func _add_omni_light() -> void:
 	if doc == null:
 		return
 	doc.add_light("omni", _spawn_point() + Vector3(1.4, 2.4, 1.2))
-	_overlay.toast("Omni light added", "lightbulb", Kit.SUCCESS)
+	_overlay.toast("Omni light added", "circle-dot", Kit.SUCCESS)
 
 func _add_rig() -> void:
 	if doc == null:
@@ -2595,8 +2191,6 @@ func _add_video_reference_entry() -> void:
 func _open_media_import_sheet() -> void:
 	if doc == null:
 		return
-	if _drawer_open:
-		_close_drawer()
 	var sheet := MediaImportSheetScript.new()
 	sheet.setup(doc)
 	sheet.audio_import_requested.connect(_on_media_import_audio)
@@ -2797,7 +2391,7 @@ func _open_render_sheet() -> void:
 	var still_actions := HBoxContainer.new()
 	still_actions.add_theme_constant_override("separation", 8)
 	body.add_child(still_actions)
-	_render_still_button = Kit.text_button("Quick still", "camera", true, true)
+	_render_still_button = Kit.text_button("Quick still", "image", true, true)
 	_render_still_button.tooltip_text = "Capture now and save in app storage"
 	_render_still_button.pressed.connect(_quick_still)
 	still_actions.add_child(_render_still_button)
@@ -3192,35 +2786,41 @@ func _file_size(path: String) -> int:
 	file.close()
 	return size
 
-## Look-through is a viewing mode, not a document change. The view copies the
-## document camera; here we hide the editing header and keep the timeline,
-## transport, dock and scene tree exactly as they were.
-func _enter_look_through(camera_id: String) -> void:
+## Camera view is a viewing mode, not a document change. The view copies the
+## document camera; the editor owns the session flag, the chip and the chrome.
+## Entering another camera while active is a switch, never an exit/re-entry.
+func _enter_camera_view(camera_id: String) -> void:
 	if _view == null or _render_mode:
 		return
-	if _view.is_look_through():
-		return
-	if not _view.enter_look_through(camera_id):
+	var was_looking := _look_through
+	var entered := false
+	if was_looking:
+		entered = _view.switch_look_through_camera(camera_id)
+	else:
+		entered = _view.enter_look_through(camera_id)
+	if not entered:
 		return
 	_look_through = true
 	_look_camera_id = camera_id
-	_look_header_was_visible = _view_header != null and _view_header.visible
-	_look_perf_was_visible = _perf_overlay != null and _perf_overlay.visible
-	if _view_header != null:
-		_view_header.visible = false
-	if _perf_overlay != null:
-		_perf_overlay.visible = false
-	# The rotoscope and rig handles are workbench layers, not part of the
-	# document camera's view. The dock stays live, so the Rig tab can be opened
-	# after entry; _sync_rig_overlay() also gates on _look_through.
-	if _video_overlay != null:
-		_video_overlay.set_render_mode(true)
-	if _rig_overlay != null:
-		_rig_overlay.set_enabled(false)
-	# The floating toolbar is a separate stage surface. Re-derive it from the
-	# look-through flag so it cannot stay tappable on the clean camera view.
-	_sync_rig_overlay()
-	_sync_view_header_visibility()
+	if not was_looking:
+		_look_perf_was_visible = _perf_overlay != null and _perf_overlay.visible
+		if _perf_overlay != null:
+			_perf_overlay.visible = false
+		# The rotoscope and rig handles are workbench layers, not part of the
+		# document camera's view. _sync_rig_overlay() gates on _look_through.
+		if _video_overlay != null:
+			_video_overlay.set_render_mode(true)
+		if _rig_overlay != null:
+			_rig_overlay.set_enabled(false)
+		_sync_rig_overlay()
+	_workspace_bar.set_camera_mode(_camera_name(camera_id))
+	_apply_shell()
+
+
+## Compatibility spelling for the pre-camera-view shell paths.
+func _enter_look_through(camera_id: String) -> void:
+	_enter_camera_view(camera_id)
+
 
 ## The view can leave look-through by itself (the Exit control lives inside
 ## it), so the editor restores its own chrome from this one handler. Calling
@@ -3229,15 +2829,14 @@ func _enter_look_through(camera_id: String) -> void:
 func _on_view_look_through_exited() -> void:
 	_look_through = false
 	_look_camera_id = ""
+	_workspace_bar.set_camera_mode("")
 	if _perf_overlay != null:
 		_perf_overlay.visible = _look_perf_was_visible
-	if _view_header != null:
-		_view_header.visible = _look_header_was_visible
 	if _video_overlay != null:
 		_video_overlay.set_render_mode(false)
 	_sync_rig_overlay()
-	_sync_view_header_visibility()
 	_apply_shell()
+
 
 func _exit_look_through() -> void:
 	if _view != null and _view.is_look_through():
@@ -3245,6 +2844,28 @@ func _exit_look_through() -> void:
 		return
 	if _look_through:
 		_on_view_look_through_exited()
+
+
+## The live document name for a camera id, or "" when the object is gone.
+func _camera_name(camera_id: String) -> String:
+	if doc == null or camera_id == "":
+		return ""
+	var obj := doc.get_object(camera_id)
+	if obj.is_empty():
+		return ""
+	return str(obj.get("name", camera_id))
+
+
+## A camera is a valid view target only while its object and live node both
+## exist as a visible camera.
+func _camera_target_valid(camera_id: String) -> bool:
+	if doc == null or camera_id == "":
+		return false
+	var obj := doc.get_object(camera_id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "camera":
+		return false
+	var node: Node3D = doc.nodes.get(camera_id)
+	return node != null and node.visible
 
 func is_look_through() -> bool:
 	return _look_through
@@ -3268,8 +2889,6 @@ func _enter_render_mode() -> void:
 	_render_saved_time = doc.current_time
 	_render_was_playing = doc.is_playing
 	_capture_render_chrome()
-	if _drawer_open:
-		_close_drawer()
 	if _perf_overlay != null:
 		_perf_overlay.visible = false
 	if _overlay != null:
@@ -3336,6 +2955,7 @@ func _sync_render_hud() -> void:
 
 
 func _on_document_playback_changed(_time: float, _playing: bool) -> void:
+	_sync_transport_state()
 	if _render_mode:
 		_sync_render_hud()
 	_sync_sequence_transport()
@@ -3371,78 +2991,55 @@ func _sync_sequence_transport() -> void:
 
 func _capture_render_chrome() -> void:
 	_render_ui_state = {
-		"top": _top_bar != null and _top_bar.visible,
-		"status": _status_bar != null and _status_bar.visible,
-		"bottom": _bottom_bar != null and _bottom_bar.visible,
-		"rail": _rail != null and _rail.visible,
-		"header": _view_header != null and _view_header.visible,
-		"timeline": _timeline_panel != null and _timeline_panel.visible,
-		"scene_column": _scene_column != null and _scene_column.visible,
-		"dock": _dock != null and _dock.visible,
-		"panel_rail": _panel_rail != null and _panel_rail.visible,
-		"scrim": _drawer_scrim != null and _drawer_scrim.visible,
+		"top": _workspace_bar != null and _workspace_bar.visible,
+		"context": _context_bar != null and _context_bar.visible,
+		"transport": _transport_bar != null and _transport_bar.visible,
+		"instrumentation": _instrumentation != null and _instrumentation.visible,
+		"panel_open": _workspace_panel_open,
 		"perf": _perf_overlay != null and _perf_overlay.visible,
-		"drawer": _drawer_open,
 	}
 
 
 func _set_render_chrome_hidden() -> void:
-	if _top_bar != null:
-		_top_bar.visible = false
-	if _status_bar != null:
-		_status_bar.visible = false
-	if _bottom_bar != null:
-		_bottom_bar.visible = false
-	if _rail != null:
-		_rail.visible = false
-	if _view_header != null:
-		_view_header.visible = false
-	if _timeline_panel != null:
-		_timeline_panel.visible = false
-	if _scene_column != null:
-		_scene_column.visible = false
-	if _dock != null:
-		_dock.visible = false
-	if _panel_rail != null:
-		_panel_rail.visible = false
-	if _drawer_scrim != null:
-		_drawer_scrim.visible = false
+	if _workspace_bar != null:
+		_workspace_bar.visible = false
+	if _context_bar != null:
+		_context_bar.visible = false
+	if _transport_bar != null:
+		_transport_bar.visible = false
+	if _instrumentation != null:
+		_instrumentation.visible = false
+	if _animate_pane != null:
+		_animate_pane.visible = false
+	if _workspace_panel != null:
+		_workspace_panel.set_mode(WorkspacePanelScript.Mode.HIDDEN)
+	if _panel_spacer != null:
+		_panel_spacer.custom_minimum_size.x = 0.0
 	# Neither overlay may draw over the review image: the rig handles and the
 	# rotoscope layer belong to the workbench, not to the render.
 	if _video_overlay != null:
 		_video_overlay.set_render_mode(true)
 	if _rig_overlay != null:
 		_rig_overlay.set_enabled(false)
-	if _rig_toolbar != null:
-		_rig_toolbar.visible = false
 
 
 func _restore_render_chrome() -> void:
-	if _top_bar != null:
-		_top_bar.visible = bool(_render_ui_state.get("top", true))
-	if _status_bar != null:
-		_status_bar.visible = bool(_render_ui_state.get("status", false))
-	if _bottom_bar != null:
-		_bottom_bar.visible = bool(_render_ui_state.get("bottom", false))
-	if _rail != null:
-		_rail.visible = bool(_render_ui_state.get("rail", true))
-	if _view_header != null:
-		_view_header.visible = bool(_render_ui_state.get("header", true))
-	if _timeline_panel != null:
-		_timeline_panel.visible = bool(_render_ui_state.get("timeline", true))
-	if _scene_column != null:
-		_scene_column.visible = bool(_render_ui_state.get("scene_column", true))
-	if _panel_rail != null:
-		_panel_rail.visible = bool(_render_ui_state.get("panel_rail", true))
+	if _workspace_bar != null:
+		_workspace_bar.visible = bool(_render_ui_state.get("top", true))
+	if _context_bar != null:
+		_context_bar.visible = bool(_render_ui_state.get("context", true))
+	if _transport_bar != null:
+		_transport_bar.visible = bool(_render_ui_state.get("transport", true))
+	if _instrumentation != null:
+		_instrumentation.visible = bool(_render_ui_state.get("instrumentation", false))
 	if _perf_overlay != null:
 		_perf_overlay.visible = bool(_render_ui_state.get("perf", false))
+	_workspace_panel_open = bool(_render_ui_state.get("panel_open", false))
 	if _video_overlay != null:
 		_video_overlay.set_render_mode(false)
-	# The flyout can be open in any mode now. _apply_shell re-shows the dock
-	# and scrim together from this flag after the render preview exits.
-	_drawer_open = bool(_render_ui_state.get("drawer", false))
 	_render_ui_state.clear()
 	_sync_rig_overlay()
+
 
 func _render_still() -> void:
 	if doc == null or _view == null or _capture_blocked():
@@ -3657,37 +3254,101 @@ func _keep_zip_internal() -> void:
 # Project menu and settings
 # -------------------------------------------------------------------------
 
-func _menu_button(text_value: String, icon_name: String, action: Callable, danger: bool = false) -> Button:
-	var button := Kit.text_button(text_value, icon_name, false, true)
-	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.custom_minimum_size = Vector2(0, Kit.FIELD)
-	if danger:
-		button.add_theme_color_override("font_color", Kit.DANGER)
-		button.add_theme_color_override("icon_normal_color", Kit.DANGER)
-	button.pressed.connect(func() -> void:
-		_overlay.close_modal()
-		action.call()
-	)
-	return button
-
-func _open_project_menu() -> void:
+func _open_project_menu(anchor: Control) -> void:
 	if doc == null:
 		return
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 3)
-	body.add_child(_menu_button("Project settings", "sliders-horizontal", _open_project_settings))
-	body.add_child(_menu_button("Graphics and performance", "gauge", _open_graphics_settings))
-	body.add_child(_menu_button("Import 3D model", "upload", _pick_model))
-	body.add_child(_menu_button("Render and export", "clapperboard", _open_render_sheet))
-	body.add_child(Kit.vsep())
-	body.add_child(_menu_button("Frame selection", "focus", _focus_selection))
-	body.add_child(_menu_button("Show or hide timeline", "panel-bottom", _toggle_timeline))
-	body.add_child(Kit.vsep())
-	body.add_child(_menu_button("Gesture guide and shortcuts", "keyboard", _show_help))
-	body.add_child(_menu_button("About Kinema", "info", _show_about))
-	body.add_child(Kit.vsep())
-	body.add_child(_menu_button("Close project", "chevron-left", request_close))
-	_overlay.show_modal("Project", doc.title, body, [{"text": "Close", "compact": true}])
+	if _project_menu == null:
+		return
+	if _workspace_menu != null:
+		_workspace_menu.close()
+	_workspace_menu_open = false
+	_project_menu.set_layout_mode(layout_mode())
+	_project_menu.set_max_width(320.0)
+	_project_menu.open_menu(anchor, "Project", doc.title, layout_mode() != "desktop")
+	# Below 600 dp the top bar keeps only Back, the tabs, More, Save and this
+	# menu. History moves here rather than disappearing; at 600 dp and above
+	# the bar owns the same two actions and the menu does not duplicate them.
+	if size.x < 600.0:
+		_project_menu.add_action("undo", "Undo", "undo-2",
+			doc.can_undo(), "Nothing to undo.")
+		_project_menu.add_action("redo", "Redo", "redo-2",
+			doc.can_redo(), "Nothing to redo.")
+		_project_menu.add_separator()
+	_project_menu.add_action("settings", "Project settings", "sliders-horizontal")
+	_project_menu.add_action("import", "Import 3D model", "upload")
+	_project_menu.add_action("graphics", "Graphics and performance", "gauge")
+	_project_menu.add_action("interface", "Interface and scale", "monitor")
+	_project_menu.add_action("performance", "Performance overlay", "timer")
+	var instrumentation: Button = _project_menu.add_action(
+		"instrumentation", "Instrumentation strip", "rows-3")
+	instrumentation.visible = layout_mode() == "desktop"
+	_project_menu.add_separator()
+	_project_menu.add_action("shortcuts", "Gesture guide and shortcuts", "keyboard")
+	_project_menu.add_action("about", "About Kinema", "info")
+	_project_menu.add_separator()
+	_project_menu.add_action("close", "Close project", "x")
+
+
+func _on_project_menu_row(id: String) -> void:
+	match id:
+		"undo":
+			_undo()
+		"redo":
+			_redo()
+		"settings":
+			_open_settings()
+		"import":
+			_pick_model()
+		"graphics":
+			_open_settings("graphics")
+		"interface":
+			_open_interface_sheet()
+		"performance":
+			_open_performance_overlay()
+		"instrumentation":
+			_toggle_instrumentation()
+		"shortcuts":
+			_open_shortcuts_sheet()
+		"about":
+			_show_about()
+		"close":
+			request_close()
+
+
+## The interface sheet: arrangement, orientation and interface scale.
+func _open_interface_sheet() -> void:
+	if doc == null:
+		return
+	var sheet = InterfaceSheetScript.new()
+	sheet.setup(self)
+	sheet.layout_selected.connect(func(mode: String) -> void:
+		set_layout_mode(mode)
+		sheet.call_deferred("close")
+	)
+	sheet.orientation_selected.connect(_on_settings_orientation)
+	sheet.ui_scale_changed.connect(func(value: float) -> void:
+		Prefs.set_value("display.user_scale", value)
+	)
+	_interface_sheet = sheet
+	sheet.open(
+		str(Prefs.get_value("display.layout", "auto")),
+		_fit_percent,
+		_fit_clamped
+	)
+	# A landscape phone has width to spare, so the sheet opens wide enough for
+	# two columns and the scale slider stays above the fold. Portrait keeps the
+	# single 560 dp column.
+	var sheet_width := 560.0
+	if size.y < 560.0 and size.x >= 780.0:
+		sheet_width = clampf(size.x - 120.0, 620.0, 760.0)
+	_overlay.show_sheet(
+		"Interface",
+		"Choose an arrangement. Desktop shrinks to fit instead of falling back.",
+		sheet,
+		[{"text": "Done", "primary": true}],
+		{"width": sheet_width}
+	)
+
 
 func _open_project_settings() -> void:
 	if doc == null:
@@ -3994,40 +3655,6 @@ func _apply_transform_preferences() -> void:
 
 func _autosave_seconds() -> float:
 	return clampf(float(Prefs.get_value("editor.autosave_seconds", AUTOSAVE_SECONDS)), 0.0, 600.0)
-
-
-func _open_workspace_sheet() -> void:
-	if doc == null:
-		return
-	var sheet = WorkspaceSheetScript.new()
-	sheet.setup(self)
-	sheet.layout_selected.connect(func(mode: String) -> void:
-		set_workspace_mode(mode)
-		sheet.call_deferred("close")
-	)
-	sheet.orientation_selected.connect(_on_settings_orientation)
-	sheet.ui_scale_changed.connect(func(value: float) -> void:
-		Prefs.set_value("display.user_scale", value)
-	)
-	_workspace_sheet = sheet
-	sheet.open(
-		str(Prefs.get_value("display.layout", "auto")),
-		_fit_percent,
-		_fit_clamped
-	)
-	# A landscape phone has width to spare, so the sheet opens wide enough for
-	# two columns and the scale slider stays above the fold. Portrait keeps the
-	# single 560 dp column.
-	var sheet_width := 560.0
-	if size.y < 560.0 and size.x >= 780.0:
-		sheet_width = clampf(size.x - 120.0, 620.0, 760.0)
-	_overlay.show_sheet(
-		"Workspace",
-		"Choose an arrangement. Desktop shrinks to fit instead of falling back.",
-		sheet,
-		[{"text": "Done", "primary": true}],
-		{"width": sheet_width}
-	)
 
 
 func _graphics_antialiasing(parent: Control, unavailable: String) -> void:
@@ -4494,12 +4121,10 @@ func _on_modal_opened() -> void:
 	# surface. The 3D scene remains visible through the scrim.
 	if _view != null:
 		_view.set_hud_visible(false)
-	_sync_view_header_visibility()
 
 func _on_modal_closed() -> void:
 	if _view != null and not _render_mode and not _look_through:
 		_view.set_hud_visible(true)
-	_sync_view_header_visibility()
 	if not _color_sheet_active:
 		return
 	_color_sheet_active = false

@@ -347,7 +347,7 @@ func _build_hud() -> void:
 	# Render is an icon-only 44 dp square, so the HUD row has one height and
 	# one target size. A labelled button made the right cluster wider than the
 	# viewport on a phone and read as a call to action rather than a tool.
-	_quick_render_button = Kit.icon_button("camera", "Quick render at full quality", 44, 20)
+	_quick_render_button = Kit.icon_button("clapperboard", "Quick render at full quality", 44, 20)
 	_override_hud_button(_quick_render_button)
 	_quick_render_button.pressed.connect(func() -> void: quick_render_requested.emit())
 	top_right.add_child(_quick_render_button)
@@ -1392,7 +1392,7 @@ func _draw_object_markers() -> void:
 		var p := _locator_screen_point(node)
 		var icon_name := "camera"
 		if kind == "light":
-			icon_name = "lightbulb"
+			icon_name = "circle-dot" if str(obj.get("light_type", "")) == "omni" else "sun"
 		elif kind == "empty":
 			icon_name = "circle-dot-dashed"
 		var selected := id == doc.selected_id
@@ -1862,21 +1862,59 @@ func look_through_exit_button() -> Button:
 func editing_chrome_visible() -> bool:
 	return not render_mode and not look_through
 
-## Enter the document camera's real view. The editor camera copies the node's
-## transform and FOV; the document camera node itself never becomes current.
-func enter_look_through(camera_id: String) -> bool:
-	if doc == null or _camera == null:
+
+## Point the active look-through session at another document camera. The saved
+## editor state, grid, HUD and navigation gizmo belong to the session and are
+## deliberately untouched: switching only moves the editor camera.
+func switch_look_through_camera(camera_id: String) -> bool:
+	if not look_through or doc == null or _camera == null:
 		return false
 	var obj := doc.get_object(camera_id)
-	if obj.is_empty() or str(obj.get("kind", "")) != "camera":
+	if not _camera_target_is_live(obj, camera_id):
 		return false
 	var node: Node3D = doc.nodes.get(camera_id)
-	if node == null or not node.visible:
+	_look_camera_id = camera_id
+	_copy_camera_view(obj, node)
+	_redraw_needed = true
+	_repaint()
+	queue_redraw()
+	return true
+
+
+## A document camera is only a valid view target while its object and live node
+## still exist as a visible camera.
+func _camera_target_is_live(obj: Dictionary, camera_id: String) -> bool:
+	if doc == null or obj.is_empty() or str(obj.get("kind", "")) != "camera":
+		return false
+	var node: Node3D = doc.nodes.get(camera_id)
+	return node != null and node.visible
+
+
+## Copy one document camera's live pose and FOV into the editor camera. The
+## document node's own Camera3D is never made current.
+func _copy_camera_view(obj: Dictionary, node: Node3D) -> void:
+	_camera.global_transform = node.global_transform
+	_camera.fov = clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
+	var doc_camera := node.get_node_or_null("Camera") as Camera3D
+	if doc_camera != null:
+		doc_camera.current = false
+
+
+## Enter the document camera's real view. The editor camera copies the node's
+## transform and FOV; the document camera node itself never becomes current.
+## While already looking through, entering another camera is a plain switch:
+## the saved editing state belongs to the view session, not to one camera.
+func enter_look_through(camera_id: String) -> bool:
+	if doc == null or _camera == null:
 		return false
 	if look_through:
 		if _look_camera_id == camera_id:
 			return true
-		exit_look_through()
+		return switch_look_through_camera(camera_id)
+	var obj := doc.get_object(camera_id)
+	if not _camera_target_is_live(obj, camera_id):
+		return false
+	var node: Node3D = doc.nodes.get(camera_id)
 	_look_saved = {
 		"target": target,
 		"yaw": yaw,
@@ -1890,13 +1928,7 @@ func enter_look_through(camera_id: String) -> bool:
 	}
 	look_through = true
 	_look_camera_id = camera_id
-	_camera.global_transform = node.global_transform
-	_camera.fov = clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
-	var doc_camera := node.get_node_or_null("Camera") as Camera3D
-	if doc_camera != null:
-		# Only the editor camera moves. The document camera stays a scene
-		# element and is never switched current.
-		doc_camera.current = false
+	_copy_camera_view(obj, node)
 	_grid_on = false
 	grid_changed.emit(false)
 	_set_grid_strength(0.0)

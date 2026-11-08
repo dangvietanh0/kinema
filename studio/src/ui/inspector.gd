@@ -58,6 +58,11 @@ func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation", 0)
 	_build_shell()
+	# setup() runs while the panel is still unmounted, so its first _rebuild()
+	# has no content tree yet. Build the current selection once the panel
+	# actually enters the shell instead of waiting for the next document event.
+	if doc != null:
+		_rebuild()
 
 func setup(document: Node3D) -> void:
 	doc = document
@@ -818,7 +823,7 @@ func _kind_badge(obj: Dictionary) -> String:
 func _icon_for(obj: Dictionary) -> String:
 	match str(obj.get("kind", "mesh")):
 		"camera": return "camera"
-		"light": return "lightbulb"
+		"light": return "circle-dot" if str(obj.get("light_type", "")) == "omni" else "sun"
 		"empty": return "circle-dot-dashed"
 		"import": return "package-open"
 		_:

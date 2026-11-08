@@ -1113,53 +1113,9 @@ func _test_pose_transactions() -> void:
 
 func _test_touch_pose_editing() -> void:
 	print("RIG STEP: touch pose editing")
-	var script = load("res://src/ui/rig_toolbar.gd")
-	var toolbar = script.new()
-	toolbar.name = "TouchToolbar"
-	add_child(toolbar)
-	await get_tree().process_frame
-	await get_tree().process_frame
-	_check(toolbar.transform_mode() == "rotate", "the toolbar defaults to Rotate")
-	_check(toolbar.axis_mode() == "free", "the toolbar defaults to the Free axis")
-	var rotate_button: Button = toolbar.find_child("TransformRotateButton", true, false)
-	var move_button: Button = toolbar.find_child("TransformMoveButton", true, false)
-	var free_button: Button = toolbar.find_child("AxisFreeButton", true, false)
-	var x_button: Button = toolbar.find_child("AxisXButton", true, false)
-	var y_button: Button = toolbar.find_child("AxisYButton", true, false)
-	var z_button: Button = toolbar.find_child("AxisZButton", true, false)
-	_check(rotate_button != null and move_button != null, "the toolbar has Rotate and Move segments")
-	_check(free_button != null and x_button != null and y_button != null and z_button != null, "the toolbar has Free/X/Y/Z axis segments")
-	for button in [rotate_button, move_button, free_button, x_button, y_button, z_button]:
-		_check(button != null and button.custom_minimum_size == Vector2(44, 44), "each Transform/Axis segment is a 44x44 target")
-	var transforms: Array[String] = []
-	var axes: Array[String] = []
-	toolbar.transform_mode_changed.connect(func(mode: String) -> void: transforms.append(mode))
-	toolbar.axis_mode_changed.connect(func(axis: String) -> void: axes.append(axis))
-	if move_button != null:
-		move_button.pressed.emit()
-		_check(toolbar.transform_mode() == "move" and transforms == ["move"], "Move emits one transform change")
-	if rotate_button != null:
-		rotate_button.pressed.emit()
-		_check(toolbar.transform_mode() == "rotate" and transforms == ["move", "rotate"], "Rotate emits one transform change")
-	if x_button != null:
-		x_button.pressed.emit()
-		_check(toolbar.axis_mode() == "x" and axes == ["x"], "X emits one axis change")
-	if free_button != null:
-		free_button.pressed.emit()
-		_check(toolbar.axis_mode() == "free" and axes == ["x", "free"], "Free emits one axis change")
-	toolbar.set_mode("edit")
-	if move_button != null and x_button != null:
-		_check(move_button.disabled and x_button.disabled, "Edit mode disables Transform and Axis")
-	toolbar.set_mode("pose")
-	toolbar.set_imported(true)
-	var edit_button: Button = toolbar.find_child("EditModeButton", true, false)
-	var add_button: Button = toolbar.find_child("ToolbarAddBoneButton", true, false)
-	if move_button != null and x_button != null and free_button != null:
-		_check(not move_button.disabled and not x_button.disabled and not free_button.disabled, "an imported rig keeps Transform and Axis enabled in Pose")
-	if edit_button != null and add_button != null:
-		_check(edit_button.disabled and add_button.disabled, "an imported rig keeps Edit and Add disabled")
-	toolbar.queue_free()
-
+	# The floating toolbar is gone; its transform/axis surface lives in the Rig
+	# context row. _test_rig_toolbar covers its defaults, 44 dp targets, mode
+	# transitions and the imported-rig lock. This test owns the pose gestures.
 	var doc := _new_doc("Touch Pose")
 	var rs = doc.rig_system
 	var rig_id := _make_chain_rig(doc)
@@ -1886,58 +1842,152 @@ func _test_octahedral_bones() -> void:
 
 
 func _test_rig_toolbar() -> void:
-	print("RIG STEP: floating toolbar")
-	var script = load("res://src/ui/rig_toolbar.gd")
-	_check(script != null, "the floating rig toolbar script exists")
-	if script == null:
+	print("RIG STEP: rig context controls")
+	var original_window := get_window().size
+	get_window().size = Vector2i(915, 412)
+	await get_tree().process_frame
+	var packed: PackedScene = load("res://src/app/main.tscn")
+	var main: Control = packed.instantiate()
+	add_child(main)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	Prefs.set_value("editor.workspace", "scene")
+	main._on_new_project_requested("Rig context suite", "blank")
+	for _i in 5:
+		await get_tree().process_frame
+	var editor = main._editor
+	_check(editor != null, "the editor opens for the rig context suite")
+	if editor == null:
+		main.queue_free()
+		get_window().size = original_window
+		await get_tree().process_frame
 		return
-	var toolbar = script.new()
-	toolbar.name = "RigToolbar"
-	add_child(toolbar)
+	var doc = editor.doc
+	var rig_id := _make_chain_rig(doc)
+	_check(rig_id != "", "the suite creates an active rig")
+	editor.set_workspace("rig")
 	await get_tree().process_frame
 	await get_tree().process_frame
-	var pose_button: Button = toolbar.find_child("PoseModeButton", true, false)
-	var edit_button: Button = toolbar.find_child("EditModeButton", true, false)
-	var add_button: Button = toolbar.find_child("ToolbarAddBoneButton", true, false)
-	var done_button: Button = toolbar.find_child("RigDoneButton", true, false)
-	_check(pose_button != null and edit_button != null, "the toolbar has Pose and Edit segments")
-	_check(add_button != null and done_button != null, "the toolbar has Add bone and Done")
+	_check(editor.workspace() == "rig", "the Rig workspace is active")
+
+	var pose_button: Button = editor._context_bar.action_button("pose")
+	var edit_button: Button = editor._context_bar.action_button("edit")
+	_check(pose_button != null and edit_button != null,
+		"the context row has Pose and Edit segments")
 	if pose_button != null and edit_button != null:
-		_check(pose_button.custom_minimum_size == Vector2(44, 44), "the Pose segment is a 44x44 target")
-		_check(edit_button.custom_minimum_size == Vector2(44, 44), "the Edit segment is a 44x44 target")
-		_check(pose_button.size.y >= 43.5 and edit_button.size.y >= 43.5, "the laid-out segments are 44 dp tall")
-	if add_button != null:
-		_check(add_button.custom_minimum_size == Vector2(96, 44), "Add bone is a 96x44 target")
-	if done_button != null:
-		_check(done_button.custom_minimum_size == Vector2(96, 44), "Done is a 96x44 target")
-	_check(toolbar.current_mode() == "pose", "the toolbar defaults to Pose")
-	if pose_button != null and edit_button != null:
-		var modes: Array[String] = []
-		toolbar.mode_changed.connect(func(mode: String) -> void: modes.append(mode))
+		_check(pose_button.custom_minimum_size.y >= 43.5
+			and pose_button.size.y >= 43.5, "the Pose segment is a 44 dp target")
+		_check(edit_button.custom_minimum_size.y >= 43.5
+			and edit_button.size.y >= 43.5, "the Edit segment is a 44 dp target")
+		_check(pose_button.has_theme_stylebox_override("normal"),
+			"Pose starts with the toggle fill")
 		edit_button.pressed.emit()
-		_check(toolbar.current_mode() == "edit" and modes == ["edit"], "Edit emits one mode change")
+		await get_tree().process_frame
+		_check(editor._rig_overlay.mode() == "edit", "Edit puts the overlay in edit mode")
+		_check(edit_button.has_theme_stylebox_override("normal")
+			and not pose_button.has_theme_stylebox_override("normal"),
+			"Edit moves the rig-mode toggle fill")
 		pose_button.pressed.emit()
-		_check(toolbar.current_mode() == "pose" and modes == ["edit", "pose"], "Pose emits one mode change")
-	var added: Array[String] = []
-	var finished: Array[String] = []
-	toolbar.add_bone_requested.connect(func() -> void: added.append("add"))
-	toolbar.done_requested.connect(func() -> void: finished.append("done"))
+		await get_tree().process_frame
+		_check(editor._rig_overlay.mode() == "pose", "Pose puts the overlay back in pose mode")
+		_check(pose_button.has_theme_stylebox_override("normal")
+			and not edit_button.has_theme_stylebox_override("normal"),
+			"Pose moves the rig-mode toggle fill back")
+
+	var rotate_button: Button = editor._context_bar.action_button("rig_rotate")
+	var move_button: Button = editor._context_bar.action_button("rig_move")
+	_check(rotate_button != null and move_button != null,
+		"the context row has Rotate and Move transform modes")
+	if rotate_button != null and move_button != null:
+		_check(rotate_button.custom_minimum_size == Vector2(44, 44),
+			"Rotate is a 44x44 target")
+		_check(move_button.custom_minimum_size == Vector2(44, 44),
+			"Move is a 44x44 target")
+		move_button.pressed.emit()
+		await get_tree().process_frame
+		_check(editor._rig_overlay.transform_mode() == "move",
+			"Move switches the overlay transform mode")
+		rotate_button.pressed.emit()
+		await get_tree().process_frame
+		_check(editor._rig_overlay.transform_mode() == "rotate",
+			"Rotate switches the overlay transform mode back")
+
+	var axis_button: Button = editor._context_bar.action_button("rig_axis")
+	_check(axis_button != null, "the context row has the axis control")
+	if axis_button != null:
+		_check(editor._rig_overlay.transform_mode() == "rotate",
+			"the rig transform defaults to Rotate")
+		_check(editor._rig_overlay.axis_mode() == "free" and axis_button.text == "Free",
+			"the rig axis defaults to Free")
+		_check(axis_button.custom_minimum_size.y >= 43.5
+			and axis_button.size.y >= 43.5, "the axis control is a 44 dp target")
+		axis_button.pressed.emit()
+		await get_tree().process_frame
+		var axis_menu = editor._rig_axis_menu
+		_check(axis_menu.is_open(), "the axis control opens its menu")
+		for axis in ["free", "x", "y", "z"]:
+			var row: Button = axis_menu.row_button(axis)
+			_check(row != null and row.custom_minimum_size.y >= 43.5,
+				"the axis menu has a 44 dp %s row" % axis)
+		axis_menu.row_button("x").pressed.emit()
+		await get_tree().process_frame
+		_check(editor._rig_overlay.axis_mode() == "x" and axis_button.text == "X",
+			"X sets the rotation axis and updates the control")
+		axis_button.pressed.emit()
+		await get_tree().process_frame
+		axis_menu.row_button("free").pressed.emit()
+		await get_tree().process_frame
+		_check(editor._rig_overlay.axis_mode() == "free" and axis_button.text == "Free",
+			"Free restores the free rotation axis")
+
+	var add_button: Button = editor._context_bar.action_button("rig_add")
+	var done_button: Button = editor._context_bar.action_button("rig_done")
+	_check(add_button != null and done_button != null,
+		"the context row has Add bone and Done")
 	if add_button != null:
+		var before: int = (doc.rig_system.get_rig(rig_id)["bones"] as Array).size()
 		add_button.pressed.emit()
-		_check(added.size() == 1, "Add bone emits its request")
+		await get_tree().process_frame
+		_check((doc.rig_system.get_rig(rig_id)["bones"] as Array).size() == before + 1,
+			"Add bone really extrudes a bone")
+	if edit_button != null:
+		doc.rig_system.get_rig(rig_id)["imported"] = true
+		editor._sync_context_state()
+		await get_tree().process_frame
+		_check(edit_button.disabled, "an imported rig disables the Edit segment")
+		_check(edit_button.tooltip_text ==
+			"Imported skeletons keep their rest pose; pose and IK still work.",
+			"the disabled Edit segment states the imported reason")
+		doc.rig_system.get_rig(rig_id)["imported"] = false
+		editor._sync_context_state()
+		await get_tree().process_frame
+		_check(not edit_button.disabled, "leaving an imported rig re-enables Edit")
 	if done_button != null:
 		done_button.pressed.emit()
-		_check(finished.size() == 1, "Done emits its request")
-	if edit_button != null and add_button != null and pose_button != null:
-		toolbar.set_imported(true)
-		_check(edit_button.disabled, "an imported rig disables the Edit segment")
-		_check(add_button.disabled, "an imported rig disables Add bone")
-		_check(not pose_button.disabled, "Pose stays usable on an imported rig")
-		_check(edit_button.tooltip_text.contains("Imported"), "the disabled Edit segment states the imported reason")
-		_check(add_button.tooltip_text.contains("Imported"), "the disabled Add bone states the imported reason")
-		toolbar.set_imported(false)
-		_check(not edit_button.disabled and not add_button.disabled, "leaving an imported rig re-enables Edit and Add bone")
-	toolbar.queue_free()
+		await get_tree().process_frame
+		_check(editor.workspace() == "scene", "Done returns the workbench to Scene")
+		_check(not editor._rig_mode and not editor._rig_overlay.is_enabled(),
+			"Done disables the rig overlay")
+
+	_check(editor.get("_rig_toolbar") == null, "the editor has no floating rig toolbar")
+	_check(not ResourceLoader.exists("res://src/ui/rig_toolbar.gd"),
+		"the floating rig toolbar script is gone")
+
+	if editor.doc.is_playing:
+		editor.doc.pause()
+	var project_id: String = editor.doc.project_id
+	editor._leave(false)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if project_id != "":
+		Store.delete_project(project_id)
+	main.queue_free()
+	await get_tree().process_frame
+	get_window().size = original_window
+	for _i in 3:
+		await get_tree().process_frame
 
 
 # -------------------------------------------------------------------------
@@ -2128,14 +2178,6 @@ func _capture_visuals() -> void:
 	overlay.set_rig(rig_id)
 	overlay.set_mode("pose")
 	overlay.set_enabled(true)
-	var script = load("res://src/ui/rig_toolbar.gd")
-	if script != null:
-		var toolbar = script.new()
-		toolbar.name = "RigToolbar"
-		stage.add_child(toolbar)
-		toolbar.position = Vector2(12, 12)
-		toolbar.reset_size()
-		toolbar.set_mode("pose")
 	for _i in 4:
 		await get_tree().process_frame
 	await RenderingServer.frame_post_draw

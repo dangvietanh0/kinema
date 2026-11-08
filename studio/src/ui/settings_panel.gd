@@ -32,14 +32,14 @@ const ICONS := {
 	"display": "monitor",
 	"graphics": "gauge",
 	"performance": "timer",
-	"render": "camera",
+	"render": "clapperboard",
 	"import": "upload",
-	"media": "film",
+	"media": "video",
 	"rig": "bone",
 	"about": "info",
 }
 const PACKAGE_NAME := "studio.kinema.app"
-const APP_VERSION := "0.1.0"
+const APP_VERSION := "0.1.5"
 const ScaleSliderScript = preload("res://src/ui/components/scale_slider.gd")
 
 # Graphics risk copy. The panel emits the request; the editor owns the
@@ -253,7 +253,7 @@ func _subtitle_for(category: String) -> String:
 	match category:
 		"general": return "Application identity and a full preference reset."
 		"editor": return "How the workbench behaves while you animate."
-		"display": return "Workspace, orientation and interface scale."
+		"display": return "Arrangement, orientation and interface scale."
 		"graphics": return "Real engine features, with unsupported options disabled."
 		"performance": return "Preview policy and live engine monitors."
 		"render": return "Real PNG stills and PNG sequences. No video encoder."
@@ -382,15 +382,15 @@ func _editor(parent: Control) -> void:
 # -------------------------------------------------------------------------
 
 func _display(parent: Control) -> void:
-	parent.add_child(Kit.section_label("Workspace"))
+	parent.add_child(Kit.section_label("Arrangement"))
 	_choice_row(parent, "Layout", "Resolved: %s" % _resolved_mode(), [
 		{"label": "Auto", "value": "auto"},
 		{"label": "Compact", "value": "compact"},
 		{"label": "Studio", "value": "studio"},
 		{"label": "Desktop", "value": "desktop"},
 	], str(Prefs.get_value("display.layout", "auto")), func(value: Variant) -> void:
-		if editor != null and editor.has_method("set_workspace_mode"):
-			editor.call("set_workspace_mode", str(value))
+		if editor != null and editor.has_method("set_layout_mode"):
+			editor.call("set_layout_mode", str(value))
 		else:
 			Prefs.set_value("display.layout", value)
 		_rebuild()
@@ -447,8 +447,8 @@ func _display(parent: Control) -> void:
 
 
 func _resolved_mode() -> String:
-	if editor != null and editor.has_method("workspace_mode"):
-		return str(editor.call("workspace_mode")).capitalize()
+	if editor != null and editor.has_method("layout_mode"):
+		return str(editor.call("layout_mode")).capitalize()
 	return "Studio"
 
 
@@ -897,7 +897,7 @@ func _render(parent: Control) -> void:
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 8)
 	parent.add_child(actions)
-	var open := Kit.text_button("Render sheet", "camera", true, true)
+	var open := Kit.text_button("Render sheet", "clapperboard", true, true)
 	open.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	open.pressed.connect(func() -> void:
 		close()
@@ -1055,7 +1055,7 @@ func _about(parent: Control) -> void:
 	licenses.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(licenses)
 
-	var copy := Kit.text_button("Copy build info", "download", false, true)
+	var copy := Kit.text_button("Copy build info", "copy", false, true)
 	copy.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	copy.pressed.connect(func() -> void:
 		DisplayServer.clipboard_set(_build_info())

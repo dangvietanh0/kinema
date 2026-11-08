@@ -532,6 +532,12 @@ func _test_inspector_action() -> void:
 	_doc.set_selection(_cam_id)
 	await get_tree().process_frame
 	await get_tree().process_frame
+	# The inspector is a real workspace panel now, so it enters the tree when
+	# the user opens it; that is also when it builds its first section set.
+	_editor.set_workspace("scene")
+	_editor._toggle_scene_panel("inspector")
+	for _i in 2:
+		await get_tree().process_frame
 	var inspector = _editor._inspector
 	_check(inspector != null, "the editor inspector is available")
 	if inspector == null:
@@ -550,6 +556,8 @@ func _test_inspector_action() -> void:
 	_check(_view.is_look_through(), "pressing Look through enters a real look-through mode")
 	_editor._exit_look_through()
 	await get_tree().process_frame
+	await get_tree().process_frame
+	_editor._toggle_scene_panel("inspector")
 	await get_tree().process_frame
 
 
@@ -587,11 +595,9 @@ func _test_look_through() -> void:
 	var saved_hud: bool = _view._hud_root.visible
 	var saved_nav: bool = _view._nav_gizmo.visible
 
-	# Seed the two workbench overlays that must not leak into the clean
-	# document-camera view. The dock is open on the Rig tab, so the rig overlay
-	# is genuinely enabled before entry. An active rig is required after the
-	# G3 workbench merge: the overlay only engages when there is something to
-	# draw, even though the tab itself is visible.
+	# Seed the workbench surfaces that must not leak into the clean
+	# document-camera view: a real rig engaged from the context row and a
+	# rotoscope reference. The shell mounts the Rig panel as reserved content.
 	var probe_rig: String = _doc.rig_system.create_rig("Overlay Probe", Vector3(0.0, 0.0, 0.0))
 	_check(probe_rig != "", "the look-through fixture has an active rig")
 	_doc.media_system.load_data({"media": {"audio": [], "video_refs": [{
@@ -603,24 +609,31 @@ func _test_look_through() -> void:
 		"width": 16,
 		"height": 16,
 	}]}}, "")
-	_editor._set_compact_tab("rig")
-	if _editor._dock_overlay_mode():
-		_editor._open_drawer()
+	_editor.set_workspace("rig")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var pose_button: Button = _editor._context_bar.action_button("pose")
+	var add_bone: Button = _editor._context_bar.action_button("rig_add")
+	_check(pose_button != null and pose_button.is_visible_in_tree(),
+		"the Pose control is reachable on the Rig workspace before look-through")
+	_check(add_bone != null and add_bone.is_visible_in_tree(),
+		"Add bone is reachable on the Rig workspace before look-through")
+	if pose_button != null:
+		pose_button.pressed.emit()
 	for _i in 3:
 		await get_tree().process_frame
 	var video_overlay = _editor._video_overlay
 	var rig_overlay = _editor._rig_overlay
 	_check(video_overlay != null and video_overlay.visible, "the rotoscope is visible before look-through")
-	_check(rig_overlay != null and rig_overlay.is_enabled(), "the rig overlay is enabled on the Rig tab before look-through")
-	var toolbar: Control = _editor._rig_toolbar
-	var add_bone: Button = toolbar.find_child("ToolbarAddBoneButton", true, false) if toolbar != null else null
-	_check(toolbar != null and toolbar.visible, "the floating rig toolbar is visible on the Rig tab before look-through")
-	_check(add_bone != null and add_bone.is_visible_in_tree(), "Add bone is reachable on the Rig tab before look-through")
+	_check(rig_overlay != null and rig_overlay.is_enabled(), "the rig overlay is enabled from the Rig context row before look-through")
 
-	var timeline_visible: bool = _editor._timeline_panel.visible
-	var dock_visible: bool = _editor._dock.visible
-	var scene_visible: bool = _editor._scene_column.visible
-	var bottom_visible: bool = _editor._bottom_bar.visible
+	var panel_content = _editor._workspace_panel.content()
+	var transport_visible: bool = _editor._transport_bar.visible
+	var animate_visible: bool = _editor._animate_pane.visible
+	var sheet_visible: bool = _editor._timeline.sheet_visible()
+	_check(panel_content == _editor._rig_panel, "the reserved slot owns the Rig panel")
+	_check(transport_visible, "the shared transport is visible in the Rig workspace")
+	_check(not animate_visible, "the Animate pane stays closed in the Rig workspace")
 
 	_editor._enter_look_through(_cam_id)
 	await get_tree().process_frame
@@ -638,24 +651,23 @@ func _test_look_through() -> void:
 	_check(not _view._gizmo.visible, "the transform gizmo hides in look-through")
 	if _has(_view, "editing_chrome_visible"):
 		_check(not _view.editing_chrome_visible(), "selection and editing chrome are suppressed in look-through")
-	_check(not _editor._view_header.visible, "the viewport header hides in look-through")
-	_check(_editor._timeline_panel.visible == timeline_visible, "the timeline stays visible in look-through")
-	_check(_editor._dock.visible == dock_visible, "the dock keeps its state in look-through")
-	_check(_editor._scene_column.visible == scene_visible, "the scene tree keeps its state in look-through")
-	_check(_editor._bottom_bar.visible == bottom_visible, "the transport keeps its state in look-through")
+	_check(not _editor._context_bar.visible, "the context row hides in look-through")
+	_check(_editor._workspace_bar.workspace_chip().text.begins_with("Camera:"),
+		"the top bar chip names the camera in look-through")
+	_check(_editor._workspace_bar.action_button("exit_camera").visible,
+		"the top bar keeps the Exit camera control")
+	_check(_editor._workspace_panel.mode() == _editor._workspace_panel.Mode.HIDDEN,
+		"the reserved panel yields the frame in look-through")
+	_check(_editor._workspace_panel.content() == panel_content,
+		"the panel keeps its content while hidden in look-through")
+	_check(not _editor._transport_bar.visible, "the transport hides in look-through")
+	_check(_editor._animate_pane.visible == animate_visible
+		and _editor._timeline.sheet_visible() == sheet_visible,
+		"the Animate pane and Timeline keep their state in look-through")
 	_check(video_overlay != null and not video_overlay.visible, "the rotoscope hides in look-through")
 	_check(rig_overlay != null and not rig_overlay.is_enabled(), "the rig overlay disables in look-through")
-	_check(toolbar != null and not toolbar.visible, "the floating rig toolbar hides on the clean look-through view")
-	_check(add_bone != null and not add_bone.is_visible_in_tree(), "Add bone is not reachable in look-through")
-	# The dock stays live, so the Rig tab is reachable after entry. Opening it
-	# must not re-enable the rig overlay or bring the rotoscope back.
-	_editor._set_compact_tab("rig")
-	if not _editor._drawer_open:
-		_editor._open_drawer()
-	for _i in 2:
-		await get_tree().process_frame
-	_check(rig_overlay != null and not rig_overlay.is_enabled(), "opening the Rig tab during look-through keeps the rig overlay off")
-	_check(video_overlay != null and not video_overlay.visible, "the rotoscope stays hidden while the dock changes in look-through")
+	_check(not pose_button.is_visible_in_tree(), "Pose is not reachable on the clean look-through view")
+	_check(not add_bone.is_visible_in_tree(), "Add bone is not reachable in look-through")
 
 	# Orbit and pan gestures are ignored, and _process must not overwrite the
 	# copied camera with the orbit target.
@@ -696,16 +708,20 @@ func _test_look_through() -> void:
 	_check(_view._hud_root.visible == saved_hud, "exiting restores the editor HUD")
 	_check(_view._nav_gizmo.visible == saved_nav, "exiting restores the navigation gizmo")
 	_check(video_overlay != null and video_overlay.visible, "exiting restores the rotoscope")
-	_check(rig_overlay != null and rig_overlay.is_enabled(), "exiting restores the rig overlay for the active Rig tab")
-	_check(toolbar != null and toolbar.visible, "exiting restores the floating rig toolbar")
-	_check(add_bone != null and add_bone.is_visible_in_tree(), "exiting makes Add bone reachable again")
-	# The drawer is an editing layer in its own right; dismiss it before
-	# judging the header, which the drawer also covers while open.
-	if _editor._drawer_open:
-		_editor._close_drawer()
-		for _i in 2:
-			await get_tree().process_frame
-	_check(_editor._view_header.visible, "exiting restores the viewport header")
+	_check(rig_overlay != null and rig_overlay.is_enabled(), "exiting restores the rig overlay")
+	_check(_editor._context_bar.visible, "exiting restores the context row")
+	_check(_editor._transport_bar.visible == transport_visible, "exiting restores the transport")
+	_check(_editor._workspace_panel.mode() == _editor._workspace_panel.Mode.RESERVED,
+		"exiting restores the reserved panel")
+	_check(_editor._workspace_panel.content() == _editor._rig_panel,
+		"exiting keeps the Rig panel mounted")
+	_check(_editor._animate_pane.visible == animate_visible
+		and _editor._timeline.sheet_visible() == sheet_visible,
+		"exiting leaves the Animate pane state alone")
+	_check(_editor._workspace_bar.workspace_chip().text == "Rig",
+		"exiting restores the workspace chip")
+	_check(pose_button.is_visible_in_tree() and add_bone.is_visible_in_tree(),
+		"exiting makes the Rig controls reachable again")
 	if exit_button != null:
 		_check(not exit_button.visible, "the Exit camera control hides when look-through ends")
 
@@ -724,9 +740,8 @@ func _test_look_through() -> void:
 	_check(_editor.doc != null and is_instance_valid(_editor) and _editor.is_inside_tree(), "the editor and project stay open after back")
 
 	# Leave the shared editor in its editing arrangement for the capture step.
-	if _editor._drawer_open:
-		_editor._close_drawer()
-	_editor._set_compact_tab("scene")
+	_editor.set_workspace("scene")
+	await get_tree().process_frame
 	if probe_rig != "":
 		_doc.rig_system.delete_rig(probe_rig)
 	_doc.media_system.load_data({"media": {"audio": [], "video_refs": []}}, "")

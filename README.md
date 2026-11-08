@@ -10,9 +10,9 @@ scene graph, `Animation` resources, and glTF importer. OBJ is parsed at runtime
 by a small GDScript importer. The product layer is a custom GDScript interface;
 the Android package is assembled from Godot's official Android Gradle app.
 
-> **Status: 0.1.0 prototype.** The source is complete and the headless test
-> suite passes. A debug APK is built by GitHub Actions. The app has not yet been
-> validated on a physical Android device, and no release build is provided.
+> **Status: 0.1.5.** The source is complete and the headless test suite passes.
+> A debug APK is built by GitHub Actions. The app has not yet been validated on
+> a physical Android device, and no release build is provided.
 
 ---
 
@@ -251,7 +251,7 @@ commands.
 Quick reference:
 
 - Package: `studio.kinema.app`
-- Version: `0.1.0` (code `1`)
+- Version: `0.1.5` (code `2`)
 - ABI: `arm64-v8a`
 - Minimum Android: API 24
 - Target/compile SDK: API 36
