@@ -754,6 +754,7 @@ func _add_marker(node: Node3D, parts: Array) -> MeshInstance3D:
 		colors.append(part["color"])
 	var marker := MeshInstance3D.new()
 	marker.name = "Marker"
+	marker.add_to_group("kinema_editor_only")
 	marker.mesh = mesh
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	for surface in range(mesh.get_surface_count()):
