@@ -46,8 +46,6 @@ const RenderPanelScript = preload("res://src/ui/render_panel.gd")
 const ShadingPanelScript = preload("res://src/ui/shading_panel.gd")
 const GlbExportScript = preload("res://src/core/glb_export.gd")
 const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
-const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
-const MaterialEditorSheetScript = preload("res://src/ui/material_editor_sheet.gd")
 const VideoReferencePanelScript = preload("res://src/ui/video_reference_panel.gd")
 const SequenceRendererScript = preload("res://src/core/sequence_renderer.gd")
 const CameraExportScript = preload("res://src/core/camera_export.gd")
@@ -835,11 +833,6 @@ func _on_context_action(id: String) -> void:
 		"fit":
 			_fit_animate_pane()
 	_sync_context_state()
-
-
-func _context_material_target() -> Dictionary:
-	var object_id := doc.selected_id if doc != null else ""
-	return {"object_id": object_id, "part_path": "", "surface": -1}
 
 
 ## The inspector, the Shading context row and the Shading workspace all lead
@@ -3944,66 +3937,12 @@ func _total_keys() -> int:
 	return count
 
 # -------------------------------------------------------------------------
-# Material sheets
+# Material surfaces
 # -------------------------------------------------------------------------
-
-func _open_material_sheet(target: Dictionary) -> void:
-	if doc == null or doc.material_system == null:
-		return
-	var sheet = MaterialSheetScript.new()
-	_material_sheet = sheet
-	sheet.setup(doc, target)
-	sheet.changed.connect(_on_material_sheet_changed)
-	sheet.assigned.connect(_on_material_assigned)
-	sheet.delete_requested.connect(_confirm_delete_material)
-	_overlay.show_sheet(
-		"Materials",
-		"Assign a library material to this target.",
-		sheet,
-		[{"text": "Close", "compact": true}]
-	)
-
-
-func _open_material_editor_for_target(target: Dictionary) -> void:
-	if doc == null or doc.material_system == null:
-		return
-	var material_id: String = doc.material_system.resolve_assignment(
-		str(target.get("object_id", "")),
-		str(target.get("part_path", "")),
-		int(target.get("surface", -1))
-	)
-	if material_id == "":
-		return
-	_open_material_editor(material_id, target)
-
-
-func _open_material_editor(material_id: String, target: Dictionary = {}) -> void:
-	if doc == null or doc.material_system == null or material_id == "":
-		return
-	var sheet = MaterialEditorSheetScript.new()
-	_material_editor_sheet = sheet
-	sheet.setup(doc, material_id)
-	sheet.set_target(target)
-	sheet.changed.connect(_on_material_sheet_changed)
-	sheet.delete_requested.connect(_confirm_delete_material)
-	sheet.color_requested.connect(_on_material_color_requested.bind(material_id))
-	_overlay.show_sheet(
-		"Material",
-		"Name, shading, maps and UVs.",
-		sheet,
-		[{"text": "Close", "compact": true}]
-	)
-
 
 func _on_material_sheet_changed(_material_id: String) -> void:
 	if _inspector != null:
 		_inspector._rebuild()
-
-
-func _on_material_assigned(_material_id: String) -> void:
-	if _overlay != null:
-		_overlay.close_modal()
-	_on_material_sheet_changed(_material_id)
 
 
 func _on_material_color_requested(property: String, current: Color, material_id: String) -> void:

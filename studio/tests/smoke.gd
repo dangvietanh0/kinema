@@ -801,39 +801,66 @@ func _ready() -> void:
 	editor._overlay.close_modal(true)
 	await get_tree().process_frame
 
-	print("SMOKE STEP: material sheets")
+	print("SMOKE STEP: material workspace")
 	var smoke_target_id: String = doc.selected_id
 	var smoke_material: String = doc.material_system.create_material("Smoke Paint", "matte")
-	editor._open_material_sheet({"object_id": smoke_target_id, "part_path": "", "surface": -1})
-	for _i in 4:
+	editor.set_workspace("shading")
+	for _i in 2:
 		await get_tree().process_frame
-	_check(editor._overlay.has_modal(), "the material library sheet opens")
-	var library_sheet = editor._material_sheet
-	_check(library_sheet != null and library_sheet.row_count() > 0,
-		"the material library lists real records")
+	_check(editor.workspace() == "shading", "the Shading workspace opens")
+	_check(not editor._overlay.has_modal(), "Shading is embedded, not modal")
+	var shading_panel = editor._shading_panel
+	_check(shading_panel != null, "the embedded Shading panel is mounted")
+	var library_sheet = shading_panel.material_sheet()
+	var editor_sheet = shading_panel.material_editor()
+	_check(library_sheet != null and library_sheet.get_parent() != null,
+		"the material library is an embedded child")
+	_check(editor_sheet != null and editor_sheet.get_parent() != null,
+		"the material editor is an embedded child")
+	_check(editor._material_sheet == library_sheet,
+		"the library alias points at the embedded sheet")
+	_check(editor._material_editor_sheet == editor_sheet,
+		"the editor alias points at the embedded sheet")
+	shading_panel.set_target(smoke_target_id)
+	shading_panel.select_material(smoke_material)
+	await get_tree().process_frame
+	_check(library_sheet.row_count() > 0, "the material library lists real records")
 	_check(library_sheet.row_height(smoke_material) >= 44.0, "a material row is 44 dp tall")
 	_check(library_sheet.assign_button(smoke_material).custom_minimum_size.y >= 44.0,
 		"Assign is 44 dp tall")
-	library_sheet.assign_material(smoke_material)
-	await get_tree().process_frame
-	await get_tree().process_frame
-	_check(not editor._overlay.has_modal(), "Assign closes the library sheet")
+	_check(editor_sheet.material_id() == smoke_material, "selecting a row loads the editor")
+	var assign_undo: int = (doc._undo_stack as Array).size()
+	_check(shading_panel.assign_selected(), "Assign succeeds for the selected object")
+	_check((doc._undo_stack as Array).size() == assign_undo + 1, "Assign is one undo entry")
 	_check(str(doc.get_object(smoke_target_id).get("material_id", "")) == smoke_material,
-		"Assign writes the sheet target")
+		"Assign writes the real target assignment")
+	_check(not editor._overlay.has_modal(), "Assign keeps the Shading panel embedded")
 
-	editor._open_material_editor(smoke_material, {"object_id": smoke_target_id, "part_path": "", "surface": -1})
-	for _i in 4:
+	# The inspector hands the real target to the same embedded panel.
+	editor.set_workspace("scene")
+	for _i in 2:
 		await get_tree().process_frame
-	_check(editor._overlay.has_modal(), "the material editor sheet opens")
-	var editor_sheet = editor._material_editor_sheet
-	_check(editor_sheet != null \
-		and editor_sheet.texture_filter() == "*.png, *.jpg, *.jpeg, *.webp;Images",
+	doc.set_selection(smoke_target_id)
+	editor._inspector._rebuild()
+	await get_tree().process_frame
+	_check(editor._inspector.edit_material_button() != null \
+		and editor._inspector.edit_material_button().custom_minimum_size == Vector2(96.0, 44.0),
+		"the inspector exposes the 96x44 Shading handoff")
+	editor._inspector.edit_material_button().pressed.emit()
+	for _i in 2:
+		await get_tree().process_frame
+	_check(editor.workspace() == "shading", "the inspector handoff switches workspace")
+	_check(editor._shading_panel.material_editor().material_id() == smoke_material,
+		"the handoff loads the assigned material")
+	_check(not editor._overlay.has_modal(), "the inspector handoff opens no modal")
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+
+	_check(editor_sheet.texture_filter() == "*.png, *.jpg, *.jpeg, *.webp;Images",
 		"the editor sheet carries the texture filter")
 	for model in ["pbr", "unlit", "toon", "rim"]:
 		_check(editor_sheet.shading_button(model).custom_minimum_size.y >= 44.0,
 			"the %s segment is 44 dp tall" % model)
-	editor._overlay.close_modal(true)
-	await get_tree().process_frame
 
 	var color_capture: Dictionary = {}
 	editor.open_color_sheet(
@@ -1795,15 +1822,13 @@ func _ready() -> void:
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 
-	editor._open_render_sheet()
+	editor.set_workspace("render")
 	await get_tree().process_frame
 	var media_export = editor.get("_media_export")
-	_check(editor._overlay.has_modal(), "the render sheet opens")
-	_check(media_export != null, "the render sheet embeds the media export sheet")
-	_check(editor._render_sequence_button != null, "the render sheet keeps the PNG sequence action")
-	_check(editor._render_still_button != null, "the render sheet keeps the quick still action")
-	editor._overlay.close_modal()
-	await get_tree().process_frame
+	_check(editor._render_panel != null, "the Render workspace panel is mounted")
+	_check(editor._render_panel.media_sheet() == media_export,
+		"the Render workspace embeds the media export sheet")
+	_check(not editor._overlay.has_modal(), "the Render workspace stays out of the modal overlay")
 
 	print("SMOKE STEP: camera track export")
 	# The camera exporter can only sample a real scene camera. The sheet must
@@ -2056,23 +2081,18 @@ func _ready() -> void:
 	DirAccess.remove_absolute(frame_dir)
 	DirAccess.remove_absolute(sequence_zip)
 
-	print("SMOKE STEP: render sheet")
-	# The compact sheet always has room to scroll; the desktop modal is the
-	# surface that used to cap its primary action below the fold.
-	var previous_layout: String = editor._overlay._layout_mode
-	editor._overlay.set_layout_mode("desktop")
-	editor._open_render_sheet()
+	print("SMOKE STEP: render workspace")
+	editor.set_workspace("render")
 	for _i in 4:
 		await get_tree().process_frame
-	_check(editor._overlay.has_modal(), "render sheet opens")
-	_check(editor._render_sequence_button != null, "render sheet has sequence action")
-	_check(editor._render_progress != null, "render sheet has progress readout")
-	if editor._render_sequence_button != null:
-		var scroll_rect: Rect2 = editor._overlay._body_scroll.get_global_rect()
-		var action_rect: Rect2 = editor._render_sequence_button.get_global_rect()
-		_check(action_rect.end.y <= scroll_rect.end.y + 0.5, "render sequence action is above the fold in the desktop modal")
+	_check(editor._render_panel != null and editor._render_panel.active_tab() == "render",
+		"the Render workspace opens on its output tab")
+	_check(editor._render_panel.media_sheet().format_ids().has("png"),
+		"the embedded media sheet keeps PNG")
+	_check(editor._render_panel.media_sheet().status_text() == "",
+		"the render workspace starts with no error status")
 	_check(editor._sequence_frame_count() == 144, "sequence frame count follows duration and fps")
-	_check(not editor._render_busy, "render sheet is idle on open")
+	_check(not editor._render_busy, "the render workspace is idle on open")
 
 	print("SMOKE STEP: export error reporting")
 	media_export = editor.get("_media_export")
@@ -2105,7 +2125,6 @@ func _ready() -> void:
 			_check(false, "the editor exposes an output directory helper")
 	_remove_tree(stale_dir)
 	editor._overlay.close_modal()
-	editor._overlay.set_layout_mode(previous_layout)
 	await get_tree().process_frame
 
 	print("SMOKE STEP: renderer and settings")

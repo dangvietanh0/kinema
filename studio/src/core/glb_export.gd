@@ -177,7 +177,7 @@ func _attach_animation(doc, root: Node3D, requested: bool) -> int:
 	for ti in range(anim.get_track_count() - 1, -1, -1):
 		var target := str(anim.track_get_path(ti)).split(":")[0]
 		if target == "" or root.get_node_or_null(NodePath(target)) == null:
-			anim.track_remove_track(ti)
+			anim.remove_track(ti)
 	if anim.get_track_count() == 0:
 		return 0
 	var player := AnimationPlayer.new()

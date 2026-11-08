@@ -105,7 +105,7 @@ func _ready() -> void:
 		"graphics":
 			main._editor._open_graphics_settings()
 		"render":
-			main._editor._open_render_sheet()
+			main._editor.set_workspace("render")
 		"quick-render":
 			main._editor._enter_render_mode()
 		"workspace":

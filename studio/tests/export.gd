@@ -8,6 +8,8 @@ extends Node
 const DocumentScript = preload("res://src/core/document.gd")
 const GlbExportScript = preload("res://src/core/glb_export.gd")
 
+const RIG_PINNED_NOTE := "Rigged meshes export in their current pose without skinning"
+
 var _failures: Array[String] = []
 var _checks := 0
 var _tmp_dir := ""
@@ -25,6 +27,10 @@ func _check(condition: bool, message: String) -> void:
 func _ready() -> void:
 	await get_tree().process_frame
 	await _test_static_scene_export()
+	await _test_animation_export()
+	await _test_selection_only_export()
+	await _test_rigged_export()
+	await _test_export_failure()
 	await _test_render_panel()
 	await _test_shading_panel()
 	_finish()
@@ -110,6 +116,36 @@ func _count_lights(node: Node) -> int:
 	return count
 
 
+func _find_animation_player(node: Node) -> AnimationPlayer:
+	if node is AnimationPlayer:
+		return node as AnimationPlayer
+	for child in node.get_children():
+		var found := _find_animation_player(child)
+		if found != null:
+			return found
+	return null
+
+
+func _find_skinned_mesh(node: Node) -> MeshInstance3D:
+	if node is MeshInstance3D and (node as MeshInstance3D).skin != null:
+		return node as MeshInstance3D
+	for child in node.get_children():
+		var found := _find_skinned_mesh(child)
+		if found != null:
+			return found
+	return null
+
+
+func _rest(p: Vector3, length: float) -> Dictionary:
+	return {
+		"p": p,
+		"r": Quaternion.IDENTITY,
+		"s": Vector3.ONE,
+		"length": length,
+		"influence_scale": 1.0,
+	}
+
+
 func _test_static_scene_export() -> void:
 	print("EXPORT STEP: static scene")
 	_ensure_tmp_dir()
@@ -159,6 +195,156 @@ func _test_static_scene_export() -> void:
 	_check(doc.objects.size() == 4, "export never mutates the live object list")
 	_check(doc.nodes[hidden].visible == false, "export never unhides a live node")
 	_check(_scene_names(doc) == live_names, "export never renames a live node")
+	doc.queue_free()
+
+
+func _test_animation_export() -> void:
+	print("EXPORT STEP: animation")
+	var doc := _new_doc("Animation Export")
+	var cube: String = doc.add_primitive("box", Vector3(0, 0.5, 0))
+	doc.set_selection(cube)
+	doc.seek(0.0, true)
+	doc.set_object_transform(cube, Vector3(0, 0.5, 0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_transform_keys()
+	doc.seek(1.0, true)
+	doc.set_object_transform(cube, Vector3(1, 0.5, 0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_transform_keys()
+	_check(doc.animation.get_track_count() > 0, "the fixture animates the cube")
+
+	var exporter = GlbExportScript.new()
+	var path := _tmp_dir.path_join("animation.glb")
+	var result: Dictionary = exporter.export_scene(doc, path, {"animations": true})
+	_check(bool(result.get("ok", false)), "the animated scene exports")
+	_check(int(result.get("animations", 0)) == 1, "the export reports the active clip")
+	var json := _glb_json(path)
+	_check(not (json.get("animations", []) as Array).is_empty(), "the GLB carries a real animation")
+
+	var state := GLTFState.new()
+	var gltf := GLTFDocument.new()
+	var err := gltf.append_from_file(path, state)
+	_check(err == OK, "the animated GLB re-imports")
+	var imported: Node = gltf.generate_scene(state) if err == OK else null
+	var player := _find_animation_player(imported) if imported != null else null
+	_check(player != null and not player.get_animation_list().is_empty(),
+		"the re-imported scene has an AnimationPlayer")
+	var endpoint: Variant = null
+	if player != null and not player.get_animation_list().is_empty():
+		var anim: Animation = player.get_animation(player.get_animation_list()[0])
+		for ti in range(anim.get_track_count()):
+			if anim.track_get_type(ti) != Animation.TYPE_POSITION_3D:
+				continue
+			var keys := anim.track_get_key_count(ti)
+			if keys > 0:
+				endpoint = anim.track_get_key_value(ti, keys - 1)
+	_check(endpoint is Vector3 and (endpoint as Vector3).distance_to(Vector3(1, 0.5, 0)) < 0.01,
+		"the position track keeps its endpoint")
+	if imported != null:
+		imported.free()
+	doc.queue_free()
+
+
+func _test_selection_only_export() -> void:
+	print("EXPORT STEP: selection only")
+	var doc := _new_doc("Selection Export")
+	var first: String = doc.add_primitive("box", Vector3(-1, 0.5, 0))
+	var second: String = doc.add_primitive("box", Vector3(1, 0.5, 0))
+	doc.set_selection(first)
+	var exporter = GlbExportScript.new()
+	var path := _tmp_dir.path_join("selection.glb")
+	var result: Dictionary = exporter.export_scene(
+		doc, path, {"selection_only": true, "animations": true})
+	_check(bool(result.get("ok", false)), "the selection-only scene exports")
+	_check(int(result.get("animations", -1)) == 0,
+		"a selected object with no tracks exports no animation")
+	var json := _glb_json(path)
+	_check((json.get("meshes", []) as Array).size() == 1,
+		"selection-only exports only the selected mesh")
+	_check((json.get("animations", []) as Array).is_empty(),
+		"the empty animation scope writes no animation channel")
+	_check(not JSON.stringify(json).contains("AnimationPlayer"),
+		"no empty AnimationPlayer is fabricated")
+
+	# One track on each cube. The selected export must keep only the selected
+	# object's track, not the whole document clip.
+	doc.seek(0.0, true)
+	doc.set_selection(first)
+	doc.set_object_transform(first, Vector3(-1, 1, 0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_channel_key("position")
+	doc.set_selection(second)
+	doc.set_object_transform(second, Vector3(1, 2, 0), Quaternion.IDENTITY, Vector3.ONE, false)
+	doc.insert_channel_key("position")
+	doc.set_selection(first)
+	var selected_path := _tmp_dir.path_join("selection_animated.glb")
+	var selected: Dictionary = exporter.export_scene(
+		doc, selected_path, {"selection_only": true, "animations": true})
+	_check(bool(selected.get("ok", false)), "the selected animated object exports")
+	_check(int(selected.get("animations", 0)) == 1, "selection-only keeps one retained track")
+	var selected_json := _glb_json(selected_path)
+	var animations: Array = selected_json.get("animations", [])
+	var channel_count := 0
+	if not animations.is_empty():
+		channel_count = ((animations[0] as Dictionary).get("channels", []) as Array).size()
+	_check(channel_count == 1, "only the selected object's track survives")
+
+	var whole_path := _tmp_dir.path_join("whole_scene.glb")
+	var whole: Dictionary = exporter.export_scene(doc, whole_path, {"animations": false})
+	_check(bool(whole.get("ok", false)), "the whole scene exports")
+	var whole_json := _glb_json(whole_path)
+	_check((whole_json.get("meshes", []) as Array).size() == 2,
+		"the whole scene includes both meshes")
+	doc.queue_free()
+
+
+func _test_rigged_export() -> void:
+	print("EXPORT STEP: rigged mesh")
+	var doc := _new_doc("Rigged Export")
+	doc.project_dir = _tmp_dir
+	var rs = doc.rig_system
+	var rig_id: String = rs.create_rig("Rig", Vector3.ZERO)
+	rs.set_bone_rest(rig_id, "Root", _rest(Vector3.ZERO, 1.0))
+	rs.add_bone(rig_id, "Spine", "Root", _rest(Vector3(0, 1, 0), 1.0))
+	var mesh_id: String = doc.add_primitive("box", Vector3(0, 0.5, 0))
+	var job: String = rs.start_bind(rig_id, mesh_id, {})
+	var state := {"state": "running", "progress": 0.0}
+	var polls := 0
+	while polls < 120 and str(state.get("state", "")) == "running":
+		state = rs.poll_bind(job)
+		polls += 1
+	_check(str(state.get("state", "")) == "done", "the rig fixture binds a real mesh")
+
+	var exporter = GlbExportScript.new()
+	var path := _tmp_dir.path_join("rigged.glb")
+	var result: Dictionary = exporter.export_scene(doc, path, {"animations": false})
+	_check(bool(result.get("ok", false)), "the rigged scene exports")
+	var json := _glb_json(path)
+	var skins: Array = json.get("skins", [])
+	if not skins.is_empty():
+		var import_state := GLTFState.new()
+		var gltf := GLTFDocument.new()
+		var err := gltf.append_from_file(path, import_state)
+		var imported: Node = gltf.generate_scene(import_state) if err == OK else null
+		var skinned := _find_skinned_mesh(imported) if imported != null else null
+		_check(skinned != null, "the re-imported rigged mesh keeps its skin")
+		if imported != null:
+			imported.free()
+	else:
+		_check(str(result.get("note", "")) == RIG_PINNED_NOTE,
+			"the export states the rigged-mesh limitation")
+	doc.queue_free()
+
+
+func _test_export_failure() -> void:
+	print("EXPORT STEP: failure")
+	var doc := _new_doc("Failure Export")
+	var cube: String = doc.add_primitive("box", Vector3.ZERO)
+	var exporter = GlbExportScript.new()
+	var path := "/proc/kinema/forbidden.glb"
+	var result: Dictionary = exporter.export_scene(doc, path)
+	_check(not bool(result.get("ok", true)), "an unwritable destination fails")
+	_check(str(result.get("error", "")) != "", "the failure states a real reason")
+	_check(not FileAccess.file_exists(path), "the failure writes no destination file")
+	_check(not FileAccess.file_exists(path + ".tmp.glb"),
+		"the failure leaves no temporary sibling")
 	doc.queue_free()
 
 
