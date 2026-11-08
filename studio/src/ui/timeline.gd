@@ -16,6 +16,8 @@ signal duration_row_changed(open: bool)
 signal duration_confirmation_requested(value: float, message: String)
 ## The active channel changed, whether by the graph tab strip or a dope row.
 signal channel_selected(channel: String)
+## A segment was selected in the graph body (or forwarded from the dope sheet).
+signal segment_selected(span: Dictionary)
 
 class DopeSheet:
 	extends Control
@@ -39,9 +41,12 @@ class DopeSheet:
 
 const DocumentScript = preload("res://src/core/document.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
+const SegmentGraphScript = preload("res://src/ui/segment_graph.gd")
 var doc: DocumentScript = null
 
 var _sheet: Control
+var _segment_graph: Control
+var _selected_span: Dictionary = {}
 var _time_label: Label
 var _frame_label: Label
 var _play_button: Button
@@ -161,10 +166,13 @@ func _ready() -> void:
 	_build_compact_header()
 	_build_duration_row()
 	_build_sheet()
+	_build_segment_graph()
 	resized.connect(_refresh_compact)
 
 func setup(document: Node3D) -> void:
 	doc = document
+	if _segment_graph != null:
+		_segment_graph.setup(doc)
 	doc.playback_changed.connect(_on_playback_changed)
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
@@ -462,10 +470,7 @@ func open_duration_row() -> void:
 	_duration_open = true
 	_duration_row.visible = true
 	_dismiss_gesture_hint()
-	if _sheet_rule != null:
-		_sheet_rule.visible = false
-	if _sheet != null:
-		_sheet.visible = false
+	_sync_body_visibility()
 	_sync_duration_row()
 	_apply_sheet_height()
 	_refresh_compact()
@@ -477,10 +482,7 @@ func close_duration_row() -> void:
 		return
 	_duration_open = false
 	_duration_row.visible = false
-	if _sheet_rule != null:
-		_sheet_rule.visible = _sheet_open
-	if _sheet != null:
-		_sheet.visible = _sheet_open
+	_sync_body_visibility()
 	_apply_sheet_height()
 	_refresh_compact()
 	duration_row_changed.emit(false)
@@ -603,6 +605,64 @@ func _build_sheet() -> void:
 	_sheet.add_child(_gesture_hint)
 
 
+## The graph body is a sibling of the dope sheet in the same stacked body slot:
+## exactly one of them is visible, so the VBox never allocates half a pane to a
+## hidden editor.
+func _build_segment_graph() -> void:
+	_segment_graph = SegmentGraphScript.new()
+	_segment_graph.custom_minimum_size.y = 120
+	_segment_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_segment_graph.visible = false
+	add_child(_segment_graph)
+	_segment_graph.span_selected.connect(_on_graph_span_selected)
+	_segment_graph.span_changed.connect(_on_graph_span_changed)
+	_segment_graph.notice.connect(func(text: String) -> void: notice.emit(text))
+
+
+func _sync_body_visibility() -> void:
+	var body_visible := _sheet_open and not _duration_open
+	if _sheet_rule != null:
+		_sheet_rule.visible = body_visible
+	if _sheet != null:
+		_sheet.visible = body_visible and _mode != "graph"
+	if _segment_graph != null:
+		_segment_graph.visible = body_visible and _mode == "graph"
+
+
+func segment_graph() -> Control:
+	return _segment_graph
+
+
+func segment_selected_span() -> Dictionary:
+	return _selected_span.duplicate(true)
+
+
+func _on_graph_span_selected(span: Dictionary) -> void:
+	_selected_span = span.duplicate(true)
+	if span.is_empty():
+		_selected_index = -1
+		_selected_data_id = ""
+	else:
+		var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel) if doc != null else []
+		var start := float(span.get("start", 0.0))
+		_selected_index = -1
+		for key in keys:
+			if absf(float(key["time"]) - start) <= 0.001:
+				_selected_index = int(key["index"])
+				break
+		_selected_data_id = doc.selected_id if doc != null else ""
+	if doc != null:
+		_refresh_transport(doc.current_time, doc.is_playing)
+	if _sheet != null:
+		_sheet.queue_redraw()
+	segment_selected.emit(span.duplicate(true))
+
+
+func _on_graph_span_changed() -> void:
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
 ## Compact screens keep the transport and fold the sheet away, so the 3D view
 ## keeps its height until the user asks for the dope sheet.
 func set_sheet_visible(open: bool) -> void:
@@ -611,9 +671,7 @@ func set_sheet_visible(open: bool) -> void:
 		_duration_open = false
 		if _duration_row != null:
 			_duration_row.visible = false
-	_sheet_rule.visible = open and not _duration_open
-	if _sheet != null:
-		_sheet.visible = open and not _duration_open
+	_sync_body_visibility()
 	if _fold_button != null:
 		Kit.set_icon(_fold_button, "chevron-down" if open else "chevron-up")
 		_fold_button.tooltip_text = "Fold the timeline" if open else "Open the timeline"
@@ -758,7 +816,9 @@ func set_header_folded(value: bool) -> void:
 func _apply_sheet_height() -> void:
 	if _sheet == null:
 		return
-	_sheet.custom_minimum_size.y = 120.0 if _mode == "graph" else 96.0
+	_sheet.custom_minimum_size.y = 96.0
+	if _segment_graph != null:
+		_segment_graph.custom_minimum_size.y = 120.0 if _mode == "graph" else 48.0
 
 
 ## The overlay owns the total height, so the sheet gets whatever the transport,
@@ -781,6 +841,8 @@ func fit_sheet_height(available: float) -> void:
 		# the sheet into a sliver.
 		preferred = maxf(120.0, available - header_h - rule_h)
 	_sheet.custom_minimum_size.y = maxf(48.0, minf(preferred, room))
+	if _segment_graph != null:
+		_segment_graph.custom_minimum_size.y = maxf(48.0, minf(preferred, room)) if _mode == "graph" and _segment_graph.visible else 48.0
 
 
 ## The transport belongs to the sheet's model but is mounted outside it by the
@@ -843,7 +905,12 @@ func set_mode(mode: String) -> void:
 	var next := "graph" if mode == "graph" else "dope"
 	var changed := next != _mode
 	_mode = next
+	if _segment_graph != null:
+		_segment_graph.set_context(doc.selected_id if doc != null else "", _selected_channel)
+		if not _selected_span.is_empty():
+			_segment_graph.set_selection(_selected_span)
 	_apply_sheet_height()
+	_sync_body_visibility()
 	if _mode_button != null:
 		_sync_flags = true
 		_mode_button.set_pressed_no_signal(_mode == "graph")
@@ -852,6 +919,8 @@ func set_mode(mode: String) -> void:
 	_refresh_compact()
 	if _sheet != null:
 		_sheet.queue_redraw()
+	if _segment_graph != null:
+		_segment_graph.queue_redraw()
 	if changed:
 		mode_changed.emit(_mode)
 
@@ -928,11 +997,17 @@ func _on_playback_changed(time: float, playing: bool) -> void:
 func _on_selection_changed(_id: String) -> void:
 	_selected_index = -1
 	_selected_data_id = ""
+	_selected_span = {}
+	if _segment_graph != null:
+		_segment_graph.set_context(doc.selected_id, _selected_channel)
+		_segment_graph.clear_selection()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
 
 func _on_object_changed(_id: String) -> void:
+	if _segment_graph != null:
+		_segment_graph.refresh()
 	if _sheet != null:
 		_sheet.queue_redraw()
 
@@ -942,12 +1017,16 @@ func _on_transform_changed(_id: String) -> void:
 
 func _on_keyframes_changed(_id: String) -> void:
 	_selected_index = -1
+	if _segment_graph != null:
+		_segment_graph.refresh()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
 
 func _on_scene_changed() -> void:
 	_sync_flag_states()
+	if _segment_graph != null:
+		_segment_graph.refresh()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
@@ -1559,6 +1638,7 @@ func set_channel(channel: String) -> void:
 	_selected_channel = channel
 	_selected_index = -1
 	_selected_data_id = ""
+	_selected_span = {}
 	# The hit rects describe the previous channel until the next draw. A tap
 	# between the switch and that draw must not select a stale segment or key.
 	_segments.clear()
@@ -1566,6 +1646,9 @@ func set_channel(channel: String) -> void:
 	_channel_hits.clear()
 	_key_hits.clear()
 	_graph_max_speed = 0.0
+	if _segment_graph != null:
+		_segment_graph.set_context(doc.selected_id, _selected_channel)
+		_segment_graph.clear_selection()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
@@ -1580,21 +1663,26 @@ func channel() -> String:
 func select_segment_at_time(time: float) -> bool:
 	if doc == null or doc.selected_id == "":
 		return false
-	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
-	if keys.size() < 2:
-		return false
 	var t := clampf(time, 0.0, doc.duration)
-	for i in range(keys.size() - 1):
-		var t0 := float(keys[i]["time"])
-		var t1 := float(keys[i + 1]["time"])
-		if t >= t0 - 0.0001 and t <= t1 + 0.0001:
-			_selected_index = int(keys[i]["index"])
-			_selected_data_id = doc.selected_id
-			_refresh_transport(doc.current_time, doc.is_playing)
-			if _sheet != null:
-				_sheet.queue_redraw()
-			return true
-	return false
+	var span: Dictionary = doc.segment_span_at(doc.selected_id, _selected_channel, t)
+	if span.is_empty():
+		return false
+	_selected_span = span.duplicate(true)
+	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
+	var start := float(span.get("start", 0.0))
+	_selected_index = -1
+	for key in keys:
+		if absf(float(key["time"]) - start) <= 0.001:
+			_selected_index = int(key["index"])
+			break
+	_selected_data_id = doc.selected_id
+	if _segment_graph != null:
+		_segment_graph.set_selection(span)
+	_refresh_transport(doc.current_time, doc.is_playing)
+	if _sheet != null:
+		_sheet.queue_redraw()
+	segment_selected.emit(span.duplicate(true))
+	return true
 
 func graph_stats() -> Dictionary:
 	var stats := {

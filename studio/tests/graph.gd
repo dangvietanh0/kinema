@@ -28,6 +28,9 @@ func _ready() -> void:
 	await _test_cubic_bake()
 	await _test_bake_limits()
 	await _test_format4_persistence()
+	await _test_segment_selection()
+	await _test_ease_tab()
+	await _test_preset_rail()
 	_finish()
 
 
@@ -202,3 +205,135 @@ func _test_format4_persistence() -> void:
 	doc.queue_free()
 	copy.queue_free()
 	old.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 16 — the segment graph
+# -------------------------------------------------------------------------
+
+func _host_graph(width: float, height: float):
+	var doc := _new_doc()
+	var id := _cube(doc)
+	_two_keys(doc, id, 0.0, 1.0)
+	var timeline = TimelineScript.new()
+	add_child(timeline)
+	timeline.setup(doc)
+	timeline.set_available_width(width)
+	timeline.size = Vector2(width, height)
+	await get_tree().process_frame
+	timeline.set_mode("graph")
+	await get_tree().process_frame
+	var graph = timeline.segment_graph()
+	graph.set_context(id, "position")
+	return {"doc": doc, "timeline": timeline, "graph": graph, "id": id}
+
+
+func _test_segment_selection() -> void:
+	print("GRAPH STEP: segment selection")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	doc.apply_key_edits(id, "position", [
+		{"index": -1, "time": 2.0, "value": Vector3(0, 5, 0)},
+	], "Third key")
+	var span: Dictionary = doc.segment_span_at(id, "position", 1.5)
+	_check(str(span.get("kind", "")) == "plain", "between two keys is a plain segment")
+	graph.set_selection(span)
+	_check(graph.selection() == span, "the graph keeps the selected span")
+	_check(graph.plot_rect().size.y >= 120.0, "the plot respects the 120 dp floor")
+	_check(graph.key_points().size() == 3, "the graph draws every key")
+	_check(graph.handle_hit_radius() == 22.0 and graph.key_hit_radius() == 22.0,
+		"handles and keys keep 22 dp hit radii")
+	var first: Dictionary = doc.segment_span_at(id, "position", 0.5)
+	var next: Dictionary = doc.next_segment_span(id, "position", float(first["start"]), 1)
+	_check(absf(float(next.get("start", -1.0)) - 1.0) < 0.0001,
+		"next segment moves to the following interval")
+	var prev: Dictionary = doc.next_segment_span(id, "position", float(first["start"]), -1)
+	_check(prev.is_empty(), "previous at the first segment returns empty, not a wrap")
+	var beyond: Dictionary = doc.next_segment_span(id, "position", float(span["start"]), 1)
+	_check(beyond.is_empty(), "next after the last interval returns empty, not a wrap")
+
+	# The graph zooms to the selected span with 24 dp padding.
+	graph.set_selection(span)
+	var point: Vector2 = graph.time_to_point(float(span["start"]))
+	_check(absf(point.x - (graph.plot_rect().position.x + 24.0)) < 1.0,
+		"the selected start sits 24 dp from the plot edge")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_ease_tab() -> void:
+	print("GRAPH STEP: ease tab")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	var span: Dictionary = doc.segment_span_at(id, "position", 0.5)
+	graph.set_selection(span)
+	graph.set_tab("ease")
+	_check(graph.tab() == "ease", "the Ease tab can be selected")
+	_check(graph.handle_positions().size() == 2, "a linear segment shows two cubic handles")
+	_check(not graph.engine_ease_visible(), "a transition-1.0 segment has no engine ease badge")
+	var undo_before: int = (doc._undo_stack as Array).size()
+	graph.handle_drag(
+		graph.plot_rect().position + graph.plot_rect().size * Vector2(0.3, 0.8),
+		graph.plot_rect().position + graph.plot_rect().size * Vector2(0.7, 0.2))
+	_check(doc.curve_segments().size() == 1, "a handle drag writes a curve record")
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"a handle drag is exactly one undo entry")
+	var record: Dictionary = doc.curve_segments()[0]
+	_check(str(record.get("family", "")) == "cubic", "the dragged segment is cubic")
+	_check(graph.convert_button() == null or not graph.convert_button().visible,
+		"a cubic record does not offer Convert to cubic")
+	_check(graph.clear_button() != null and graph.clear_button().visible,
+		"a cubic record offers Clear curve")
+
+	# A legacy engine transition exposes the scalar field, never fake handles.
+	doc.undo()
+	var keys: Array = doc.get_channel_keys(id, "position")
+	doc.set_key_transition(id, "position", 0, 0.5)
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.refresh()
+	_check(graph.engine_ease_visible(), "a transition-0.5 segment shows Engine ease")
+	_check(graph.handle_positions().is_empty(), "engine ease shows no cubic handles")
+	_check(graph.bake_ease_button() != null and graph.bake_ease_button().visible,
+		"engine ease offers Bake ease")
+	var engine_undo: int = (doc._undo_stack as Array).size()
+	graph.bake_ease_button().pressed.emit()
+	await get_tree().process_frame
+	_check(doc.curve_segments().size() == 1, "Bake ease writes a baked record")
+	_check(str(doc.curve_segments()[0].get("family", "")) == "baked", "the baked family is recorded")
+	_check((doc._undo_stack as Array).size() == engine_undo + 1,
+		"Bake ease is one undo entry")
+	_check(graph.convert_button().visible, "a baked preset offers Convert to cubic")
+	graph.convert_button().pressed.emit()
+	await get_tree().process_frame
+	_check(str(doc.curve_segments()[0].get("family", "")) == "cubic",
+		"Convert to cubic writes linear handles")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_preset_rail() -> void:
+	print("GRAPH STEP: preset rail")
+	var ctx = await _host_graph(600, 324)
+	var graph = ctx["graph"]
+	var doc = ctx["doc"]
+	var id: String = ctx["id"]
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	_check(graph.preset_ids() == PackedStringArray([
+		"linear", "ease_in", "ease_out", "ease_in_out", "slow_in_fast_out",
+		"back_out", "bounce", "elastic", "spring",
+	]), "the rail lists the six cubic presets and three families")
+	for preset in ["linear", "ease_in", "ease_out", "ease_in_out", "slow_in_fast_out", "back_out"]:
+		_check(graph.preset_chip(preset) != null, "%s has a real chip" % preset)
+		_check(graph.preset_chip(preset).custom_minimum_size.y >= 43.5,
+			"%s chip is 44 dp tall" % preset)
+	graph.preset_chip("ease_in_out").pressed.emit()
+	await get_tree().process_frame
+	var record: Dictionary = doc.curve_segments()[0]
+	_check(absf(float(record.get("x1", 0.0)) - 0.42) < 0.001, "Ease in-out applies x1 0.42")
+	_check(str(record.get("preset", "")) == "ease_in_out", "the preset id is recorded")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
