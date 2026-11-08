@@ -34,7 +34,7 @@ const ICONS := {
 	"performance": "timer",
 	"render": "clapperboard",
 	"import": "upload",
-	"media": "film",
+	"media": "video",
 	"rig": "bone",
 	"about": "info",
 }

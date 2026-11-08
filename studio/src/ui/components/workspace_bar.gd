@@ -68,7 +68,7 @@ func _build() -> void:
 	_row.add_theme_constant_override("separation", 4)
 	add_child(_row)
 
-	_back_button = _make_action_button("back", "Back to projects")
+	_back_button = _make_action_button("back", "Back")
 	_row.add_child(_back_button)
 
 	_tabs_group = HBoxContainer.new()

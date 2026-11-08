@@ -210,6 +210,44 @@ func _ready() -> void:
 		editor._workspace_menu.close()
 		await get_tree().process_frame
 
+	# The project menu is taller than the 800x360 viewport at studio scale.
+	# Its fixed header stays put and the rows scroll, so Close project remains
+	# reachable instead of clipping below the window.
+	await _resize(main, Vector2i(800, 360))
+	editor.set_layout_mode("studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main.refresh_layout_scale()
+	await get_tree().process_frame
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	editor._workspace_bar.action_button("menu").pressed.emit()
+	await get_tree().process_frame
+	var project = editor._project_menu
+	var project_label := "800x360 project menu"
+	_check(project.is_open(), project_label + ": the menu opens")
+	_check(project._panel.size.y <= 360.0 - 16.0 + 0.5,
+		project_label + ": the panel fits the viewport")
+	_check(project._header.custom_minimum_size.y <= 32.5,
+		project_label + ": the header stays fixed at 32 dp")
+	var scroll: ScrollContainer = project._scroll
+	_check(scroll != null, project_label + ": the rows live in a scroll container")
+	if scroll != null:
+		var close_row: Button = project.row_button("close")
+		_check(close_row != null, project_label + ": the close row exists")
+		if close_row != null:
+			_check(scroll.get_v_scroll_bar().max_value > scroll.size.y + 0.5,
+				project_label + ": the rows overflow and scroll")
+			scroll.ensure_control_visible(close_row)
+			await get_tree().process_frame
+			var close_rect := close_row.get_global_rect()
+			var panel_rect: Rect2 = project._panel.get_global_rect()
+			_check(close_rect.position.y >= panel_rect.position.y and
+				close_rect.end.y <= panel_rect.end.y + 0.5,
+				project_label + ": Close project scrolls into view")
+	project.close()
+	await get_tree().process_frame
+
 	# The 200% interface is the worst case for the touch shell: every control
 	# keeps its dp minimum while the logical canvas shrinks. Headless cannot
 	# apply the scale, so those pixel checks run under xvfb only.

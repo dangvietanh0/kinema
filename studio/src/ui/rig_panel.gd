@@ -427,7 +427,7 @@ func _build_keys() -> void:
 	_key_bone.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_key_bone.pressed.connect(_on_key_bone)
 	row.add_child(_key_bone)
-	_key_pose = Kit.text_button("Key pose", "diamond", false, true)
+	_key_pose = Kit.text_button("Key pose", "diamond-plus", false, true)
 	_key_pose.name = "KeyPoseButton"
 	_key_pose.custom_minimum_size = Vector2(96, ROW_HEIGHT)
 	_key_pose.pressed.connect(_on_key_pose)

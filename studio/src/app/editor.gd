@@ -612,7 +612,7 @@ func _toggle_workspace_menu() -> void:
 		_workspace_bar.more_button(),
 		"Workspaces",
 		doc.title if doc != null else "Untitled",
-		layout_mode() != "desktop"
+		false
 	)
 	var copy := {
 		"rig": ["Skeletons, poses and IK", "bone"],
@@ -1033,6 +1033,7 @@ func _open_camera_menu() -> void:
 		)
 	_camera_menu.set_empty_text(
 		"No scene cameras. Add one to look through it." if cameras.is_empty() else "")
+	_camera_menu.add_separator()
 	_camera_menu.add_action(
 		"add_camera", "Add camera…", "plus", not _look_through,
 		"Exit camera view to add a camera.")

@@ -151,6 +151,10 @@ func _test_workspace_bar_and_menu() -> void:
 	await get_tree().process_frame
 	_check(editor.workspace_menu_open(), "More opens the secondary-workspace menu")
 	var menu = editor._workspace_menu
+	_check(menu._centered == false, "the secondary menu opens as an anchored dropdown")
+	_check(not menu.scrim().visible, "the anchored secondary menu shows no scrim")
+	_check(menu.scrim().mouse_filter == Control.MOUSE_FILTER_IGNORE,
+		"the anchored menu never steals the More tap")
 	_check(menu.row_count() == 2, "the secondary menu has exactly two rows")
 	for id in ["rig", "render"]:
 		var row: Button = menu.row_button(id)
@@ -204,6 +208,18 @@ func _test_workspace_bar_and_menu() -> void:
 		bar.more_button().get_meta("action_icon", "") == "ellipsis-horizontal",
 		"More returns to the ellipsis")
 
+	# Back is one control with an honest name: from a secondary workspace it
+	# returns to Scene, not to the project browser.
+	_check(bar.action_button("back").tooltip_text == "Back",
+		"the Back control has the accessible name Back")
+	for workspace_id in ["rig", "render"]:
+		editor.set_workspace(workspace_id)
+		await get_tree().process_frame
+		bar.action_button("back").pressed.emit()
+		await get_tree().process_frame
+		_check(editor.workspace() == "scene",
+			"the actual Back control returns from %s" % workspace_id)
+
 	# Project menu order and rows at a width that keeps Undo/Redo on the bar.
 	bar.action_button("menu").pressed.emit()
 	await get_tree().process_frame
@@ -242,6 +258,17 @@ func _test_compact_top_bar() -> void:
 		_check(bar.get_combined_minimum_size().x <= 360.5,
 			"the top bar keeps the 360 dp budget with %s named" % workspace_id)
 	editor.set_workspace("scene")
+	await get_tree().process_frame
+
+	# Compact keeps the secondary menu anchored; the scrim would cover the
+	# 44 dp More control and make the second-tap close physically unreachable.
+	bar.more_button().pressed.emit()
+	await get_tree().process_frame
+	_check(editor._workspace_menu._centered == false,
+		"the compact secondary menu opens anchored")
+	_check(not editor._workspace_menu.scrim().visible,
+		"the compact secondary menu has no scrim")
+	editor._workspace_menu.close()
 	await get_tree().process_frame
 
 	bar.action_button("menu").pressed.emit()
@@ -430,6 +457,16 @@ func _test_context_bar_overflow_and_icons() -> void:
 	_check(bar.action_button("scale") == null and bar.action_button("select") == null,
 		"Rig has no generic transform group")
 
+	# Icon deviations outside the shell action row: Media is video reference,
+	# and every key action uses diamond-plus.
+	_check(SettingsPanelScript.ICONS["media"] == "video",
+		"Media settings uses the video reference icon")
+	_check(FileAccess.file_exists("res://assets/icons/video.svg"),
+		"the video reference icon exists")
+	var key_pose: Button = editor._rig_panel.find_child("KeyPoseButton", true, false)
+	_check(key_pose != null and key_pose.icon == Kit.icon_texture("diamond-plus"),
+		"Key pose uses diamond-plus like every key action")
+
 	# Icon contract: no two visible action ids share an icon in one workspace,
 	# and every referenced icon file exists.
 	for workspace_id in editor.WORKSPACES:
@@ -583,6 +620,15 @@ func _test_shell_anatomy_and_panels() -> void:
 		editor._animate_pane.get_global_rect().position.y + 0.5,
 		"animate: the pane never covers the stage")
 	_check(not editor._transport_bar.visible, "animate: the shared transport is replaced")
+	var dead_more := false
+	for node in editor._timeline.find_children("*", "BaseButton", true, false):
+		var button := node as Button
+		if button != null and button.text == "More" and \
+				button.tooltip_text == "Show the full timeline":
+			dead_more = true
+	_check(not dead_more, "animate: no dead More control remains")
+	_check(not editor._timeline.has_signal("more_requested"),
+		"animate: no dead More signal remains")
 
 	# Non-animate workspaces have no timeline over the stage.
 	for id in ["scene", "shading", "rig", "render"]:
@@ -614,6 +660,12 @@ func _test_camera_view() -> void:
 	_check(menu.row_count() >= 2, "the menu lists the scene cameras")
 	_check(menu.row_button(cam_a) != null and menu.row_button(cam_b) != null,
 		"both cameras are rows")
+	var add_camera: Button = menu.row_button("add_camera")
+	_check(add_camera != null, "the camera menu has the Add camera row")
+	if add_camera != null and add_camera.get_index() > 0:
+		var before_add: Node = add_camera.get_parent().get_child(add_camera.get_index() - 1)
+		_check(before_add is ColorRect,
+			"a separator divides the camera rows from Add camera")
 
 	var exits: Array = []
 	editor._view.look_through_exited.connect(func() -> void: exits.append(true))

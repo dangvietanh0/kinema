@@ -25,6 +25,7 @@ var _header: MarginContainer
 var _eyebrow: Label
 var _subtitle: Label
 var _rows_box: VBoxContainer
+var _scroll: ScrollContainer
 var _empty_label: Label
 var _rows: Array[Button] = []
 var _row_map: Dictionary = {}
@@ -82,7 +83,16 @@ func _build() -> void:
 
 	_rows_box = VBoxContainer.new()
 	_rows_box.add_theme_constant_override("separation", 0)
-	_column.add_child(_rows_box)
+	_rows_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# The header stays fixed; the rows own the scroll so a project menu taller
+	# than a short viewport never clips its last action.
+	_scroll = ScrollContainer.new()
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_scroll.add_child(_rows_box)
+	_column.add_child(_scroll)
 
 	_empty_label = Kit.label("", 12, Kit.TEXT_MUTED)
 	_empty_label.custom_minimum_size = Vector2(0, 52)
@@ -307,8 +317,14 @@ func _apply_geometry() -> void:
 		return
 	var width := minf(_max_width, view.x - 32.0) if _centered else minf(_max_width, view.x - 16.0)
 	width = maxf(width, 200.0)
-	var height := _panel.get_combined_minimum_size().y
-	height = minf(height, maxf(view.y - 16.0, 44.0))
+	# Ask for the full header + row height, but never more than the viewport.
+	# Past that cap the ScrollContainer owns the overflow, keeping the header
+	# fixed and every row reachable.
+	var chrome := maxf(0.0, _panel.get_combined_minimum_size().y -
+		_column.get_combined_minimum_size().y)
+	var desired := (_header.get_combined_minimum_size().y +
+		_rows_box.get_combined_minimum_size().y + chrome)
+	var height := minf(desired, maxf(view.y - 16.0, 44.0))
 	var pos := Vector2.ZERO
 	if _centered:
 		pos = Vector2((view.x - width) * 0.5, (view.y - height) * 0.5)

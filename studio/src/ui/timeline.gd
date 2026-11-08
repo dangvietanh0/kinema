@@ -14,8 +14,6 @@ signal mode_changed(mode: String)
 signal duration_row_changed(open: bool)
 ## A shrink would delete keys; the editor owns the confirmation sheet.
 signal duration_confirmation_requested(value: float, message: String)
-## The compact More control asks the editor for the session-only full state.
-signal more_requested
 ## The active channel changed, whether by the graph tab strip or a dope row.
 signal channel_selected(channel: String)
 
@@ -77,8 +75,6 @@ var _extend_button: Button
 var _duration_close_button: Button
 var _duration_open := false
 var _hint_seen := false
-var _more_button: Button
-var _more_state := false
 var _prev_button: Button
 var _next_button: Button
 
@@ -312,17 +308,6 @@ func _build_transport() -> void:
 	_ease_button.pressed.connect(_open_ease_menu)
 	row.add_child(_ease_button)
 
-	# Explicit More control: raises the session-only overlay budget so the
-	# folded clip and media lanes come back. It lives in the transport because
-	# the compact header folds away before the transport does.
-	_more_button = Kit.text_button("More", "", false, true)
-	_more_button.custom_minimum_size = Vector2(44, 44)
-	_more_button.add_theme_font_size_override("font_size", 10)
-	_more_button.tooltip_text = "Show the full timeline"
-	_more_button.pressed.connect(func() -> void: more_requested.emit())
-	row.add_child(_more_button)
-	_transport_buttons.append(_more_button)
-
 	# The sheet can fold without leaving the workbench: the transport stays,
 	# and this control flips between fold and open. Compact uses the bottom
 	# action bar as its explicit toggle instead.
@@ -551,16 +536,6 @@ func _would_delete_keys(value: float) -> bool:
 	return false
 
 
-## The session-only More state is owned by the editor; this only mirrors it in
-## the transport so the control reads "More" or "Less".
-func set_more_state(value: bool) -> void:
-	_more_state = value
-	if _more_button == null:
-		return
-	_more_button.text = "Less" if _more_state else "More"
-	_more_button.tooltip_text = "Return to the compact timeline" if _more_state else "Show the full timeline"
-
-
 func _sync_compact_header() -> void:
 	if _compact_mode_button == null:
 		return
@@ -734,8 +709,6 @@ func _refresh_compact() -> void:
 	_mode_button.visible = not narrow_chrome
 	_loop_button.visible = not narrow_chrome
 	_delete_button.visible = not narrow_chrome
-	if _more_button != null:
-		_more_button.visible = true
 	if _fold_button != null:
 		# The header owns folding while the sheet is open; once it is folded
 		# the transport's control is the way back. Touch uses the compact
