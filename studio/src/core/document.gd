@@ -53,7 +53,7 @@ const TRACK_TYPES := {
 	"scale": Animation.TYPE_SCALE_3D,
 }
 const ANIMATION_NAME := "Take 01"
-const FORMAT_VERSION := 3
+const FORMAT_VERSION := 4
 
 var project_id := ""
 var project_dir := ""
@@ -1476,10 +1476,179 @@ func set_channel_transition(id: String, channel: String, value: float) -> void:
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 
-func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit keys") -> Dictionary:
+# -------------------------------------------------------------------------
+# Curve segments (project format 4)
+# -------------------------------------------------------------------------
+
+func curve_segments() -> Array:
+	if animation_system == null:
+		return []
+	return animation_system.curve_segments()
+
+
+func set_curve_segments(segments: Array) -> void:
+	if animation_system == null:
+		return
+	animation_system.set_curve_segments(segments)
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit("")
+
+
+func segments_for(id: String, channel: String) -> Array:
+	var out: Array = []
+	for raw in curve_segments():
+		if not raw is Dictionary:
+			continue
+		var record: Dictionary = raw
+		if str(record.get("object", "")) == id and str(record.get("channel", "")) == channel:
+			out.append(record)
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("start", 0.0)) < float(b.get("start", 0.0))
+	)
+	return out
+
+
+func curve_segment_at(id: String, channel: String, time: float) -> Dictionary:
+	for record in segments_for(id, channel):
+		var start := float(record.get("start", 0.0))
+		var end := float(record.get("end", 0.0))
+		if time >= start - 0.000001 and time <= end + 0.000001:
+			return record
+	return {}
+
+
+## Consecutive key intervals that no curve record covers. A record owns its
+## whole span, so interior baked keys never become their own plain segment.
+func _plain_segment_spans(id: String, channel: String) -> Array:
+	var out: Array = []
+	var keys := get_channel_keys(id, channel)
+	if keys.size() < 2:
+		return out
+	var records := segments_for(id, channel)
+	for i in range(keys.size() - 1):
+		var start := float(keys[i]["time"])
+		var end := float(keys[i + 1]["time"])
+		if end <= start + 0.000001:
+			continue
+		var mid := (start + end) * 0.5
+		var covered := false
+		for record in records:
+			var rstart := float(record.get("start", 0.0))
+			var rend := float(record.get("end", 0.0))
+			if mid >= rstart - 0.000001 and mid <= rend + 0.000001:
+				covered = true
+				break
+		if not covered:
+			out.append({
+				"object": id,
+				"channel": channel,
+				"start": start,
+				"end": end,
+				"kind": "plain",
+			})
+	return out
+
+
+func _merged_segment_spans(id: String, channel: String) -> Array:
+	var out: Array = []
+	for record in segments_for(id, channel):
+		out.append({
+			"object": id,
+			"channel": channel,
+			"start": float(record.get("start", 0.0)),
+			"end": float(record.get("end", 0.0)),
+			"kind": "record",
+			"record": record.duplicate(true),
+		})
+	out.append_array(_plain_segment_spans(id, channel))
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if is_equal_approx(float(a.get("start", 0.0)), float(b.get("start", 0.0))):
+			return str(a.get("kind", "")) == "record"
+		return float(a.get("start", 0.0)) < float(b.get("start", 0.0))
+	)
+	return out
+
+
+func segment_span_at(id: String, channel: String, time: float) -> Dictionary:
+	var record := curve_segment_at(id, channel, time)
+	if not record.is_empty():
+		return {
+			"object": id,
+			"channel": channel,
+			"start": float(record.get("start", 0.0)),
+			"end": float(record.get("end", 0.0)),
+			"kind": "record",
+			"record": record.duplicate(true),
+		}
+	for span in _plain_segment_spans(id, channel):
+		var start := float(span.get("start", 0.0))
+		var end := float(span.get("end", 0.0))
+		if time >= start - 0.000001 and time <= end + 0.000001:
+			return span
+	return {}
+
+
+func next_segment_span(id: String, channel: String, start: float, direction: int) -> Dictionary:
+	## Walk the merged list without wrapping. A record counts once and its
+	## interior baked keys are never a candidate.
+	var spans := _merged_segment_spans(id, channel)
+	if direction >= 0:
+		for span in spans:
+			if float(span.get("start", 0.0)) > start + 0.000001:
+				return span
+		return {}
+	var previous: Dictionary = {}
+	for span in spans:
+		if float(span.get("start", 0.0)) < start - 0.000001:
+			previous = span
+		else:
+			break
+	return previous
+
+
+## Replace every record for one object/channel inside the active clip while
+## leaving other objects and channels untouched. `set_curve_segments` sanitizes.
+func _replace_channel_records(id: String, channel: String, segments_after: Array) -> void:
+	var kept: Array = []
+	for raw in curve_segments():
+		if not raw is Dictionary:
+			continue
+		var record: Dictionary = raw
+		if str(record.get("object", "")) == id and str(record.get("channel", "")) == channel:
+			continue
+		kept.append(record)
+	for raw in segments_after:
+		if raw is Dictionary:
+			kept.append(raw)
+	set_curve_segments(kept)
+
+
+func _drop_overlapping_records(id: String, channel: String, min_time: float, max_time: float) -> void:
+	var kept: Array = []
+	for record in segments_for(id, channel):
+		var start := float(record.get("start", 0.0))
+		var end := float(record.get("end", 0.0))
+		if end <= min_time + 0.000001 or start >= max_time - 0.000001:
+			kept.append(record)
+	_replace_channel_records(id, channel, kept)
+
+
+func apply_key_edits(id: String, channel: String, edits: Array,
+		label := "Edit keys", preserve_curves := false,
+		curve_segments_after: Variant = null) -> Dictionary:
 	## Apply a batch of key edits against the pre-edit track in one undo entry.
 	## Each edit refers to an index in the current track or inserts with -1.
 	## Indices in the result point at the edited keys after the time sort.
+	## Metadata removal shares the same undo snapshot as the keys.
+	begin_edit(label)
+	var result := _apply_key_edits_raw(id, channel, edits, label, preserve_curves, curve_segments_after)
+	end_edit()
+	return result
+
+
+func _apply_key_edits_raw(id: String, channel: String, edits: Array, _label: String,
+		preserve_curves: bool, curve_segments_after: Variant = null) -> Dictionary:
 	if not (channel in CHANNELS):
 		return {"ok": false, "error": "Unknown channel.", "indices": []}
 	var track := get_track(id, channel)
@@ -1503,6 +1672,7 @@ func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit k
 		})
 	var inserts: Array = []
 	var edit_tokens: Array = []
+	var touched_times: Array = []
 	var next_token := snapshot.size()
 	for edit in edits:
 		if not (edit is Dictionary):
@@ -1524,19 +1694,29 @@ func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit k
 				"token": next_token,
 			})
 			edit_tokens.append(next_token)
+			touched_times.append(insert_time)
 			next_token += 1
 			continue
 		var entry: Dictionary = entries[index]
+		touched_times.append(float(entry["time"]))
 		if bool(change.get("delete", false)):
 			entry["deleted"] = true
 			continue
 		if change.has("time"):
 			entry["time"] = float(change["time"])
+			touched_times.append(float(change["time"]))
 		if change.has("value"):
 			entry["value"] = change["value"]
 		if change.has("transition"):
 			entry["transition"] = float(change["transition"])
 		edit_tokens.append(int(entry["token"]))
+	if not preserve_curves and not touched_times.is_empty():
+		var min_time: float = touched_times[0]
+		var max_time: float = touched_times[0]
+		for value in touched_times:
+			min_time = minf(min_time, float(value))
+			max_time = maxf(max_time, float(value))
+		_drop_overlapping_records(id, channel, min_time, max_time)
 	var live: Array = []
 	for entry in entries:
 		if not bool(entry["deleted"]):
@@ -1550,7 +1730,6 @@ func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit k
 	var final_indices_by_token := {}
 	for fi in range(live.size()):
 		final_indices_by_token[int(live[fi]["token"])] = fi
-	begin_edit(label)
 	if track < 0 and not live.is_empty():
 		track = _ensure_track(id, channel)
 	if track >= 0:
@@ -1563,7 +1742,8 @@ func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit k
 				var new_index := _insert_track_value(track, channel, float(entry["time"]), entry["value"])
 				if new_index >= 0:
 					animation.track_set_key_transition(track, new_index, clampf(float(entry["transition"]), 0.0, 4.0))
-	end_edit()
+	if curve_segments_after is Array:
+		_replace_channel_records(id, channel, curve_segments_after)
 	var result_indices: Array = []
 	for token in edit_tokens:
 		if final_indices_by_token.has(int(token)):
@@ -1577,61 +1757,314 @@ func apply_key_edits(id: String, channel: String, edits: Array, label := "Edit k
 	return {"ok": true, "error": "", "indices": result_indices}
 
 
-func bake_curve_segment(id: String, channel: String, key_index: int, curve_id: String) -> Dictionary:
-	## Replace one selected→next segment with real sampled keys. The endpoints
-	## keep their values and the whole bake is a single undo entry.
-	var track := get_track(id, channel)
-	if track < 0:
-		return {"ok": false, "inserted": 0, "reason": "The channel has no keys.", "message": "The channel has no keys."}
-	var count := animation.track_get_key_count(track)
-	if key_index < 0 or key_index >= count:
-		return {"ok": false, "inserted": 0, "reason": "The selected key is out of range.", "message": "The selected key is out of range."}
-	if key_index >= count - 1:
-		return {
-			"ok": false,
-			"inserted": 0,
-			"reason": "The last key has no following segment.",
-			"message": "The last key has no following segment.",
-		}
-	var t0 := float(animation.track_get_key_time(track, key_index))
-	var t1 := float(animation.track_get_key_time(track, key_index + 1))
-	var v0: Variant = animation.track_get_key_value(track, key_index)
-	var v1: Variant = animation.track_get_key_value(track, key_index + 1)
-	var span := maxf(0.0, t1 - t0)
-	var frames := span * float(fps)
-	var edits: Array = []
-	if frames < 2.0:
-		edits.append({
-			"index": -1,
-			"time": (t0 + t1) * 0.5,
-			"value": _curve_value(channel, v0, v1, SpeedCurve.evaluate(curve_id, 0.5)),
-			"transition": 1.0,
-		})
-		var short_result := apply_key_edits(id, channel, edits, "Bake curve")
-		return {
-			"ok": bool(short_result.get("ok", false)),
-			"inserted": 1 if bool(short_result.get("ok", false)) else 0,
-			"reason": "Segment is shorter than two frames; baked one midpoint." if bool(short_result.get("ok", false)) else str(short_result.get("error", "")),
-			"message": "Segment is shorter than two frames; baked one midpoint." if bool(short_result.get("ok", false)) else str(short_result.get("error", "")),
-		}
-	var n := clampi(int(round(frames)), 8, 48)
-	for u in range(1, n):
-		var fraction := float(u) / float(n)
-		edits.append({
-			"index": -1,
-			"time": t0 + fraction * span,
-			"value": _curve_value(channel, v0, v1, SpeedCurve.evaluate(curve_id, fraction)),
-			"transition": 1.0,
-		})
-	var result := apply_key_edits(id, channel, edits, "Bake curve")
-	var inserted := int(edits.size()) if bool(result.get("ok", false)) else 0
-	var message := "%s baked · %d keys" % [SpeedCurve.family_label(curve_id), inserted]
+# -------------------------------------------------------------------------
+# Cubic, family and engine-ease baking
+# -------------------------------------------------------------------------
+
+func _bake_curve_plan(id: String, channel: String, start: float, end: float) -> Dictionary:
+	## Read-only validation shared by the raw bake and the public wrappers. The
+	## public API may call it before `begin_edit` so a refusal writes nothing.
+	var keys := get_channel_keys(id, channel)
+	if keys.size() < 2:
+		return {"ok": false, "reason": "The channel has no keys."}
+	var start_index := -1
+	var end_index := -1
+	for i in range(keys.size()):
+		var time := float(keys[i]["time"])
+		if absf(time - start) <= 0.001:
+			start_index = i
+		if absf(time - end) <= 0.001:
+			end_index = i
+	if start_index < 0 or end_index < 0 or end_index <= start_index:
+		return {"ok": false, "reason": "Curve data no longer matches these keys."}
+	var start_frame := int(round(start * float(fps)))
+	var end_frame := int(round(end * float(fps)))
+	var span_frames := end_frame - start_frame
+	if span_frames < 3:
+		return {"ok": false, "reason": "Segment too short to bake (3 frames minimum)"}
+	var n := clampi(span_frames - 1, 1, 48)
+	var frames: Array = []
+	for i in range(1, n + 1):
+		var frame := start_frame + int(round(float(i) * float(span_frames) / float(n + 1)))
+		if frames.is_empty() or int(frames[frames.size() - 1]) != frame:
+			frames.append(frame)
 	return {
-		"ok": bool(result.get("ok", false)),
-		"inserted": inserted,
-		"reason": "" if bool(result.get("ok", false)) else str(result.get("error", "")),
-		"message": message if bool(result.get("ok", false)) else str(result.get("error", "")),
+		"ok": true,
+		"reason": "",
+		"keys": keys,
+		"start_index": start_index,
+		"end_index": end_index,
+		"start_frame": start_frame,
+		"span_frames": span_frames,
+		"frames": frames,
+		"v0": keys[start_index]["value"],
+		"v1": keys[end_index]["value"],
 	}
+
+
+## The one shared bake body. Runs inside a caller's transaction and never opens
+## one of its own, so `move_key` can compose a key move and a re-bake.
+## `fractions` are eased fractions for cubic/family bakes; for family `baked`
+## they are the real sampled values from the live track.
+func _bake_curve_range_raw(id: String, channel: String, start: float, end: float,
+		fractions: Array, family: String, preset: String,
+		restore_transition: float, handles: Dictionary) -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var edits: Array = []
+	var keys: Array = plan["keys"]
+	var start_index := int(plan["start_index"])
+	var end_index := int(plan["end_index"])
+	for i in range(start_index + 1, end_index):
+		var time := float(keys[i]["time"])
+		if time > start + 0.000001 and time < end - 0.000001:
+			edits.append({"index": i, "delete": true})
+	edits.append({"index": start_index, "transition": 1.0})
+	var frames: Array = plan["frames"]
+	var inserted := 0
+	for j in range(frames.size()):
+		var time := float(int(frames[j])) / float(fps)
+		if time <= start + 0.000001 or time >= end - 0.000001:
+			continue
+		var value: Variant
+		if family == "baked" and j < fractions.size():
+			value = fractions[j]
+		else:
+			var raw_fraction := (time - start) / maxf(0.000001, end - start)
+			var eased := float(fractions[j]) if j < fractions.size() else raw_fraction
+			value = _curve_value(channel, plan["v0"], plan["v1"], eased)
+		edits.append({
+			"index": -1,
+			"time": time,
+			"value": value,
+			"transition": 1.0,
+		})
+		inserted += 1
+	var channel_records: Array = []
+	for record in segments_for(id, channel):
+		var rstart := float(record.get("start", 0.0))
+		var rend := float(record.get("end", 0.0))
+		if rend <= start + 0.000001 or rstart >= end - 0.000001:
+			channel_records.append(record)
+	var new_record := {
+		"object": id,
+		"channel": channel,
+		"start": start,
+		"end": end,
+		"family": family,
+	}
+	if family == "cubic":
+		new_record["x1"] = clampf(float(handles.get("x1", 1.0 / 3.0)), 0.0, 1.0)
+		new_record["y1"] = clampf(float(handles.get("y1", 1.0 / 3.0)), -2.0, 3.0)
+		new_record["x2"] = clampf(float(handles.get("x2", 2.0 / 3.0)), 0.0, 1.0)
+		new_record["y2"] = clampf(float(handles.get("y2", 2.0 / 3.0)), -2.0, 3.0)
+	new_record["preset"] = preset
+	new_record["samples"] = inserted
+	new_record["restore_transition"] = clampf(restore_transition, 0.0, 4.0)
+	channel_records.append(new_record)
+	var result := _apply_key_edits_raw(id, channel, edits, "Bake curve", true, channel_records)
+	if not bool(result.get("ok", false)):
+		var error := str(result.get("error", ""))
+		return {"ok": false, "inserted": 0, "reason": error, "message": error}
+	var message := "%s baked · %d keys" % [_bake_label(family, preset), inserted]
+	return {"ok": true, "inserted": inserted, "reason": "", "message": message}
+
+
+func _bake_label(family: String, preset: String) -> String:
+	if family == "cubic":
+		return "Cubic"
+	if family == "baked":
+		return "Engine ease"
+	return "Preset " + preset
+
+
+func _bake_curve_range(id: String, channel: String, start: float, end: float,
+		fractions: Array, family: String, preset: String,
+		restore_transition: float, handles: Dictionary) -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	begin_edit("Bake curve")
+	var result := _bake_curve_range_raw(id, channel, start, end, fractions,
+		family, preset, restore_transition, handles)
+	if not bool(result.get("ok", false)):
+		cancel_edit()
+	else:
+		end_edit()
+	return result
+
+
+func _restore_transition_for(id: String, channel: String, start: float, end: float) -> float:
+	for record in segments_for(id, channel):
+		var rstart := float(record.get("start", 0.0))
+		var rend := float(record.get("end", 0.0))
+		if rstart <= start + 0.000001 and rend >= end - 0.000001:
+			return clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
+	var keys := get_channel_keys(id, channel)
+	for i in range(keys.size()):
+		if absf(float(keys[i]["time"]) - start) <= 0.001:
+			return get_key_transition(id, channel, i)
+	return 1.0
+
+
+func _plan_fractions(plan: Dictionary, start: float, end: float,
+		evaluator: Callable) -> Array:
+	var out: Array = []
+	var frames: Array = plan.get("frames", [])
+	for frame in frames:
+		var time := float(int(frame)) / float(fps)
+		var fraction := (time - start) / maxf(0.000001, end - start)
+		out.append(float(evaluator.call(fraction)))
+	return out
+
+
+func bake_cubic_segment(id: String, channel: String, start: float, end: float,
+		x1: float, y1: float, x2: float, y2: float, preset := "custom") -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var fractions := _plan_fractions(plan, start, end,
+		func(fraction: float) -> float:
+			return SpeedCurve.cubic_ease(fraction, x1, y1, x2, y2)
+	)
+	var restore := _restore_transition_for(id, channel, start, end)
+	var handles := {
+		"x1": clampf(x1, 0.0, 1.0),
+		"y1": clampf(y1, -2.0, 3.0),
+		"x2": clampf(x2, 0.0, 1.0),
+		"y2": clampf(y2, -2.0, 3.0),
+	}
+	return _bake_curve_range(id, channel, start, end, fractions, "cubic", preset, restore, handles)
+
+
+func bake_curve_family_segment(id: String, channel: String, start: float, end: float,
+		family_id: String) -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var fractions := _plan_fractions(plan, start, end,
+		func(fraction: float) -> float:
+			return SpeedCurve.evaluate(family_id, fraction)
+	)
+	var restore := _restore_transition_for(id, channel, start, end)
+	return _bake_curve_range(id, channel, start, end, fractions, "preset", family_id, restore, {})
+
+
+## Compatibility wrapper used by older timeline code and tests: bake the
+## segment that starts at `key_index` through the shared family path.
+func bake_curve_segment(id: String, channel: String, key_index: int, curve_id: String) -> Dictionary:
+	var keys := get_channel_keys(id, channel)
+	if keys.size() < 2 or key_index < 0 or key_index >= keys.size() - 1:
+		var reason := "The last key has no following segment." if key_index >= keys.size() - 1 \
+			else "The channel has no keys."
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var start := float(keys[key_index]["time"])
+	var end := float(keys[key_index + 1]["time"])
+	var result := bake_curve_family_segment(id, channel, start, end, curve_id)
+	if bool(result.get("ok", false)):
+		result["message"] = "%s baked · %d keys" % [
+			SpeedCurve.family_label(curve_id), int(result.get("inserted", 0))]
+	return result
+
+
+func bake_engine_ease(id: String, channel: String, key_index: int) -> Dictionary:
+	var keys := get_channel_keys(id, channel)
+	if key_index < 0 or key_index >= keys.size() - 1:
+		var reason := "The last key has no following segment." if key_index >= keys.size() - 1 \
+			else "The selected key is out of range."
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var start := float(keys[key_index]["time"])
+	var end := float(keys[key_index + 1]["time"])
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var samples: Array = []
+	for frame in plan["frames"]:
+		var time := float(int(frame)) / float(fps)
+		samples.append(sample_channel(id, channel, time))
+	var restore := get_key_transition(id, channel, key_index)
+	return _bake_curve_range(id, channel, start, end, samples, "baked", "engine", restore, {})
+
+
+func clear_curve_segment(id: String, channel: String, start: float, end: float) -> Dictionary:
+	var record: Dictionary = {}
+	for candidate in segments_for(id, channel):
+		if absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001:
+			record = candidate
+			break
+	var matching_reason := "Curve data no longer matches these keys."
+	if record.is_empty():
+		return {"ok": false, "reason": matching_reason, "message": matching_reason}
+	begin_edit("Clear curve")
+	var kept: Array = []
+	for candidate in segments_for(id, channel):
+		if not (absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001):
+			kept.append(candidate)
+	var keys := get_channel_keys(id, channel)
+	var start_index := -1
+	var end_index := -1
+	for i in range(keys.size()):
+		if absf(float(keys[i]["time"]) - start) <= 0.001:
+			start_index = i
+		if absf(float(keys[i]["time"]) - end) <= 0.001:
+			end_index = i
+	if start_index < 0 or end_index < 0 or end_index <= start_index:
+		_replace_channel_records(id, channel, kept)
+		end_edit()
+		return {"ok": false, "reason": matching_reason, "message": matching_reason}
+	var edits: Array = []
+	for i in range(start_index + 1, end_index):
+		var time := float(keys[i]["time"])
+		if time > start + 0.000001 and time < end - 0.000001:
+			edits.append({"index": i, "delete": true})
+	var restore := clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
+	edits.append({"index": start_index, "transition": restore})
+	_apply_key_edits_raw(id, channel, edits, "Clear curve", true, kept)
+	end_edit()
+	return {"ok": true, "reason": "", "message": "Curve cleared."}
+
+
+func convert_segment_to_cubic(id: String, channel: String, start: float, end: float) -> Dictionary:
+	var record: Dictionary = {}
+	for candidate in segments_for(id, channel):
+		if absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001:
+			record = candidate
+			break
+	var matching_reason := "Curve data no longer matches these keys."
+	if record.is_empty():
+		return {"ok": false, "reason": matching_reason, "message": matching_reason}
+	begin_edit("Convert to cubic")
+	var kept: Array = []
+	for candidate in segments_for(id, channel):
+		if not (absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001):
+			kept.append(candidate)
+	kept.append({
+		"object": id,
+		"channel": channel,
+		"start": float(record.get("start", start)),
+		"end": float(record.get("end", end)),
+		"family": "cubic",
+		"x1": 1.0 / 3.0,
+		"y1": 1.0 / 3.0,
+		"x2": 2.0 / 3.0,
+		"y2": 2.0 / 3.0,
+		"preset": "custom",
+		"samples": int(record.get("samples", 0)),
+		"restore_transition": clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0),
+	})
+	_replace_channel_records(id, channel, kept)
+	end_edit()
+	return {"ok": true, "reason": "", "message": "Converted to cubic."}
 
 
 func _curve_value(channel: String, v0: Variant, v1: Variant, fraction: float) -> Variant:

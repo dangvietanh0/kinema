@@ -70,7 +70,7 @@ func ensure_default_clip() -> void:
 		anim.length = _document_duration()
 		anim.loop_mode = Animation.LOOP_LINEAR if _document_loop() else Animation.LOOP_NONE
 	var clip_id := _new_clip_id()
-	_clips[clip_id] = {"id": clip_id, "name": "Take 01", "animation": anim}
+	_clips[clip_id] = {"id": clip_id, "name": "Take 01", "animation": anim, "curve_segments": []}
 	_active_clip = clip_id
 	_ensure_default_layer(anim.length)
 
@@ -114,7 +114,7 @@ func _ensure_active() -> void:
 		anim.length = _document_duration()
 		anim.loop_mode = Animation.LOOP_LINEAR if _document_loop() else Animation.LOOP_NONE
 		var clip_id := _new_clip_id()
-		_clips[clip_id] = {"id": clip_id, "name": "Take 01", "animation": anim}
+		_clips[clip_id] = {"id": clip_id, "name": "Take 01", "animation": anim, "curve_segments": []}
 	if not _clips.has(_active_clip):
 		_active_clip = _first_clip_id()
 	if _layers.is_empty():
@@ -145,6 +145,7 @@ func create_clip(name: String, duration: float) -> String:
 		"id": clip_id,
 		"name": _unique_clip_name(name if name.strip_edges() != "" else "Clip"),
 		"animation": anim,
+		"curve_segments": [],
 	}
 	if _active_clip == "":
 		_active_clip = clip_id
@@ -170,6 +171,7 @@ func duplicate_clip(id: String) -> String:
 		"id": clip_id,
 		"name": _unique_clip_name(str(source.get("name", "Clip")) + " Copy"),
 		"animation": copy,
+		"curve_segments": (source.get("curve_segments", []) as Array).duplicate(true),
 	}
 	_notify_clips()
 	return clip_id
@@ -227,6 +229,86 @@ func animation_for(id: String) -> Animation:
 	if not _clips.has(id):
 		return null
 	return _clips[id].get("animation")
+
+
+## Curve metadata belongs to the active clip. Callers always get a deep copy so
+## a caller editing a returned record cannot mutate a clip without a save/edit.
+func curve_segments() -> Array:
+	var clip: Dictionary = _clips.get(_active_clip, {})
+	return (clip.get("curve_segments", []) as Array).duplicate(true)
+
+
+func set_curve_segments(segments: Array) -> void:
+	if not _clips.has(_active_clip):
+		return
+	var clean: Array = []
+	for raw in segments:
+		if raw is Dictionary:
+			var seg := _sanitize_curve_segment(raw)
+			if not seg.is_empty():
+				clean.append(seg)
+	_clips[_active_clip]["curve_segments"] = clean
+
+
+func _sanitize_curve_segment(raw: Dictionary) -> Dictionary:
+	## Fixed-key record in the format-4 spec order. Unknown families, invalid
+	## spans and non-finite numbers are dropped instead of corrupting the clip.
+	var object_id := str(raw.get("object", ""))
+	var channel := str(raw.get("channel", ""))
+	if object_id == "" or not channel in ["position", "rotation", "scale"]:
+		return {}
+	var start_value: Variant = raw.get("start", null)
+	var end_value: Variant = raw.get("end", null)
+	if not (start_value is float or start_value is int) or not (end_value is float or end_value is int):
+		return {}
+	var start := float(start_value)
+	var end := float(end_value)
+	if not is_finite(start) or not is_finite(end) or end <= start:
+		return {}
+	var family := str(raw.get("family", ""))
+	if not family in ["cubic", "preset", "baked"]:
+		return {}
+	var preset := str(raw.get("preset", ""))
+	if preset == "":
+		return {}
+	var samples_value: Variant = raw.get("samples", null)
+	if not (samples_value is float or samples_value is int):
+		return {}
+	var samples := int(samples_value)
+	if samples < 0:
+		return {}
+	var restore_value: Variant = raw.get("restore_transition", null)
+	if not (restore_value is float or restore_value is int):
+		return {}
+	var restore := float(restore_value)
+	if not is_finite(restore):
+		return {}
+	restore = clampf(restore, 0.0, 4.0)
+	var out := {
+		"object": object_id,
+		"channel": channel,
+		"start": start,
+		"end": end,
+		"family": family,
+	}
+	if family == "cubic":
+		var handles: Array = []
+		for key in ["x1", "y1", "x2", "y2"]:
+			var value: Variant = raw.get(key, null)
+			if not (value is float or value is int):
+				return {}
+			var number := float(value)
+			if not is_finite(number):
+				return {}
+			handles.append(number)
+		out["x1"] = clampf(float(handles[0]), 0.0, 1.0)
+		out["y1"] = clampf(float(handles[1]), -2.0, 3.0)
+		out["x2"] = clampf(float(handles[2]), 0.0, 1.0)
+		out["y2"] = clampf(float(handles[3]), -2.0, 3.0)
+	out["preset"] = preset
+	out["samples"] = samples
+	out["restore_transition"] = restore
+	return out
 
 
 func active_animation() -> Animation:
@@ -804,6 +886,7 @@ func import_gltf_animations(object_id: String, node: Node) -> PackedStringArray:
 				"id": clip_id,
 				"name": _unique_clip_name("%s · %s" % [object_name, str(animation_name)]),
 				"animation": copy,
+				"curve_segments": [],
 			}
 			created.append(clip_id)
 		anim_player.active = false
@@ -969,7 +1052,7 @@ func _migrate_v1(data: Dictionary) -> void:
 	elif anim.length <= 0.0:
 		anim.length = maxf(MIN_DURATION, float(data.get("duration", 8.0)))
 	var clip_id := _new_clip_id()
-	_clips[clip_id] = {"id": clip_id, "name": "Take 01", "animation": anim}
+	_clips[clip_id] = {"id": clip_id, "name": "Take 01", "animation": anim, "curve_segments": []}
 	_active_clip = clip_id
 	_ensure_default_layer(anim.length)
 
@@ -1006,7 +1089,15 @@ func _load_clip(raw: Dictionary) -> void:
 					inserted = anim.scale_track_insert_key(track, time, _json_to_vec3(value))
 			if inserted >= 0:
 				anim.track_set_key_transition(track, inserted, clampf(float(raw_key.get("e", 1.0)), 0.0, 4.0))
-	_clips[id] = {"id": id, "name": str(raw.get("name", "Clip")), "animation": anim}
+	_clips[id] = {"id": id, "name": str(raw.get("name", "Clip")), "animation": anim, "curve_segments": []}
+	var raw_segments: Variant = raw.get("curve_segments", [])
+	if raw_segments is Array:
+		for raw_segment in raw_segments:
+			if not raw_segment is Dictionary:
+				continue
+			var segment := _sanitize_curve_segment(raw_segment)
+			if not segment.is_empty():
+				_clips[id]["curve_segments"].append(segment)
 
 
 func _load_layers(raw_layers: Variant) -> void:
@@ -1100,6 +1191,7 @@ func _clip_to_json(clip: Dictionary) -> Dictionary:
 		"duration": maxf(MIN_DURATION, anim.length) if anim != null else MIN_DURATION,
 		"loop": anim != null and anim.loop_mode != Animation.LOOP_NONE,
 		"tracks": tracks,
+		"curve_segments": (clip.get("curve_segments", []) as Array).duplicate(true),
 	}
 
 
