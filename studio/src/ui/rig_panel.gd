@@ -4,6 +4,7 @@ extends VBoxContainer
 ## overlay; nothing here edits the editor shell.
 
 signal rig_mode_changed(enabled: bool)
+signal import_model_requested
 
 const BoneTreeScript = preload("res://src/ui/bone_tree.gd")
 const PosePanelScript = preload("res://src/ui/pose_panel.gd")
@@ -15,7 +16,10 @@ var doc = null
 var rig_system = null
 var _scroll: ScrollContainer
 var _content: VBoxContainer
+var _empty_box: VBoxContainer
 var _empty_label: Label
+var _empty_add: Button
+var _empty_import: Button
 var _sections: VBoxContainer
 var _mode_label: Label
 var _mode_hint: Label
@@ -103,7 +107,19 @@ func setup(document) -> void:
 
 
 func empty_state_visible() -> bool:
-	return _empty_label != null and _empty_label.visible
+	return _empty_box != null and _empty_box.visible
+
+
+func empty_text() -> String:
+	return _empty_label.text if _empty_label != null else ""
+
+
+func empty_add_button() -> Button:
+	return _empty_add
+
+
+func empty_import_button() -> Button:
+	return _empty_import
 
 
 func mode() -> String:
@@ -129,28 +145,6 @@ func set_mode(mode: String) -> void:
 func _build_shell() -> void:
 	if _scroll != null:
 		return
-	var header_margin := MarginContainer.new()
-	header_margin.add_theme_constant_override("margin_left", 12)
-	header_margin.add_theme_constant_override("margin_right", 12)
-	header_margin.add_theme_constant_override("margin_top", 10)
-	header_margin.add_theme_constant_override("margin_bottom", 6)
-	add_child(header_margin)
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation", 6)
-	header_margin.add_child(header)
-	var title := Kit.section_label("Rig")
-	title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	header.add_child(title)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(spacer)
-	var add_rig := Kit.text_button("Add rig", "plus", true)
-	add_rig.name = "AddRigButton"
-	add_rig.custom_minimum_size = Vector2(96, ROW_HEIGHT)
-	add_rig.pressed.connect(_on_add_rig)
-	header.add_child(add_rig)
-	add_child(Kit.vsep())
-
 	var mode_margin := MarginContainer.new()
 	mode_margin.add_theme_constant_override("margin_left", 12)
 	mode_margin.add_theme_constant_override("margin_right", 12)
@@ -186,10 +180,29 @@ func _build_shell() -> void:
 	_content.add_theme_constant_override("separation", 10)
 	margin.add_child(_content)
 
-	_empty_label = Kit.label("No rigs yet. Add a rig to start posing.", Kit.TYPE_BODY, Kit.TEXT_MUTED)
+	_empty_box = VBoxContainer.new()
+	_empty_box.name = "RigEmptyState"
+	_empty_box.add_theme_constant_override("separation", 10)
+	_content.add_child(_empty_box)
+
+	_empty_label = Kit.label("No rig on the selected object.", Kit.TYPE_BODY, Kit.TEXT_MUTED)
 	_empty_label.name = "RigEmpty"
 	_empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_content.add_child(_empty_label)
+	_empty_box.add_child(_empty_label)
+
+	var empty_actions := HBoxContainer.new()
+	empty_actions.add_theme_constant_override("separation", 8)
+	_empty_box.add_child(empty_actions)
+	_empty_add = Kit.text_button("Add rig", "plus", true)
+	_empty_add.name = "AddRigButton"
+	_empty_add.custom_minimum_size = Vector2(96, ROW_HEIGHT)
+	_empty_add.pressed.connect(_on_add_rig)
+	empty_actions.add_child(_empty_add)
+	_empty_import = Kit.text_button("Import model", "upload", false)
+	_empty_import.name = "ImportModelButton"
+	_empty_import.custom_minimum_size = Vector2(96, ROW_HEIGHT)
+	_empty_import.pressed.connect(func() -> void: import_model_requested.emit())
+	empty_actions.add_child(_empty_import)
 
 	_sections = VBoxContainer.new()
 	_sections.add_theme_constant_override("separation", 10)
@@ -442,7 +455,7 @@ func refresh() -> void:
 		return
 	_refreshing = true
 	var rig_ids: PackedStringArray = rig_system.rig_ids() if rig_system != null else PackedStringArray()
-	_empty_label.visible = rig_ids.is_empty()
+	_empty_box.visible = rig_ids.is_empty()
 	_sections.visible = not rig_ids.is_empty()
 	if not rig_ids.is_empty():
 		var active: String = rig_system.active_rig_id()

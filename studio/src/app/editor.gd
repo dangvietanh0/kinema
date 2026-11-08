@@ -439,6 +439,7 @@ func _build_panel_content() -> void:
 
 	_rig_panel = RigPanelScript.new()
 	_rig_panel.rig_mode_changed.connect(_on_rig_mode_changed)
+	_rig_panel.import_model_requested.connect(_pick_model)
 	_rig_frame.add_child(_rig_panel)
 	if doc != null:
 		_rig_panel.setup(doc)
@@ -649,6 +650,7 @@ func _on_workspace_menu_row(id: String) -> void:
 
 func _on_workspace_changed(_id: String) -> void:
 	_update_header()
+	_update_rig_badge()
 
 
 # -------------------------------------------------------------------------
@@ -1301,6 +1303,8 @@ func _adopt_document(document: Node3D) -> void:
 	doc.scene_changed.connect(_on_document_scene_changed)
 	if not doc.rigs_changed.is_connected(_on_document_rigs_changed):
 		doc.rigs_changed.connect(_on_document_rigs_changed)
+	if not doc.rig_selection_changed.is_connected(_on_document_rig_selection_changed):
+		doc.rig_selection_changed.connect(_on_document_rig_selection_changed)
 	if not doc.rig_adopted.is_connected(_on_rig_adopted):
 		doc.rig_adopted.connect(_on_rig_adopted)
 	doc.selection_changed.connect(_on_document_selection_changed)
@@ -1352,6 +1356,30 @@ func _on_document_rigs_changed() -> void:
 	if doc != null and _rig_overlay != null and _rig_mode:
 		_rig_overlay.set_rig(doc.rig_system.active_rig_id())
 	_sync_rig_overlay()
+	_update_rig_badge()
+
+
+func _on_document_rig_selection_changed(_rig_id: String, _bone: String) -> void:
+	_sync_context_state()
+	_update_rig_badge()
+
+
+## The Rig workspace panel's state badge names the active rig, or says there
+## is none. Every other workspace keeps an empty badge.
+func _update_rig_badge() -> void:
+	if _workspace_panel == null:
+		return
+	if _workspace != "rig":
+		_workspace_panel.set_badge("")
+		return
+	var badge := "No rig"
+	if doc != null and doc.rig_system != null:
+		var rig_id: String = doc.rig_system.active_rig_id()
+		if rig_id != "":
+			var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+			if not rig.is_empty():
+				badge = str(rig.get("name", "Rig"))
+	_workspace_panel.set_badge(badge)
 
 func _on_rig_mode_changed(_enabled: bool) -> void:
 	_sync_rig_overlay()
@@ -1836,6 +1864,7 @@ func _update_workspace_panel() -> void:
 	_workspace_panel.set_panel_width(width)
 	_workspace_panel.set_mode(mode)
 	_panel_spacer.custom_minimum_size.x = spacer
+	_update_rig_badge()
 
 
 ## Scene tree and Inspector share the one overlay slot. Opening either closes

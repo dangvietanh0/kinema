@@ -61,6 +61,9 @@ var _readout_screen := Vector2.ZERO
 var _gizmo_hover_axis := ""
 var _gizmo_active_axis := ""
 var _draw_count := 0
+var _dirty := true
+var _last_camera_xform := Transform3D()
+var _last_camera_fov := -1.0
 
 
 func _ready() -> void:
@@ -76,19 +79,27 @@ func setup(document, view_ref, rig_system_ref) -> void:
 		doc.rigs_changed.connect(_on_rigs_changed)
 	if doc != null and not doc.rig_selection_changed.is_connected(_on_rig_selection_changed):
 		doc.rig_selection_changed.connect(_on_rig_selection_changed)
-	queue_redraw()
+	if doc != null and not doc.object_changed.is_connected(_on_object_changed):
+		doc.object_changed.connect(_on_object_changed)
+	if doc != null and not doc.transform_changed.is_connected(_on_transform_changed):
+		doc.transform_changed.connect(_on_transform_changed)
+	if doc != null and not doc.playback_changed.is_connected(_on_playback_changed):
+		doc.playback_changed.connect(_on_playback_changed)
+	if doc != null and not doc.scene_changed.is_connected(_on_scene_changed):
+		doc.scene_changed.connect(_on_scene_changed)
+	_mark_dirty()
 
 
 func set_rig(rig_id: String) -> void:
 	if _rig_id != rig_id:
 		_cancel_drag()
 	_rig_id = rig_id
-	queue_redraw()
+	_mark_dirty()
 
 
 func set_enabled(value: bool) -> void:
-	if not value and _drag_kind != "":
-		_end_drag()
+	if not value and (_dragging or _drag_kind != ""):
+		_cancel_drag()
 	_enabled = value
 	mouse_filter = Control.MOUSE_FILTER_STOP if _enabled else Control.MOUSE_FILTER_PASS
 	if not _enabled:
@@ -99,7 +110,7 @@ func set_enabled(value: bool) -> void:
 		_drag_rest_current = {}
 		_gizmo_active_axis = ""
 		_gizmo_hover_axis = ""
-	queue_redraw()
+	_mark_dirty()
 
 
 func is_enabled() -> bool:
@@ -148,7 +159,7 @@ func set_transform_mode(mode: String) -> void:
 		return
 	_transform = clean
 	_gizmo_hover_axis = ""
-	queue_redraw()
+	_mark_dirty()
 
 
 func set_axis_mode(axis: String) -> void:
@@ -156,7 +167,7 @@ func set_axis_mode(axis: String) -> void:
 	if _axis == clean:
 		return
 	_axis = clean
-	queue_redraw()
+	_mark_dirty()
 
 
 func readout_visible() -> bool:
@@ -181,7 +192,7 @@ func set_mode(mode: String) -> void:
 		return
 	_cancel_drag()
 	_mode = clean
-	queue_redraw()
+	_mark_dirty()
 	mode_changed.emit(_mode)
 
 
@@ -445,8 +456,38 @@ func _skeleton() -> Skeleton3D:
 
 
 func _process(_delta: float) -> void:
-	if _enabled:
+	if not _enabled:
+		return
+	var signature := _camera_signature()
+	var xform: Transform3D = signature[0]
+	var fov: float = signature[1]
+	if xform != _last_camera_xform or not is_equal_approx(fov, _last_camera_fov):
+		_last_camera_xform = xform
+		_last_camera_fov = fov
+		_dirty = true
+	if _dirty:
 		queue_redraw()
+		_dirty = false
+
+
+## The one dirty entry point. _process turns the flag into a real redraw, so
+## an idle overlay with a still camera performs zero draws.
+func _mark_dirty(_arg1: Variant = null, _arg2: Variant = null) -> void:
+	_dirty = true
+
+
+func _camera_signature() -> Array:
+	var xform := Transform3D()
+	var fov := -1.0
+	if view != null:
+		if view.has_method("camera_transform"):
+			xform = view.camera_transform()
+		else:
+			var camera = view.get("_camera")
+			if camera is Camera3D:
+				xform = (camera as Camera3D).global_transform
+				fov = (camera as Camera3D).fov
+	return [xform, fov]
 
 
 func _draw() -> void:
@@ -572,7 +613,7 @@ func _gui_input(event: InputEvent) -> void:
 			var hover := gizmo_handle_at(motion.position)
 			if hover != _gizmo_hover_axis:
 				_gizmo_hover_axis = hover
-				queue_redraw()
+				_mark_dirty()
 		drag_at(motion.position)
 	elif event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
@@ -587,6 +628,7 @@ func _gui_input(event: InputEvent) -> void:
 
 
 func press_at(screen: Vector2) -> void:
+	_mark_dirty()
 	if is_edit_mode():
 		if _imported():
 			return
@@ -723,10 +765,13 @@ func _begin_gizmo_drag(axis: String, screen: Vector2) -> void:
 			_drag_kind = kind
 	if _drag_kind == "":
 		_gizmo_active_axis = ""
-	queue_redraw()
+	_mark_dirty()
 
 
 func drag_at(screen: Vector2) -> void:
+	if not _dragging and _drag_target == "" and _drag_kind == "":
+		return
+	_mark_dirty()
 	if _drag_kind.begins_with("gizmo_"):
 		if is_edit_mode():
 			_drag_rest(screen)
@@ -751,6 +796,7 @@ func drag_at(screen: Vector2) -> void:
 
 
 func release_drag() -> void:
+	_mark_dirty()
 	_end_drag()
 
 
@@ -792,7 +838,7 @@ func _end_drag() -> void:
 	_drag_rest_current = {}
 	_drag_kind = ""
 	_gizmo_active_axis = ""
-	queue_redraw()
+	_mark_dirty()
 
 
 func _cancel_drag() -> void:
@@ -814,7 +860,7 @@ func _cancel_drag() -> void:
 	_drag_rest_current = {}
 	_gizmo_active_axis = ""
 	_gizmo_hover_axis = ""
-	queue_redraw()
+	_mark_dirty()
 
 
 func _rest_changed(before: Dictionary, after: Dictionary) -> bool:
@@ -927,7 +973,7 @@ func _drag_edit_body(screen: Vector2) -> void:
 	var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
 	var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
 	_drag_rest_current["r"] = (yaw * pitch * _drag_start_rotation).normalized()
-	queue_redraw()
+	_mark_dirty()
 
 
 func _plane_hit(screen: Vector2):
@@ -982,7 +1028,7 @@ func _drag_rest(screen: Vector2) -> void:
 		_drag_rest_current["r"] = Quaternion(Vector3.UP, local_delta.normalized())
 		_drag_rest_current["length"] = clampf(
 			local_delta.length(), MIN_BONE_LENGTH, MAX_BONE_LENGTH)
-	queue_redraw()
+	_mark_dirty()
 
 
 ## Pose gizmo drags reuse the existing axis-locked pose paths; Edit gizmo
@@ -1016,7 +1062,7 @@ func _drag_edit_gizmo_rotate(screen: Vector2) -> void:
 		var parent_axis := _gizmo_parent_axis(_gizmo_world_axis(_axis))
 		next = (Quaternion(parent_axis, angle) * _drag_start_rotation).normalized()
 	_drag_rest_current["r"] = next
-	queue_redraw()
+	_mark_dirty()
 
 
 func _drag_edit_gizmo_move(screen: Vector2) -> void:
@@ -1053,7 +1099,7 @@ func _drag_edit_gizmo_move(screen: Vector2) -> void:
 		clampf(moved.x, -REST_LIMIT, REST_LIMIT),
 		clampf(moved.y, -REST_LIMIT, REST_LIMIT),
 		clampf(moved.z, -REST_LIMIT, REST_LIMIT))
-	queue_redraw()
+	_mark_dirty()
 
 
 ## A world axis expressed in the bone's parent rest space, so it can compose
@@ -1107,7 +1153,7 @@ func _rotate_drag(screen: Vector2) -> void:
 	rig_system.set_bone_pose(_rig_id, _drag_bone, {"r": next_rotation})
 	_set_readout("%.0f°" % rad_to_deg(next_rotation.angle_to(_drag_start_rotation)),
 		view.world_to_screen(_drag_head_world) if view != null else screen)
-	queue_redraw()
+	_mark_dirty()
 
 
 func _move_drag(screen: Vector2) -> void:
@@ -1144,7 +1190,7 @@ func _move_drag(screen: Vector2) -> void:
 	rig_system.set_bone_pose(_rig_id, _drag_bone, {"p": next_position})
 	_set_readout("%.2f u" % next_position.distance_to(_drag_start_position),
 		view.world_to_screen(_drag_head_world))
-	queue_redraw()
+	_mark_dirty()
 
 
 func _axis_vector() -> Vector3:
@@ -1216,14 +1262,30 @@ func _move_target(screen: Vector2) -> void:
 		var hit = plane.intersects_ray(origin, direction)
 		if hit != null:
 			target.global_position = hit
-			queue_redraw()
+			_mark_dirty()
 		return
 
 
 func _on_rigs_changed() -> void:
-	queue_redraw()
+	_mark_dirty()
 
 
 func _on_rig_selection_changed(rig_id: String, _bone: String) -> void:
 	if rig_id == _rig_id:
-		queue_redraw()
+		_mark_dirty()
+
+
+func _on_object_changed(_id: String) -> void:
+	_mark_dirty()
+
+
+func _on_transform_changed(_id: String) -> void:
+	_mark_dirty()
+
+
+func _on_playback_changed(_time: float, _playing: bool) -> void:
+	_mark_dirty()
+
+
+func _on_scene_changed() -> void:
+	_mark_dirty()

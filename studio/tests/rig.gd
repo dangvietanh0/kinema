@@ -40,6 +40,9 @@ class FakeView:
 			"direction": Vector3.FORWARD,
 		}
 
+	func camera_transform() -> Transform3D:
+		return Transform3D(Basis.IDENTITY, Vector3(origin.x, -origin.y, 0.0))
+
 
 func _check(condition: bool, message: String) -> void:
 	_checks += 1
@@ -70,6 +73,8 @@ func _ready() -> void:
 	await _test_pose_transactions()
 	await _test_one_gesture_and_edit_parity()
 	await _test_gizmo()
+	await _test_rig_redraw_contract()
+	await _test_rig_panel_actions()
 	await _test_touch_pose_editing()
 	await _test_imported_adoption()
 	await _test_gltf_external_buffers()
@@ -1244,6 +1249,63 @@ func _test_gizmo() -> void:
 		"the X arrow keeps Y and Z near zero")
 	overlay.queue_free()
 	view.queue_free()
+	doc.queue_free()
+
+
+func _test_rig_redraw_contract() -> void:
+	print("RIG STEP: redraw contract")
+	var doc := _new_doc("Rig Redraw")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var settled: int = overlay.draw_count()
+	for _i in 10:
+		await get_tree().process_frame
+	_check(overlay.draw_count() == settled, "idle rig overlay draws zero times")
+	view.origin += Vector2(12, 0)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(overlay.draw_count() > settled, "camera movement redraws the overlay")
+	overlay.set_enabled(false)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var disabled: int = overlay.draw_count()
+	view.origin += Vector2(12, 0)
+	for _i in 4:
+		await get_tree().process_frame
+	_check(overlay.draw_count() == disabled, "a disabled overlay never draws")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+func _test_rig_panel_actions() -> void:
+	print("RIG STEP: rig panel actions")
+	var doc := _new_doc("Rig Panel")
+	var panel = RigPanelScript.new()
+	add_child(panel)
+	panel.setup(doc)
+	await get_tree().process_frame
+	_check(panel.empty_state_visible(), "the panel shows the empty state")
+	_check(panel.empty_text() == "No rig on the selected object.",
+		"the empty state names the missing rig")
+	_check(panel.empty_add_button().custom_minimum_size == Vector2(96, 44),
+		"Add rig is a 96x44 target")
+	_check(panel.empty_import_button().custom_minimum_size == Vector2(96, 44),
+		"Import model is a 96x44 target")
+	var imported: Array[String] = []
+	panel.import_model_requested.connect(func() -> void: imported.append("import"))
+	panel.empty_import_button().pressed.emit()
+	_check(imported == ["import"], "Import model emits the real import request")
+	panel.queue_free()
 	doc.queue_free()
 
 
