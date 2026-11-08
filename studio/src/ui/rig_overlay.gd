@@ -449,10 +449,7 @@ func _closed_polyline(points: PackedVector2Array) -> PackedVector2Array:
 func _skeleton() -> Skeleton3D:
 	if doc == null or _rig_id == "":
 		return null
-	var node: Node3D = doc.nodes.get(_rig_id)
-	if node == null:
-		return null
-	return node.get_node_or_null("Skeleton3D") as Skeleton3D
+	return doc.rig_system.skeleton_for_object(_rig_id)
 
 
 func _process(_delta: float) -> void:

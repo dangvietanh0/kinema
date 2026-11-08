@@ -77,6 +77,7 @@ func _ready() -> void:
 	await _test_rig_panel_actions()
 	await _test_touch_pose_editing()
 	await _test_imported_adoption()
+	await _test_imported_glb_skeleton()
 	await _test_gltf_external_buffers()
 	await _test_fbx_and_adoption()
 	await _test_ui()
@@ -1525,6 +1526,95 @@ func _test_imported_adoption() -> void:
 			_check((doc.rig_system.get_rig(object_id).get("bones", []) as Array).size() == bones_before, "pressing Add bone on an imported rig changes nothing")
 	panel.queue_free()
 	doc.queue_free()
+
+
+func _test_imported_glb_skeleton() -> void:
+	print("RIG STEP: imported glb skeleton")
+	var doc := _new_doc("Imported GLB")
+	DirAccess.make_dir_recursive_absolute(_tmp_dir.path_join("models"))
+	var glb := _tmp_dir.path_join("models/rigged.glb")
+	_check(_write_rigged_glb(glb), "the rigged GLB fixture is written")
+	var id: String = doc.add_imported("models/rigged.glb", "Rigged")
+	var node: Node3D = doc.nodes.get(id)
+	var rs = doc.rig_system
+	_check(node != null and node.get_node_or_null("Skeleton3D") == null,
+		"the generated skeleton is not a direct child")
+	var nested := node.get_node_or_null("Model/Skeleton3D") as Skeleton3D
+	_check(nested != null and nested.get_bone_count() == 2,
+		"the imported skeleton is nested under the generated model")
+	var rig: Dictionary = rs.get_rig(id)
+	_check(bool(rig.get("imported", false)), "the GLB rig is adopted as imported")
+	_check(str(rig.get("skeleton_path", "")) == "Model/Skeleton3D",
+		"the rig stores the real skeleton path")
+	_check(rs.skeleton_for_object(id) == nested, "the shared resolver finds the nested skeleton")
+	_check(rs._bone_track_prefix(id) == "%s/Model/Skeleton3D:" % str(node.name),
+		"the bone track prefix uses the real skeleton path")
+	var before := nested.get_bone_pose_rotation(nested.find_bone("Hips"))
+	_check(rs.set_bone_pose(id, "Hips", {"r": Quaternion(Vector3.RIGHT, 0.4)}),
+		"pose editing works on the imported skeleton")
+	_check(nested.get_bone_pose_rotation(nested.find_bone("Hips")).angle_to(before) > 0.01,
+		"the imported pose actually changes")
+	var key := Quaternion(Vector3.UP, 0.5)
+	_check(doc.insert_bone_key(id, "Hips", key) >= 0, "a bone key is created")
+	var track := -1
+	for i in range(doc.animation.get_track_count()):
+		if str(doc.animation.track_get_path(i)) == rs._bone_track_prefix(id) + "Hips":
+			track = i
+			break
+	_check(track >= 0, "the bone key uses the resolved skeleton track path")
+	var data: Dictionary = doc.to_data()
+	var doc2 := _new_doc("Imported GLB Reload")
+	_check(doc2.load_project(data, _tmp_dir), "the imported GLB project reloads")
+	var node2: Node3D = doc2.nodes.get(id)
+	var rs2 = doc2.rig_system
+	_check(str(rs2.get_rig(id).get("skeleton_path", "")) == "Model/Skeleton3D",
+		"skeleton_path survives save/load")
+	_check(rs2.skeleton_for_object(id) is Skeleton3D,
+		"the reloaded rig resolves its nested skeleton")
+	_check(node2 != null and node2.get_node_or_null("Model/Skeleton3D") is Skeleton3D,
+		"the reloaded import keeps the nested skeleton")
+	doc.queue_free()
+	doc2.queue_free()
+
+
+func _write_rigged_glb(path: String) -> bool:
+	var root := Node3D.new()
+	root.name = "Fixture"
+	var skel := Skeleton3D.new()
+	skel.name = "Armature"
+	root.add_child(skel)
+	skel.add_bone("Hips")
+	skel.add_bone("Spine")
+	skel.set_bone_parent(1, 0)
+	skel.set_bone_rest(0, Transform3D(Basis.IDENTITY, Vector3.ZERO))
+	skel.set_bone_rest(1, Transform3D(Basis.IDENTITY, Vector3(0, 0.4, 0)))
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.add_vertex(Vector3(0, 0, 0))
+	st.add_vertex(Vector3(1, 0, 0))
+	st.add_vertex(Vector3(0, 1, 0))
+	var arrays: Array = st.commit_to_arrays()
+	arrays[Mesh.ARRAY_BONES] = PackedInt32Array([0,0,0,0, 0,0,0,0, 1,0,0,0])
+	arrays[Mesh.ARRAY_WEIGHTS] = PackedFloat32Array([1,0,0,0, 1,0,0,0, 1,0,0,0])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.BACK, Vector3.BACK, Vector3.BACK])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mi := MeshInstance3D.new()
+	mi.name = "Body"
+	mi.mesh = mesh
+	var skin := Skin.new()
+	skin.add_bind(0, Transform3D())
+	skin.add_bind(1, Transform3D())
+	mi.skin = skin
+	mi.skeleton = NodePath("../Armature")
+	root.add_child(mi)
+	var state := GLTFState.new()
+	var gltf := GLTFDocument.new()
+	var ok := gltf.append_from_scene(root, state) == OK
+	ok = ok and gltf.write_to_filesystem(state, path) == OK
+	root.free()
+	return ok
 
 
 # -------------------------------------------------------------------------

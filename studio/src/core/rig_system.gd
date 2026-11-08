@@ -79,7 +79,7 @@ func _rig_to_json(rig: Dictionary) -> Dictionary:
 	var current_pose: Dictionary = rig.get("pose", {})
 	var node: Node3D = _document.nodes.get(str(rig.get("object_id", ""))) if _document != null else null
 	if node != null:
-		var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
+		var skeleton := _skeleton_for(node, rig)
 		if skeleton != null:
 			current_pose = PoseLibrary.capture(skeleton, node)
 	return {
@@ -93,6 +93,7 @@ func _rig_to_json(rig: Dictionary) -> Dictionary:
 		"pose": current_pose.duplicate(true),
 		"active_bone": str(rig.get("active_bone", "")),
 		"imported": bool(rig.get("imported", false)),
+		"skeleton_path": str(rig.get("skeleton_path", "")),
 	}
 
 
@@ -115,22 +116,23 @@ func load_data(data: Dictionary, nodes: Dictionary) -> void:
 		var node: Node3D = nodes.get(rig["object_id"])
 		if node == null:
 			continue
-		_remove_fallback_visual(node)
+		var skeleton := _skeleton_for(node, rig)
 		if bool(rig.get("imported", false)):
-			if node.get_node_or_null("Skeleton3D") is Skeleton3D:
+			if skeleton != null:
+				if str(rig.get("skeleton_path", "")) == "":
+					rig["skeleton_path"] = str(node.get_path_to(skeleton))
 				_apply_all_skins(rig)
-			else:
-				_build_skeleton(rig, node)
+			# A missing imported skeleton leaves the generated model alone;
+			# never fabricate a skeleton for an imported rig.
 		else:
 			_remove_fallback_visual(node)
 			_build_skeleton(rig, node)
+			skeleton = _skeleton_for(node, rig)
 		var pose: Dictionary = rig.get("pose", {})
-		if not pose.is_empty():
-			var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
-			if skeleton != null:
-				# Bone channels only: the document object's transform stays
-				# authoritative on load. This runs inside the loading guard.
-				PoseLibrary.apply_bones(skeleton, pose)
+		if not pose.is_empty() and skeleton != null:
+			# Bone channels only: the document object's transform stays
+			# authoritative on load. This runs inside the loading guard.
+			PoseLibrary.apply_bones(skeleton, pose)
 	if not _rigs.is_empty():
 		_active_rig = str(_rigs[0]["object_id"])
 
@@ -202,6 +204,7 @@ func _rig_from_json(raw: Dictionary) -> Dictionary:
 		"pose": (raw.get("pose", {}) as Dictionary).duplicate(true),
 		"active_bone": active_bone,
 		"imported": bool(raw.get("imported", false)),
+		"skeleton_path": str(raw.get("skeleton_path", "")),
 	}
 
 
@@ -348,6 +351,25 @@ func _rig_for_object(object_id: String) -> Dictionary:
 		if str(rig.get("object_id", "")) == object_id:
 			return rig
 	return {}
+
+
+func skeleton_for_object(object_id: String) -> Skeleton3D:
+	var node: Node3D = _document.nodes.get(object_id) if _document != null else null
+	return _skeleton_for(node, _rig_for_object(object_id))
+
+
+func _skeleton_for(node: Node3D, rig: Dictionary) -> Skeleton3D:
+	if node == null:
+		return null
+	var rel := str(rig.get("skeleton_path", ""))
+	if rel != "":
+		var stored := node.get_node_or_null(NodePath(rel)) as Skeleton3D
+		if stored != null:
+			return stored
+	var direct := node.get_node_or_null("Skeleton3D") as Skeleton3D
+	if direct != null:
+		return direct
+	return _find_skeleton(node)
 
 
 # -------------------------------------------------------------------------
@@ -667,7 +689,7 @@ func _remove_fallback_visual(node: Node3D) -> void:
 func _build_skeleton(rig: Dictionary, node: Node3D) -> void:
 	if node == null:
 		return
-	var existing := node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var existing := _skeleton_for(node, rig)
 	var saved_pose: Dictionary = {}
 	if existing != null:
 		for i in range(existing.get_bone_count()):
@@ -711,8 +733,9 @@ func _rebuild_skeleton(rig: Dictionary) -> void:
 	var node: Node3D = _document.nodes.get(str(rig.get("object_id", "")))
 	if node == null:
 		return
-	if bool(rig.get("imported", false)) and node.get_node_or_null("Skeleton3D") is Skeleton3D:
-		_apply_all_skins(rig)
+	if bool(rig.get("imported", false)):
+		if _skeleton_for(node, rig) != null:
+			_apply_all_skins(rig)
 		return
 	_build_skeleton(rig, node)
 
@@ -737,9 +760,12 @@ func _animations() -> Array:
 
 
 func _bone_track_prefix(object_id: String) -> String:
-	var node: Node = _document.nodes.get(object_id)
-	var node_name := str(node.name) if node != null else "Object_" + object_id
-	return "%s/Skeleton3D:" % node_name
+	var node: Node = _document.nodes.get(object_id) if _document != null else null
+	if node == null:
+		return "Object_%s/Skeleton3D:" % object_id
+	var skeleton := skeleton_for_object(object_id)
+	var rel := str(node.get_path_to(skeleton)) if skeleton != null else "Skeleton3D"
+	return "%s/%s:" % [str(node.name), rel]
 
 
 func _rename_bone_tracks(object_id: String, old_name: String, new_name: String) -> void:
@@ -944,7 +970,7 @@ func _finish_bind(job: Dictionary) -> void:
 	var mesh_instance: MeshInstance3D = job["mesh_instance"]
 	mesh_instance.mesh = mesh
 	var rig_node: Node3D = job["rig_node"]
-	var skeleton := rig_node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(rig_node, rig)
 	if skeleton != null:
 		mesh_instance.skin = skeleton.create_skin_from_rest_transforms()
 		mesh_instance.skeleton = mesh_instance.get_path_to(skeleton)
@@ -1129,7 +1155,7 @@ func _apply_skin_record(rig: Dictionary, skin: Dictionary) -> bool:
 	var slices: Array = Skinning.split_surfaces(data["bones"], data["weights"], int(data["influences"]), counts)
 	var bone_names: Array = skin.get("bone_names", [])
 	var rig_node: Node3D = _document.nodes.get(str(rig.get("object_id", "")))
-	var skeleton: Skeleton3D = rig_node.get_node_or_null("Skeleton3D") as Skeleton3D if rig_node != null else null
+	var skeleton := _skeleton_for(rig_node, rig)
 	if skeleton == null:
 		return false
 	var remap: Dictionary = {}
@@ -1288,7 +1314,7 @@ func solve_ik(rig_id: String) -> void:
 	var node: Node3D = _document.nodes.get(rig_id)
 	if node == null:
 		return
-	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(node, rig)
 	if skeleton == null:
 		return
 	for chain in rig.get("ik", []):
@@ -1324,7 +1350,7 @@ func bake_ik(rig_id: String) -> bool:
 		return false
 	solve_ik(rig_id)
 	var node: Node3D = _document.nodes.get(rig_id)
-	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D if node != null else null
+	var skeleton := _skeleton_for(node, rig)
 	if skeleton == null:
 		return false
 	var keyed := 0
@@ -1371,9 +1397,7 @@ func save_pose(rig_id: String, name: String) -> String:
 	if rig.is_empty() or _document == null:
 		return ""
 	var node: Node3D = _document.nodes.get(rig_id)
-	var skeleton: Skeleton3D = null
-	if node != null:
-		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(node, rig)
 	if skeleton == null:
 		return ""
 	var captured := PoseLibrary.capture(skeleton, node)
@@ -1399,9 +1423,7 @@ func apply_pose(rig_id: String, pose_id: String) -> void:
 	if pose.is_empty():
 		return
 	var node: Node3D = _document.nodes.get(rig_id)
-	var skeleton: Skeleton3D = null
-	if node != null:
-		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(node, rig)
 	_begin("Apply pose")
 	PoseLibrary.apply(skeleton, node, pose)
 	_end()
@@ -1416,9 +1438,7 @@ func apply_saved_pose(rig_id: String, pose_id: String) -> bool:
 	if pose.is_empty():
 		return false
 	var node: Node3D = _document.nodes.get(rig_id)
-	var skeleton: Skeleton3D = null
-	if node != null:
-		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(node, rig)
 	if skeleton == null:
 		return false
 	_begin("Apply pose")
@@ -1445,7 +1465,7 @@ func set_bone_pose(rig_id: String, bone: String, patch: Dictionary) -> bool:
 	var node: Node3D = _document.nodes.get(rig_id)
 	if node == null:
 		return false
-	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := skeleton_for_object(rig_id)
 	if skeleton == null:
 		return false
 	var index := skeleton.find_bone(bone)
@@ -1493,9 +1513,7 @@ func _reset_pose_bones(rig_id: String, bone_name: String) -> void:
 	if rig.is_empty() or _document == null:
 		return
 	var node: Node3D = _document.nodes.get(rig_id)
-	var skeleton: Skeleton3D = null
-	if node != null:
-		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(node, rig)
 	if skeleton == null:
 		return
 	var names: Array = []
@@ -1537,9 +1555,7 @@ func key_pose(rig_id: String) -> bool:
 	if rig.is_empty() or _document == null:
 		return false
 	var node: Node3D = _document.nodes.get(rig_id)
-	var skeleton: Skeleton3D = null
-	if node != null:
-		skeleton = node.get_node_or_null("Skeleton3D") as Skeleton3D
+	var skeleton := _skeleton_for(node, rig)
 	if skeleton == null:
 		return false
 	var captured := PoseLibrary.capture(skeleton, node)
@@ -1646,6 +1662,7 @@ func adopt_imported_skeleton(object_id: String, node: Node) -> bool:
 		"pose": {},
 		"active_bone": str(bones[0].get("name", "")),
 		"imported": true,
+		"skeleton_path": str(node.get_path_to(skeleton)),
 	}
 	_next_rig += 1
 	_rigs.append(rig)

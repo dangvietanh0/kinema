@@ -520,8 +520,7 @@ func _refresh_inspector() -> void:
 	_influence_field.set_value_silent(float(bone.get("influence_scale", 1.0)))
 	for field in [_px, _py, _pz, _rx, _ry, _rz, _sx, _sy, _sz, _length_field, _influence_field]:
 		_set_field_editable(field, not imported)
-	var node: Node3D = doc.nodes.get(str(rig.get("object_id", ""))) if doc != null else null
-	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D if node != null else null
+	var skeleton: Skeleton3D = rig_system.skeleton_for_object(str(rig.get("object_id", "")))
 	_refresh_pose_fields(skeleton, bone_name)
 	_updating = false
 
@@ -564,8 +563,7 @@ func _apply_pose_patch(patch: Dictionary) -> void:
 	rig_system.begin_pose_edit("Pose bone")
 	rig_system.set_bone_pose(str(rig.get("object_id", "")), bone_name, patch)
 	rig_system.end_pose_edit()
-	var node: Node3D = doc.nodes.get(str(rig.get("object_id", ""))) if doc != null else null
-	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D if node != null else null
+	var skeleton: Skeleton3D = rig_system.skeleton_for_object(str(rig.get("object_id", "")))
 	_refresh_pose_fields(skeleton, bone_name)
 	_updating = false
 
@@ -752,8 +750,7 @@ func _on_key_bone() -> void:
 	if rig.is_empty() or doc == null:
 		return
 	var bone := str(rig.get("active_bone", ""))
-	var node: Node3D = doc.nodes.get(str(rig.get("object_id", "")))
-	var skeleton := node.get_node_or_null("Skeleton3D") as Skeleton3D if node != null else null
+	var skeleton: Skeleton3D = rig_system.skeleton_for_object(str(rig.get("object_id", "")))
 	if skeleton == null:
 		return
 	var index := skeleton.find_bone(bone)
