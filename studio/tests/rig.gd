@@ -75,6 +75,7 @@ func _ready() -> void:
 	await _test_gizmo()
 	await _test_rig_redraw_contract()
 	await _test_rig_panel_actions()
+	await _test_drag_cancel_on_disable()
 	await _test_touch_pose_editing()
 	await _test_imported_adoption()
 	await _test_imported_glb_skeleton()
@@ -1307,6 +1308,40 @@ func _test_rig_panel_actions() -> void:
 	panel.empty_import_button().pressed.emit()
 	_check(imported == ["import"], "Import model emits the real import request")
 	panel.queue_free()
+	doc.queue_free()
+
+
+func _test_drag_cancel_on_disable() -> void:
+	print("RIG STEP: drag cancel")
+	var doc := _new_doc("Rig Cancel")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Spine")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var skel := _skeleton(doc, rig_id)
+	var spine := skel.find_bone("Spine")
+	var before := skel.get_bone_pose_rotation(spine)
+	var press: Vector2 = view.world_to_screen(Vector3(0.0, 1.4, 0.0))
+	var undo_before: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	overlay.drag_at(press + Vector2(40, 0))
+	_check(overlay.current_drag_kind() == "bone", "the drag is live before disabling")
+	overlay.set_enabled(false)
+	_check(overlay.current_drag_kind() == "" and not overlay._dragging,
+		"disabling cancels the live drag")
+	_check((doc._undo_stack as Array).size() == undo_before,
+		"a cancelled drag adds no undo entry")
+	_check(skel.get_bone_pose_rotation(spine).angle_to(before) < 0.01,
+		"a cancelled drag restores the pose")
+	overlay.queue_free()
+	view.queue_free()
 	doc.queue_free()
 
 

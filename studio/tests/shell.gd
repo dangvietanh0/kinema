@@ -7,6 +7,7 @@ extends Control
 
 const PROJECT_TITLE := "Shell suite"
 const SettingsPanelScript = preload("res://src/ui/settings_panel.gd")
+const TimelineScript = preload("res://src/ui/timeline.gd")
 
 var _failures: Array[String] = []
 var _checks := 0
@@ -37,6 +38,7 @@ func _ready() -> void:
 	await _test_context_bar_overflow_and_icons()
 	await _test_transport()
 	await _test_shell_anatomy_and_panels()
+	await _test_rig_workspace_no_timeline()
 	await _test_camera_view()
 	await _test_workspace_switch_with_open_surfaces()
 	await _test_back_precedence()
@@ -638,6 +640,23 @@ func _test_shell_anatomy_and_panels() -> void:
 			"%s: the animate pane is hidden" % id)
 		_check(not editor._stage_host.is_ancestor_of(editor._timeline),
 			"%s: no timeline node lives inside the stage host" % id)
+
+
+func _test_rig_workspace_no_timeline() -> void:
+	print("SHELL STEP: rig workspace composition")
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+	editor.set_workspace("rig")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not editor._stage_host.get_children().any(
+		func(child: Node) -> bool: return child is TimelineScript),
+		"the timeline is not a child of the stage host")
+	_check(not editor._animate_pane.visible, "the timeline pane is hidden in Rig")
+	_check(editor._stage_host.size.y >= 270.0,
+		"the Rig stage keeps at least 270 dp at 915x412")
+	_check(editor._workspace_panel.state_badge() == "No rig",
+		"the Rig panel shows the real state badge")
 
 
 func _test_camera_view() -> void:
