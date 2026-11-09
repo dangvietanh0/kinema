@@ -424,18 +424,24 @@ func _test_context_bar_overflow_and_icons() -> void:
 		_check(not bar.action_button(id).disabled,
 			"%s enables with an editable selection" % id)
 
-	# Only the one primary action per workspace keeps the text form.
+	# Task 24: Assign, New and Add light are 96 dp text actions. Add light
+	# also advertises its menu with a trailing chevron-down.
 	editor.set_workspace("shading")
 	await get_tree().process_frame
-	_check(bar.action_button("assign").get_meta("is_text", false),
-		"Shading Assign keeps the text form")
-	_check(bar.action_button("assign").custom_minimum_size.x >= 96.0,
-		"Shading Assign keeps the 96 dp width")
-	for id in ["material_new"]:
-		_check(not bar.action_button(id).get_meta("is_text", true),
-			"Shading %s became an icon action" % id)
-		_check(bar.action_button(id).custom_minimum_size.x <= 44.5,
-			"Shading %s is a 44 dp icon action" % id)
+	for id in ["assign", "material_new", "light_add"]:
+		var action_button: Button = bar.action_button(id)
+		_check(action_button != null and action_button.get_meta("is_text", false),
+			"Shading %s keeps the text form" % id)
+		_check(action_button != null and action_button.custom_minimum_size.x >= 96.0,
+			"Shading %s keeps the 96 dp width" % id)
+	_check(bar.action_button("material_new").get_meta("action_icon", "") == "plus",
+		"Shading New uses the plus glyph")
+	_check(bar.action_button("light_add").get_meta("action_icon", "") == "lightbulb",
+		"Shading Add light uses the lightbulb glyph")
+	_check(bar.action_button("light_add").get_meta("trailing_icon", "") == "chevron-down",
+		"Shading Add light advertises its menu with chevron-down")
+	_check(bar.action_button("light_add").icon != null,
+		"Shading Add light renders the combined glyph")
 	editor.set_workspace("render")
 	await get_tree().process_frame
 	_check(bar.action_button("render").get_meta("is_text", false),

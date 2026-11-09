@@ -42,9 +42,10 @@ const RigOverlayScript = preload("res://src/ui/rig_overlay.gd")
 const VideoReferenceOverlayScript = preload("res://src/ui/video_reference_overlay.gd")
 const MediaExportSheetScript = preload("res://src/ui/media_export_sheet.gd")
 const MediaImportSheetScript = preload("res://src/ui/media_import_sheet.gd")
+const RenderPanelScript = preload("res://src/ui/render_panel.gd")
+const ShadingPanelScript = preload("res://src/ui/shading_panel.gd")
+const GlbExportScript = preload("res://src/core/glb_export.gd")
 const AudioSheetScript = preload("res://src/ui/audio_sheet.gd")
-const MaterialSheetScript = preload("res://src/ui/material_sheet.gd")
-const MaterialEditorSheetScript = preload("res://src/ui/material_editor_sheet.gd")
 const VideoReferencePanelScript = preload("res://src/ui/video_reference_panel.gd")
 const SequenceRendererScript = preload("res://src/core/sequence_renderer.gd")
 const CameraExportScript = preload("res://src/core/camera_export.gd")
@@ -103,6 +104,7 @@ var _workspace_menu: Control
 var _project_menu: Control
 var _view_menu: Control
 var _rig_axis_menu: Control
+var _light_menu: Control
 var _camera_menu: Control
 
 var _main: HBoxContainer
@@ -153,6 +155,7 @@ var _restoring_clip := false
 var _media_busy := false
 var _media_cancel := false
 var _media_export: Control
+var _pending_glb_options: Dictionary = {}
 
 var _color_sheet_active := false
 var _color_id := ""
@@ -255,6 +258,10 @@ func _ready() -> void:
 	_rig_axis_menu.name = "RigAxisMenu"
 	_rig_axis_menu.row_selected.connect(_on_rig_axis_menu_row)
 	add_child(_rig_axis_menu)
+	_light_menu = MenuPanelScript.new()
+	_light_menu.name = "LightMenu"
+	_light_menu.row_selected.connect(_on_light_menu_row)
+	add_child(_light_menu)
 	_camera_menu = MenuPanelScript.new()
 	_camera_menu.name = "CameraMenu"
 	_camera_menu.row_selected.connect(_on_camera_menu_row)
@@ -425,8 +432,8 @@ func _build_panel_content() -> void:
 	_inspector = InspectorScript.new()
 	_inspector.add_requested.connect(_open_add_sheet)
 	_inspector.color_requested.connect(_open_color_sheet)
-	_inspector.choose_material_requested.connect(_open_material_sheet)
-	_inspector.edit_material_requested.connect(_open_material_editor_for_target)
+	_inspector.choose_material_requested.connect(_edit_material_in_shading)
+	_inspector.edit_material_requested.connect(_edit_material_in_shading)
 	_inspector.look_through_requested.connect(_enter_camera_view)
 	_inspector.collapse_toggled.connect(func(collapsed: bool) -> void:
 		_set_section_collapsed("inspector", collapsed)
@@ -444,48 +451,25 @@ func _build_panel_content() -> void:
 	if doc != null:
 		_rig_panel.setup(doc)
 
-	# W4 replaces these provisional surfaces with the real Shading/Render
-	# panels. W1 does not mount a second MaterialSheet or MediaExportSheet; the
-	# existing modal aliases stay authoritative.
-	_shading_panel = VBoxContainer.new()
-	_shading_panel.add_theme_constant_override("separation", 8)
-	var shading_margin := MarginContainer.new()
-	shading_margin.add_theme_constant_override("margin_left", 12)
-	shading_margin.add_theme_constant_override("margin_right", 12)
-	shading_margin.add_theme_constant_override("margin_top", 12)
-	shading_margin.add_theme_constant_override("margin_bottom", 12)
-	var shading_box := VBoxContainer.new()
-	shading_box.add_theme_constant_override("separation", 8)
-	var shading_open := Kit.text_button("Open material library", "palette", false, true)
-	shading_open.custom_minimum_size = Vector2(96, 44)
-	shading_open.pressed.connect(func() -> void:
-		_open_material_sheet(_context_material_target())
-	)
-	shading_box.add_child(shading_open)
-	var shading_note := Kit.label("The embedded material library arrives in W4.", 11, Kit.TEXT_MUTED)
-	shading_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	shading_box.add_child(shading_note)
-	shading_margin.add_child(shading_box)
-	_shading_panel.add_child(shading_margin)
+	# The Shading workspace embeds the real library and editor. The document
+	# arrives with _adopt_document(); setup() is repeated there so both children
+	# build against the live MaterialSystem.
+	_shading_panel = ShadingPanelScript.new()
+	_shading_panel.name = "ShadingPanel"
+	_shading_panel.changed.connect(func() -> void: _on_material_sheet_changed(""))
+	_shading_panel.delete_requested.connect(_confirm_delete_material)
+	_shading_panel.color_requested.connect(_on_material_color_requested)
 
-	_render_panel = VBoxContainer.new()
-	_render_panel.add_theme_constant_override("separation", 8)
-	var render_margin := MarginContainer.new()
-	render_margin.add_theme_constant_override("margin_left", 12)
-	render_margin.add_theme_constant_override("margin_right", 12)
-	render_margin.add_theme_constant_override("margin_top", 12)
-	render_margin.add_theme_constant_override("margin_bottom", 12)
-	var render_box := VBoxContainer.new()
-	render_box.add_theme_constant_override("separation", 8)
-	var render_open := Kit.text_button("Open export", "clapperboard", false, true)
-	render_open.custom_minimum_size = Vector2(96, 44)
-	render_open.pressed.connect(_open_render_sheet)
-	render_box.add_child(render_open)
-	var render_note := Kit.label("The embedded export surface arrives in W4.", 11, Kit.TEXT_MUTED)
-	render_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	render_box.add_child(render_note)
-	render_margin.add_child(render_box)
-	_render_panel.add_child(render_margin)
+	_render_panel = RenderPanelScript.new()
+	_render_panel.setup(doc, _view)
+	_render_panel.export_requested.connect(_export_glb)
+	_render_panel.tab_changed.connect(func(_tab: String) -> void:
+		if _workspace == "render" and _workspace_panel != null:
+			_workspace_panel.set_badge(_render_panel.current_output())
+	)
+	_media_export = _render_panel.media_sheet()
+	_media_export.export_requested.connect(_run_media_export)
+	_media_export.cancel_requested.connect(func() -> void: _media_cancel = true)
 
 func _build_workspace_panel() -> void:
 	_workspace_panel = WorkspacePanelScript.new()
@@ -651,6 +635,8 @@ func _on_workspace_menu_row(id: String) -> void:
 func _on_workspace_changed(_id: String) -> void:
 	_update_header()
 	_update_rig_badge()
+	if _workspace == "shading":
+		_sync_shading_target()
 
 
 # -------------------------------------------------------------------------
@@ -658,7 +644,8 @@ func _on_workspace_changed(_id: String) -> void:
 # -------------------------------------------------------------------------
 
 func _act(id: String, label: String, icon: String, priority: int,
-		text := false, toggle := false, width := 0.0, group := "") -> Dictionary:
+		text := false, toggle := false, width := 0.0, group := "",
+		trailing_icon := "") -> Dictionary:
 	return {
 		"id": id,
 		"label": label,
@@ -670,6 +657,7 @@ func _act(id: String, label: String, icon: String, priority: int,
 		"disabled_reason": "",
 		"width": width,
 		"group": group,
+		"trailing_icon": trailing_icon,
 	}
 
 
@@ -696,8 +684,9 @@ func _context_actions(id: String) -> Array:
 				_act("move", "Move", "tool-move", 97, false, true),
 				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
 				_act("scale", "Scale", "tool-scale", 95, false, true),
-				_act("material_new", "New", "plus", 90),
-				_act("light_add", "Add light", "lightbulb", 80),
+				_act("material_new", "New", "plus", 90, true, false, 96.0),
+				_act("light_add", "Add light", "lightbulb", 80, true, false, 96.0,
+					"", "chevron-down"),
 				_act("panel", "Materials panel", "panel-right", 70),
 				_act("frame", "Frame selection", "focus", 60),
 				_act("grid", "Grid", "grid-3x3", 50, false, true),
@@ -780,7 +769,7 @@ func _sync_context_state() -> void:
 	var selected := doc.selected_id if doc != null else ""
 	_context_bar.set_action_enabled("assign",
 		selected != "" and doc != null and doc.material_system != null,
-		"Select an object with a material to assign.")
+		"Select an object to assign this material.")
 	for tool_id in ["select", "move", "rotate", "scale"]:
 		_context_bar.set_action_enabled(tool_id, selected != "",
 			"Select an object to transform.")
@@ -835,24 +824,125 @@ func _on_context_action(id: String) -> void:
 			_open_view_menu(_context_bar.action_button("view"))
 		"panel":
 			_toggle_workspace_panel()
-		"assign", "material_new":
-			_open_material_sheet(_context_material_target())
+		"assign":
+			_on_shading_assign()
+		"material_new":
+			_on_shading_new_material()
 		"light_add":
-			_open_add_sheet()
+			_open_light_menu(_context_bar.action_button("light_add"))
 		"pose", "edit", "rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done":
 			_on_rig_context_action(id)
 		"preview":
 			_enter_render_mode()
-		"render", "still":
-			_open_render_sheet()
+		"render":
+			_start_render_output()
+		"still":
+			_start_render_still()
 		"fit":
 			_fit_animate_pane()
 	_sync_context_state()
 
 
-func _context_material_target() -> Dictionary:
-	var object_id := doc.selected_id if doc != null else ""
-	return {"object_id": object_id, "part_path": "", "surface": -1}
+## The inspector, the Shading context row and the Shading workspace all lead
+## here. The material library and editor are embedded children of the panel;
+## nothing opens a material modal.
+func _edit_material_in_shading(target: Dictionary) -> void:
+	if doc == null or _shading_panel == null:
+		return
+	var object_id := str(target.get("object_id", ""))
+	var part_path := str(target.get("part_path", ""))
+	var surface := int(target.get("surface", -1))
+	set_workspace("shading")
+	_workspace_panel_open = true
+	_shading_panel.set_target(object_id, part_path, surface)
+	var material_id := ""
+	if doc.material_system != null:
+		material_id = doc.material_system.resolve_assignment(object_id, part_path, surface)
+	if material_id != "":
+		_shading_panel.select_material(material_id)
+	_apply_shell()
+
+
+func _on_shading_assign() -> void:
+	if doc == null or _shading_panel == null:
+		return
+	set_workspace("shading")
+	_workspace_panel_open = true
+	_shading_panel.assign_selected()
+	_apply_shell()
+
+
+func _on_shading_new_material() -> void:
+	if doc == null or _shading_panel == null:
+		return
+	set_workspace("shading")
+	_workspace_panel_open = true
+	_shading_panel.new_material()
+	_apply_shell()
+
+
+## Keeps the embedded panel pointed at the current selection. A part selection
+## targets that part's surface; otherwise the whole object is the target.
+func _sync_shading_target() -> void:
+	if _shading_panel == null or doc == null:
+		return
+	var object_id := doc.selected_id
+	var part_path := ""
+	var surface := -1
+	if doc.selected_part_object_id != "":
+		object_id = doc.selected_part_object_id
+		part_path = doc.selected_part_path
+	if doc.get("selected_surface") != null:
+		surface = int(doc.selected_surface)
+	_shading_panel.set_target(object_id, part_path, surface)
+	if _workspace == "shading" and _workspace_panel != null:
+		_workspace_panel.set_badge(_shading_badge_text())
+
+
+func _shading_badge_text() -> String:
+	if doc == null or doc.selected_id == "":
+		return ""
+	var obj: Dictionary = doc.get_object(doc.selected_id)
+	return str(obj.get("name", "")) if not obj.is_empty() else ""
+
+
+func _open_light_menu(anchor: Control) -> void:
+	if _light_menu == null or doc == null:
+		return
+	_light_menu.set_layout_mode(layout_mode())
+	_light_menu.set_empty_text("")
+	_light_menu.open_menu(
+		anchor,
+		"Light",
+		"Add a light",
+		layout_mode() != "desktop"
+	)
+	_light_menu.add_row(
+		"directional", "Key light", "sun", "Directional light",
+		false, true, "", 44.0
+	)
+	_light_menu.add_row(
+		"omni", "Omni light", "circle-dot", "Omni light",
+		false, true, "", 44.0
+	)
+
+
+func _on_light_menu_row(id: String) -> void:
+	if id != "directional" and id != "omni":
+		return
+	_on_add_light(id)
+	_sync_context_state()
+
+
+## A light is a real document object: one undo entry from Document.add_light,
+## selected immediately and framed so it never lands out of view.
+func _on_add_light(kind: String) -> void:
+	if doc == null:
+		return
+	var at := Vector3(0, 5, 0) if kind == "directional" \
+		else _spawn_point() + Vector3(1.4, 2.4, 1.2)
+	doc.add_light(kind, at)
+	_focus_selection()
 
 
 func _open_view_menu(anchor: Control) -> void:
@@ -1299,6 +1389,13 @@ func _adopt_document(document: Node3D) -> void:
 	_inspector.setup(doc)
 	_timeline.setup(doc)
 	_rig_panel.setup(doc)
+	_shading_panel.setup(doc)
+	# Existing tests inspect the embedded children through these aliases; they
+	# are the only material library and editor instances.
+	_material_sheet = _shading_panel.material_sheet()
+	_material_editor_sheet = _shading_panel.material_editor()
+	_sync_shading_target()
+	_render_panel.setup(doc, _view)
 	if _video_overlay != null:
 		_video_overlay.setup(doc, _view)
 	if _rig_overlay != null:
@@ -1341,6 +1438,8 @@ func _on_document_scene_changed() -> void:
 	_update_header()
 	_sync_transport_state()
 	_guard_camera_view()
+	if _render_panel != null:
+		_render_panel.refresh()
 
 
 ## A deleted or hidden camera must never leave the editor stuck in a view whose
@@ -1455,6 +1554,9 @@ func _on_document_selection_changed(_id: String) -> void:
 	_update_history_buttons()
 	_sync_transport_state()
 	_sync_context_state()
+	_sync_shading_target()
+	if _render_panel != null:
+		_render_panel.refresh()
 
 func _on_document_dirty_changed(_is_dirty: bool) -> void:
 	_update_header()
@@ -1848,12 +1950,14 @@ func _update_workspace_panel() -> void:
 		"shading":
 			_workspace_panel.set_content(_shading_panel)
 			_workspace_panel.set_title("Shading")
+			_workspace_panel.set_badge(_shading_badge_text())
 		"rig":
 			_workspace_panel.set_content(_rig_panel)
 			_workspace_panel.set_title("Rig")
 		"render":
 			_workspace_panel.set_content(_render_panel)
 			_workspace_panel.set_title("Render")
+			_workspace_panel.set_badge(_render_panel.current_output())
 		_:
 			_workspace_panel_open = false
 	if _workspace in ["shading", "rig", "render"] and _workspace_panel_open:
@@ -2389,105 +2493,6 @@ func _open_import_sheet() -> void:
 	_pick_model()
 
 
-func _open_render_sheet() -> void:
-	if doc == null or _view == null:
-		return
-	_overlay.clear_toast()
-	doc.pause()
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 12)
-
-	var format_row := HBoxContainer.new()
-	format_row.add_theme_constant_override("separation", 8)
-	format_row.add_child(Kit.label("Output", 12, Kit.TEXT))
-	var format_spacer := Control.new()
-	format_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	format_row.add_child(format_spacer)
-	format_row.add_child(Kit.mono_label("PNG · still + sequence", 9, Kit.TEXT_MUTED))
-	body.add_child(format_row)
-
-	body.add_child(Kit.section_label("Still image"))
-	_graphics_choice(body, "Long edge", "px", [
-		{"label": "1280", "value": 1280},
-		{"label": "1920", "value": 1920},
-		{"label": "2560", "value": 2560},
-		{"label": "3840", "value": 3840},
-	], _render_resolution, func(value: Variant) -> void: _render_resolution = int(value))
-	_graphics_choice(body, "Anti-aliasing", "MSAA", [
-		{"label": "Off", "value": Viewport.MSAA_DISABLED},
-		{"label": "2×", "value": Viewport.MSAA_2X},
-		{"label": "4×", "value": Viewport.MSAA_4X},
-		{"label": "8×", "value": Viewport.MSAA_8X},
-	], _render_msaa, func(value: Variant) -> void: _render_msaa = int(value))
-
-	var still_actions := HBoxContainer.new()
-	still_actions.add_theme_constant_override("separation", 8)
-	body.add_child(still_actions)
-	_render_still_button = Kit.text_button("Quick still", "image", true, true)
-	_render_still_button.tooltip_text = "Capture now and save in app storage"
-	_render_still_button.pressed.connect(_quick_still)
-	still_actions.add_child(_render_still_button)
-	_render_save_button = Kit.text_button("Save still…", "download", false, true)
-	_render_save_button.pressed.connect(_render_still)
-	still_actions.add_child(_render_save_button)
-
-	body.add_child(Kit.vsep())
-	body.add_child(Kit.section_label("Frame sequence"))
-	var frame_count := _sequence_frame_count()
-	var info := Kit.label(
-		"%d frames · %.2f s · %d fps" % [frame_count, doc.duration, maxi(1, doc.fps)],
-		10, Kit.TEXT_MUTED
-	)
-	body.add_child(info)
-	_graphics_choice(body, "Frame size", "px", [
-		{"label": "720", "value": 720},
-		{"label": "1080", "value": 1080},
-		{"label": "1440", "value": 1440},
-	], _sequence_resolution, func(value: Variant) -> void: _sequence_resolution = int(value))
-	_graphics_choice(body, "Anti-aliasing", "MSAA", [
-		{"label": "Off", "value": Viewport.MSAA_DISABLED},
-		{"label": "2×", "value": Viewport.MSAA_2X},
-		{"label": "4×", "value": Viewport.MSAA_4X},
-	], _sequence_msaa, func(value: Variant) -> void: _sequence_msaa = int(value))
-
-	_render_sequence_button = Kit.text_button("Render PNG sequence", "film", true, true)
-	_render_sequence_button.pressed.connect(_render_sequence)
-	body.add_child(_render_sequence_button)
-
-	var progress_box := VBoxContainer.new()
-	progress_box.add_theme_constant_override("separation", 5)
-	progress_box.visible = false
-	body.add_child(progress_box)
-	_render_progress = ProgressBar.new()
-	_render_progress.min_value = 0.0
-	_render_progress.max_value = 1.0
-	_render_progress.step = 0.001
-	_render_progress.show_percentage = false
-	_render_progress.custom_minimum_size.y = 5
-	_render_progress.add_theme_stylebox_override("background", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Kit.BORDER_SOFT, 0))
-	_render_progress.add_theme_stylebox_override("fill", Kit.flat_style(Kit.FOCUS, Kit.R_CONTROL, Kit.FOCUS, 0))
-	progress_box.add_child(_render_progress)
-	_render_status = Kit.mono_label("", 9, Kit.TEXT_MUTED)
-	_render_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	progress_box.add_child(_render_status)
-
-	_media_export = MediaExportSheetScript.new()
-	_media_export.setup(doc, _view)
-	_media_export.export_requested.connect(_run_media_export)
-	_media_export.cancel_requested.connect(func() -> void: _media_cancel = true)
-	body.add_child(Kit.vsep())
-	body.add_child(Kit.section_label("Formats"))
-	var format_note := Kit.label(
-		"GIF encodes in the app. MP4 uses the Android encoder; on this platform it reports unavailable. Captures keep the reviewing renderer, IK included.",
-		9, Kit.TEXT_DIM)
-	format_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(format_note)
-	body.add_child(_media_export)
-
-	_overlay.show_modal("Render", "Real engine captures, saved as image files.", body, [
-		{"text": "Done", "primary": true},
-	])
-
 ## Every capture entry point shares this guard. A still or sequence must not
 ## start while another render or a media export owns the probe renderer:
 ## overlapping captures would interleave their chrome suppression and their
@@ -2509,6 +2514,83 @@ func _quick_still() -> void:
 		return
 	_save_still_internal(image)
 	_set_render_progress(1.0, "Still captured at %d px." % _render_resolution)
+
+# -------------------------------------------------------------------------
+# Render workspace: GLB scene export
+# -------------------------------------------------------------------------
+
+func _start_render_output() -> void:
+	if doc == null or _media_export == null:
+		return
+	_media_export.start_export()
+
+
+func _start_render_still() -> void:
+	if doc == null or _media_export == null:
+		return
+	_media_export.set_format("png")
+	_media_export.start_export()
+
+
+func _export_glb(options: Dictionary) -> void:
+	if doc == null or _render_panel == null:
+		return
+	var desktop := OS.get_name() in ["Windows", "macOS", "Linux", "FreeBSD"] \
+		and DisplayServer.get_name() != "headless"
+	if desktop and DisplayServer.has_method("file_dialog_show"):
+		_pending_glb_options = options.duplicate(true)
+		var suggested := "Kinema_%s.glb" % _glb_project_slug()
+		DisplayServer.file_dialog_show(
+			"Export GLB", "", suggested, false,
+			DisplayServer.FILE_DIALOG_MODE_SAVE_FILE,
+			PackedStringArray(["*.glb"]), _on_glb_path_selected)
+		return
+	_export_glb_to(_default_glb_path(), options)
+
+
+func _on_glb_path_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
+	if not status or paths.is_empty():
+		return
+	var path := str(paths[0])
+	if path.get_extension().to_lower() != "glb":
+		path += ".glb"
+	_export_glb_to(path, _pending_glb_options)
+
+
+func _export_glb_to(path: String, options: Dictionary) -> void:
+	if doc == null or _render_panel == null:
+		return
+	var resolved := ProjectSettings.globalize_path(path)
+	var dir := resolved.get_base_dir()
+	if dir != "" and not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	_render_panel.set_export_status("Exporting…")
+	var exporter = GlbExportScript.new()
+	var result: Dictionary = exporter.export_scene(doc, resolved, options)
+	if bool(result.get("ok", false)):
+		_render_panel.set_export_result(result)
+		if _overlay != null:
+			_overlay.toast("GLB exported", "check", Kit.SUCCESS)
+	else:
+		var reason := str(result.get("error", "The GLB export failed."))
+		_render_panel.set_export_status(reason)
+		if _overlay != null:
+			_overlay.toast(reason, "triangle-alert", Kit.DANGER)
+
+
+func _default_glb_path() -> String:
+	var now := Time.get_datetime_dict_from_system()
+	var stamp := "%04d%02d%02d_%02d%02d%02d" % [
+		int(now.get("year", 0)), int(now.get("month", 1)), int(now.get("day", 1)),
+		int(now.get("hour", 0)), int(now.get("minute", 0)), int(now.get("second", 0)),
+	]
+	return "user://exports/Kinema_%s_%s.glb" % [_glb_project_slug(), stamp]
+
+
+func _glb_project_slug() -> String:
+	var title: String = doc.title if doc != null else ""
+	var slug := title.strip_edges().to_snake_case()
+	return slug if slug != "" else "project"
 
 # -------------------------------------------------------------------------
 # Media export sheet (PNG sequence / GIF / MP4 / camera). The quick still and
@@ -3523,7 +3605,6 @@ func _open_settings(category: String = "general") -> void:
 	panel.renderer_restart_requested.connect(_on_settings_renderer_restart)
 	panel.orientation_requested.connect(_on_settings_orientation)
 	panel.risk_change_requested.connect(_on_settings_risk_change)
-	panel.open_render_requested.connect(_open_render_sheet)
 	panel.open_import_requested.connect(_open_import_sheet)
 	_settings_panel = panel
 	panel.open(category)
@@ -3884,66 +3965,12 @@ func _total_keys() -> int:
 	return count
 
 # -------------------------------------------------------------------------
-# Material sheets
+# Material surfaces
 # -------------------------------------------------------------------------
-
-func _open_material_sheet(target: Dictionary) -> void:
-	if doc == null or doc.material_system == null:
-		return
-	var sheet = MaterialSheetScript.new()
-	_material_sheet = sheet
-	sheet.setup(doc, target)
-	sheet.changed.connect(_on_material_sheet_changed)
-	sheet.assigned.connect(_on_material_assigned)
-	sheet.delete_requested.connect(_confirm_delete_material)
-	_overlay.show_sheet(
-		"Materials",
-		"Assign a library material to this target.",
-		sheet,
-		[{"text": "Close", "compact": true}]
-	)
-
-
-func _open_material_editor_for_target(target: Dictionary) -> void:
-	if doc == null or doc.material_system == null:
-		return
-	var material_id: String = doc.material_system.resolve_assignment(
-		str(target.get("object_id", "")),
-		str(target.get("part_path", "")),
-		int(target.get("surface", -1))
-	)
-	if material_id == "":
-		return
-	_open_material_editor(material_id, target)
-
-
-func _open_material_editor(material_id: String, target: Dictionary = {}) -> void:
-	if doc == null or doc.material_system == null or material_id == "":
-		return
-	var sheet = MaterialEditorSheetScript.new()
-	_material_editor_sheet = sheet
-	sheet.setup(doc, material_id)
-	sheet.set_target(target)
-	sheet.changed.connect(_on_material_sheet_changed)
-	sheet.delete_requested.connect(_confirm_delete_material)
-	sheet.color_requested.connect(_on_material_color_requested.bind(material_id))
-	_overlay.show_sheet(
-		"Material",
-		"Name, shading, maps and UVs.",
-		sheet,
-		[{"text": "Close", "compact": true}]
-	)
-
 
 func _on_material_sheet_changed(_material_id: String) -> void:
 	if _inspector != null:
 		_inspector._rebuild()
-
-
-func _on_material_assigned(_material_id: String) -> void:
-	if _overlay != null:
-		_overlay.close_modal()
-	_on_material_sheet_changed(_material_id)
 
 
 func _on_material_color_requested(property: String, current: Color, material_id: String) -> void:
@@ -3983,6 +4010,8 @@ func _delete_material(material_id: String) -> void:
 	doc.end_edit()
 	if ok:
 		_on_material_sheet_changed(material_id)
+		if _shading_panel != null:
+			_shading_panel.refresh()
 		_overlay.toast("Material deleted", "trash-2", Kit.TEXT_MUTED)
 
 

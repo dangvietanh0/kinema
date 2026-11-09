@@ -395,6 +395,40 @@ func icon_texture(icon_name: String) -> Texture2D:
 	_icons[icon_name] = texture
 	return texture
 
+
+## One texture for a leading glyph plus a trailing menu affordance, so a text
+## button can advertise a menu without a second child icon or a wider row.
+func combined_icon_texture(icon_names: Array, gap: int = 3) -> Texture2D:
+	var key := "__combined__" + "|".join(PackedStringArray(icon_names))
+	if _icons.has(key):
+		return _icons[key]
+	var images: Array[Image] = []
+	var total_width := 0
+	var height := 0
+	for icon_name in icon_names:
+		var texture := icon_texture(str(icon_name))
+		if texture == null:
+			continue
+		var image := texture.get_image()
+		if image == null:
+			continue
+		images.append(image)
+		total_width += image.get_width()
+		height = maxi(height, image.get_height())
+	if images.is_empty():
+		return null
+	total_width += gap * maxi(0, images.size() - 1)
+	var combined := Image.create(total_width, height, false, Image.FORMAT_RGBA8)
+	combined.fill(Color(0, 0, 0, 0))
+	var x := 0
+	for image in images:
+		var y := int((height - image.get_height()) / 2.0)
+		combined.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i(x, y))
+		x += image.get_width() + gap
+	var result := ImageTexture.create_from_image(combined)
+	_icons[key] = result
+	return result
+
 func icon(icon_name: String, color: Color = TEXT_MUTED, size: int = 18) -> TextureRect:
 	var t := TextureRect.new()
 	t.texture = icon_texture(icon_name)

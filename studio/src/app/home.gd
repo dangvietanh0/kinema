@@ -24,6 +24,7 @@ var _wide := true
 var _template_choice := "blank"
 var _template_cards: Dictionary = {}
 var _name_field: LineEdit
+var _pending_scroll := 0
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -145,8 +146,19 @@ func _rebuild_content() -> void:
 	_build_projects(column)
 	_build_footer(column)
 	_layout = column
-	await get_tree().process_frame
-	_scroll.scroll_vertical = scroll_pos
+	# Restore the scroll after layout, but never hold a coroutine on this
+	# screen: the home can be freed while a frame is pending (editor launch,
+	# test teardown). A one-shot signal connection is dropped with the object.
+	_pending_scroll = scroll_pos
+	var tree := get_tree()
+	if tree != null and not tree.process_frame.is_connected(_restore_scroll):
+		tree.process_frame.connect(_restore_scroll, CONNECT_ONE_SHOT)
+
+
+func _restore_scroll() -> void:
+	if _scroll == null or not is_instance_valid(_scroll):
+		return
+	_scroll.scroll_vertical = _pending_scroll
 
 func _build_page_header(parent: Control) -> void:
 	var row := HBoxContainer.new()

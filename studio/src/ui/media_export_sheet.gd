@@ -731,3 +731,9 @@ func _on_export() -> void:
 			_status_label.text = CAMERA_REASON
 		return
 	export_requested.emit(build_options())
+
+
+## Public entry point for the Render context action: starts the selected
+## output without reaching into the private handler.
+func start_export() -> void:
+	_on_export()

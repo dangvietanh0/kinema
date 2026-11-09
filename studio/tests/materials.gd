@@ -856,22 +856,25 @@ func _test_material_ui() -> void:
 	await get_tree().process_frame
 	_check(inspector.object_material_text() == "Legacy colour", "an unassigned object shows the legacy colour")
 	_check(inspector.legacy_visible(), "legacy colour controls appear without a library material")
-	_check(inspector._object_choose != null \
-		and inspector._object_choose.custom_minimum_size == Vector2(96.0, 44.0),
-		"Choose material is 96x44")
-	_check(inspector._object_edit != null and inspector._object_edit.disabled,
-		"Edit material is disabled with no material")
+	_check(inspector.edit_material_button() != null \
+		and inspector.edit_material_button().custom_minimum_size == Vector2(96.0, 44.0),
+		"Edit in Shading is a 96x44 action")
+	_check(inspector.edit_material_button().text == "Choose in Shading",
+		"the handoff says Choose in Shading without a material")
 
 	var captured: Dictionary = {}
+	inspector.edit_material_requested.connect(func(target: Dictionary) -> void:
+		captured["target"] = target
+	)
 	inspector.choose_material_requested.connect(func(target: Dictionary) -> void:
 		captured["target"] = target
 	)
-	inspector._object_choose.pressed.emit()
+	inspector.edit_material_button().pressed.emit()
 	var object_target: Dictionary = captured.get("target", {})
 	_check(str(object_target.get("object_id", "")) == object_id
 		and str(object_target.get("part_path", "x")) == ""
 		and int(object_target.get("surface", 9)) == -1,
-		"the object section targets the object root at surface -1")
+		"the object handoff targets the object root at surface -1")
 
 	var material_id: String = doc.material_system.create_material("Painted", "satin")
 	doc.material_system.assign_material(object_id, material_id)
@@ -879,7 +882,8 @@ func _test_material_ui() -> void:
 	await get_tree().process_frame
 	_check(inspector.object_material_text() == "Painted", "the object section shows the assigned material name")
 	_check(not inspector.legacy_visible(), "legacy controls hide once a material is assigned")
-	_check(not inspector._object_edit.disabled, "Edit material enables with a material")
+	_check(inspector.edit_material_button().text == "Edit in Shading",
+		"the handoff says Edit in Shading with a material")
 
 	var builds: int = inspector.section_build_count
 	doc.part_selection_changed.emit(object_id, "")

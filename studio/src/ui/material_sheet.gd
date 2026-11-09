@@ -41,6 +41,32 @@ func selected_id() -> String:
 	return _selected
 
 
+## Rebuilds the rows from the document and keeps the current selection. Used by
+## the embedded Shading panel on material and target changes.
+func refresh() -> void:
+	_build()
+	if _selected != "" and _rows.has(_selected):
+		select(_selected)
+	else:
+		_selected = ""
+		if _duplicate_button != null:
+			_duplicate_button.visible = false
+
+
+## Creates a material through the same single-undo path as the New button and
+## returns the new id ("" on failure).
+func new_material() -> String:
+	_on_new()
+	return _selected
+
+
+## Updates the assign target in place. Rows keep their selection and are not
+## rebuilt; only the Assign enabled state and reason change.
+func set_target(target: Dictionary) -> void:
+	_target = target.duplicate(true)
+	_apply_target_state()
+
+
 func row_count() -> int:
 	return _rows.size()
 
@@ -108,6 +134,7 @@ func _build() -> void:
 		return
 	for id in ids:
 		_add_row(str(id), materials.get_material(str(id)))
+	_apply_target_state()
 
 
 func _add_row(material_id: String, record: Dictionary) -> void:
@@ -138,6 +165,17 @@ func _add_row(material_id: String, record: Dictionary) -> void:
 	assign.pressed.connect(func() -> void: assign_material(material_id))
 	row.add_child(assign)
 	_rows[material_id] = {"select": select, "assign": assign, "panel": row_panel}
+
+
+func _apply_target_state() -> void:
+	var has_target := str(_target.get("object_id", "")) != ""
+	for id in _rows.keys():
+		var row: Dictionary = _rows[id]
+		var assign: Button = row.get("assign", null)
+		if assign == null:
+			continue
+		assign.disabled = not has_target
+		assign.tooltip_text = "" if has_target else "Select an object to assign this material."
 
 
 func select_material(material_id: String) -> void:
