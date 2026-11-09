@@ -101,6 +101,9 @@ func set_enabled(value: bool) -> void:
 	if not value and (_dragging or _drag_kind != ""):
 		_cancel_drag()
 	_enabled = value
+	# Hiding the Control is what clears the last disabled frame; `_process`
+	# remains the only redraw caller while enabled, so it cannot redraw here.
+	visible = _enabled
 	mouse_filter = Control.MOUSE_FILTER_STOP if _enabled else Control.MOUSE_FILTER_PASS
 	if not _enabled:
 		_dragging = false
@@ -395,6 +398,25 @@ func _gizmo_camera_basis() -> Basis:
 
 
 func _gizmo_ring_basis(axis: String) -> Array:
+	if axis == "free":
+		var camera := _gizmo_camera_basis()
+		return [camera.x.normalized(), camera.y.normalized()]
+	# Pose rotates around the active bone's local axis, so the rings must show
+	# those same local axes. Edit commits a rest rotation around a world axis
+	# and keeps the world-axis rings.
+	if not is_edit_mode():
+		var skeleton := _skeleton()
+		if skeleton != null:
+			var index := skeleton.find_bone(_active_bone_name())
+			if index >= 0:
+				var pose := skeleton.global_transform.basis * skeleton.get_bone_global_pose(index).basis
+				match axis:
+					"x":
+						return [pose.y.normalized(), pose.z.normalized()]
+					"y":
+						return [pose.z.normalized(), pose.x.normalized()]
+					"z":
+						return [pose.x.normalized(), pose.y.normalized()]
 	match axis:
 		"x":
 			return [Vector3.UP, Vector3.BACK]
@@ -417,19 +439,27 @@ func _gizmo_world_axis(axis: String) -> Vector3:
 	return Vector3.ZERO
 
 
-func _gizmo_ring_radius(origin: Vector3, axis: String) -> float:
+func _gizmo_ring_pixels(origin: Vector3, axis: String) -> float:
+	# A local ring can be edge-on along either basis vector, so size it from
+	# the basis that actually projects. Using only pair[0] collapses one of the
+	# bone-local rings to the maximum clamp under an orthographic view.
 	var pair := _gizmo_ring_basis(axis)
 	var basis_a: Vector3 = pair[0]
-	var px: float = (view.world_to_screen(origin + basis_a) - view.world_to_screen(origin)).length()
+	var basis_b: Vector3 = pair[1]
+	var px_a: float = (view.world_to_screen(origin + basis_a) - view.world_to_screen(origin)).length()
+	var px_b: float = (view.world_to_screen(origin + basis_b) - view.world_to_screen(origin)).length()
+	return maxf(px_a, px_b)
+
+
+func _gizmo_ring_radius(origin: Vector3, axis: String) -> float:
+	var px := _gizmo_ring_pixels(origin, axis)
 	var target := GIZMO_FREE_RING_PX if axis == "free" else GIZMO_RING_PX
 	return clampf(target / maxf(px, 0.0001), 0.05, 50.0)
 
 
 func _gizmo_ring_screen_radius(axis: String) -> float:
 	var origin := _gizmo_origin_world()
-	var pair := _gizmo_ring_basis(axis)
-	var basis_a: Vector3 = pair[0]
-	var px: float = (view.world_to_screen(origin + basis_a) - view.world_to_screen(origin)).length()
+	var px := _gizmo_ring_pixels(origin, axis)
 	return _gizmo_ring_radius(origin, axis) * px
 
 

@@ -39,6 +39,7 @@ func _ready() -> void:
 	await _test_transport()
 	await _test_shell_anatomy_and_panels()
 	await _test_rig_workspace_no_timeline()
+	await _test_rig_overlay_hidden_outside_workbench()
 	await _test_camera_view()
 	await _test_workspace_switch_with_open_surfaces()
 	await _test_back_precedence()
@@ -657,6 +658,32 @@ func _test_rig_workspace_no_timeline() -> void:
 		"the Rig stage keeps at least 270 dp at 915x412")
 	_check(editor._workspace_panel.state_badge() == "No rig",
 		"the Rig panel shows the real state badge")
+
+
+func _test_rig_overlay_hidden_outside_workbench() -> void:
+	print("SHELL STEP: rig overlay visibility")
+	var main = await _boot_main(915, 412)
+	var editor = main._editor
+	var doc = editor.doc
+	doc.rig_system.create_rig("Rig", Vector3.ZERO)
+	editor.set_workspace("rig")
+	editor._on_rig_context_action("pose")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._rig_overlay.is_enabled(), "Rig mode enables the overlay")
+	var cam_id: String = doc.add_camera(Vector3(2, 2, 3))
+	editor._enter_camera_view(cam_id)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor.is_look_through(), "the smoke test enters look-through")
+	_check(not editor._rig_overlay.visible
+		and not editor._rig_overlay.is_visible_in_tree(),
+		"look-through hides the rig overlay and its last frame")
+	editor._exit_look_through()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(editor._rig_overlay.is_enabled() and editor._rig_overlay.visible,
+		"leaving look-through restores the rig overlay")
 
 
 func _test_camera_view() -> void:

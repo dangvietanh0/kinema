@@ -73,6 +73,7 @@ func _ready() -> void:
 	await _test_pose_transactions()
 	await _test_one_gesture_and_edit_parity()
 	await _test_gizmo()
+	await _test_pose_gizmo_ring_axes()
 	await _test_rig_redraw_contract()
 	await _test_rig_panel_actions()
 	await _test_drag_cancel_on_disable()
@@ -1254,6 +1255,48 @@ func _test_gizmo() -> void:
 	doc.queue_free()
 
 
+func _test_pose_gizmo_ring_axes() -> void:
+	print("RIG STEP: pose gizmo ring axes")
+	var doc := _new_doc("Pose Gizmo Ring")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Spine")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	var skel := _skeleton(doc, rig_id)
+	var spine := skel.find_bone("Spine")
+	# Rotate the bone 90 degrees about world Z. Its local +Y (the first basis
+	# of the local-X ring) then points along world -X, while a world-axis ring
+	# would put the same sample along world +Y.
+	skel.set_bone_pose_rotation(spine, Quaternion(Vector3.BACK, PI * 0.5))
+	await get_tree().process_frame
+	var origin: Vector2 = view.world_to_screen(overlay._gizmo_origin_world())
+	var pose_ring: PackedVector2Array = overlay.gizmo_ring_points("x")
+	_check(pose_ring.size() == 32, "the Pose X ring has 32 projected points")
+	if pose_ring.size() == 32:
+		var pose_offset := pose_ring[0] - origin
+		_check(pose_offset.x < -1.0 and absf(pose_offset.y) < 0.5,
+			"the Pose X ring follows the bone-local Y axis")
+		_check(pose_offset.distance_to(Vector2(0.0, -64.0)) > 1.0,
+			"the Pose X ring is not the world-Y axis")
+	overlay.set_mode("edit")
+	await get_tree().process_frame
+	var edit_ring: PackedVector2Array = overlay.gizmo_ring_points("x")
+	_check(edit_ring.size() == 32, "the Edit X ring has 32 projected points")
+	if edit_ring.size() == 32:
+		var edit_offset := edit_ring[0] - origin
+		_check(absf(edit_offset.x) < 0.5 and edit_offset.y < -1.0,
+			"the Edit X ring still follows the world Y axis")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
 func _test_rig_redraw_contract() -> void:
 	print("RIG STEP: redraw contract")
 	var doc := _new_doc("Rig Redraw")
@@ -1277,6 +1320,9 @@ func _test_rig_redraw_contract() -> void:
 	await get_tree().process_frame
 	_check(overlay.draw_count() > settled, "camera movement redraws the overlay")
 	overlay.set_enabled(false)
+	_check(not overlay.visible, "disabling the overlay hides its last frame")
+	_check(not overlay.is_visible_in_tree(),
+		"the disabled overlay is not visible in the tree")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var disabled: int = overlay.draw_count()
@@ -2289,6 +2335,16 @@ func _test_rig_toolbar() -> void:
 		_check(edit_button.tooltip_text ==
 			"Imported skeleton: rest editing is locked.",
 			"the disabled Edit segment states the imported reason")
+		if add_button != null:
+			var imported_bones: int = (doc.rig_system.get_rig(rig_id)["bones"] as Array).size()
+			_check(add_button.disabled, "an imported rig disables Add bone")
+			_check(add_button.tooltip_text ==
+				"Imported rig: bone structure is locked. Pose and IK remain editable.",
+				"the disabled Add bone states the imported reason")
+			add_button.pressed.emit()
+			await get_tree().process_frame
+			_check((doc.rig_system.get_rig(rig_id)["bones"] as Array).size() == imported_bones,
+				"pressing Add bone on an imported rig changes nothing")
 		doc.rig_system.get_rig(rig_id)["imported"] = false
 		editor._sync_context_state()
 		await get_tree().process_frame

@@ -806,6 +806,9 @@ func _sync_context_state() -> void:
 		"Imported skeleton: rest editing is locked.")
 	for id in ["rig_rotate", "rig_move", "rig_axis", "rig_add", "rig_reset", "rig_done"]:
 		_context_bar.set_action_enabled(id, rig_id != "", "There is no rig in this project.")
+	if imported:
+		_context_bar.set_action_enabled("rig_add", false,
+			"Imported rig: bone structure is locked. Pose and IK remain editable.")
 	var axis_button: Button = _context_bar.action_button("rig_axis")
 	if axis_button != null:
 		axis_button.text = "Free" if axis == "free" else axis.to_upper()
