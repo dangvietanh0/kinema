@@ -70,6 +70,14 @@ var _press_key := -1
 var _press_position := Vector2.ZERO
 var _connected := false
 
+# The plot converts thousands of points per draw. Resolving the selection and
+# resampling the value range inside every conversion is quadratic, so both are
+# cached until the document, selection, tab or component actually changes.
+var _window_cache := Vector2.ZERO
+var _window_cache_valid := false
+var _range_cache := Vector2.ZERO
+var _range_cache_valid := false
+
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -136,9 +144,15 @@ func clear_selection() -> void:
 
 
 func refresh() -> void:
+	_invalidate_plot_caches()
 	_resolve_selection()
 	_sync_actions()
 	queue_redraw()
+
+
+func _invalidate_plot_caches() -> void:
+	_window_cache_valid = false
+	_range_cache_valid = false
 
 
 func set_tab(tab: String) -> void:
@@ -150,6 +164,7 @@ func set_tab(tab: String) -> void:
 		var button: Button = _tab_buttons[id]
 		if button != null and is_instance_valid(button):
 			button.set_pressed_no_signal(id == _tab)
+	_invalidate_plot_caches()
 	_sync_actions()
 	queue_redraw()
 	if changed:
@@ -165,6 +180,7 @@ func set_component(component: String) -> void:
 	if not (next in ["all", "x", "y", "z"]):
 		return
 	_component = next
+	_invalidate_plot_caches()
 	queue_redraw()
 
 
@@ -174,8 +190,9 @@ func component() -> String:
 
 func value_editable() -> bool:
 	## A single component of a vector channel can be dragged in the Value tab.
-	## `All` is a read-only overview and quaternions belong to the rig gizmo.
-	return doc != null and _object_id != "" \
+	## `All` is a read-only overview, Speed is read-only, and quaternions belong
+	## to the rig gizmo.
+	return _tab == TAB_VALUE and doc != null and _object_id != "" \
 		and _channel in ["position", "scale"] \
 		and _component in ["x", "y", "z"]
 
@@ -325,26 +342,57 @@ func baked_label() -> String:
 func speed_summary() -> Dictionary:
 	var span := _active_span()
 	var start := 0.0
-	var end := doc.duration if doc != null else 0.0
+	var end: float = doc.duration if doc != null else 0.0
 	if not span.is_empty():
 		start = float(span.get("start", 0.0))
 		end = float(span.get("end", end))
-	var dt := 1.0 / maxf(1.0, float(doc.fps)) if doc != null else 1.0 / 30.0
-	var count := 32
-	var total := 0.0
-	var peak := 0.0
 	if doc == null or _object_id == "" or end <= start:
 		return {"average": 0.0, "peak": 0.0}
-	var a: Variant = _sample(start)
-	for i in range(1, count + 1):
-		var t := lerpf(start, end, float(i) / float(count))
-		var b: Variant = _sample(t)
-		if a != null and b != null:
-			var speed := _delta(a, b) / dt
+	var dt := 1.0 / maxf(1.0, float(doc.fps))
+	var total := 0.0
+	var peak := 0.0
+	var samples := 0
+	var t := start
+	while t < end - 0.0000001:
+		var next := minf(t + dt, end)
+		var speed := _speed_between(t, next)
+		if is_finite(speed):
 			total += speed
 			peak = maxf(peak, speed)
-		a = b
-	return {"average": total / float(count), "peak": peak}
+			samples += 1
+		t = next
+	if samples == 0:
+		return {"average": 0.0, "peak": 0.0}
+	return {"average": total / float(samples), "peak": peak}
+
+
+func _speed_at(time: float) -> float:
+	if doc == null:
+		return 0.0
+	var dt := 1.0 / maxf(1.0, float(doc.fps))
+	var t0 := clampf(time, 0.0, doc.duration)
+	var t1 := minf(t0 + dt, doc.duration)
+	return _speed_between(t0, t1)
+
+
+func _speed_between(t0: float, t1: float) -> float:
+	var span := t1 - t0
+	if span <= 0.0000001:
+		return 0.0
+	var a: Variant = _sample(t0)
+	var b: Variant = _sample(t1)
+	if a == null or b == null:
+		return 0.0
+	var speed := 0.0
+	if a is Quaternion and b is Quaternion:
+		var q0 := (a as Quaternion).normalized()
+		var q1 := (b as Quaternion).normalized()
+		speed = 2.0 * acos(clampf(q0.dot(q1), -1.0, 1.0)) / span
+	elif a is Vector3 and b is Vector3:
+		speed = ((b as Vector3) - (a as Vector3)).length() / span
+	else:
+		speed = absf(float(b) - float(a)) / span
+	return speed if is_finite(speed) else 0.0
 
 
 func add_key_at_playhead() -> bool:
@@ -558,6 +606,7 @@ func _sync_actions() -> void:
 	_engine_field.visible = engine
 	_convert_button.visible = not record.is_empty() and family in ["preset", "baked"]
 	_clear_button.visible = not record.is_empty()
+	_edit_ease_button.visible = _tab == TAB_SPEED
 	if engine:
 		var start_index := _start_key_index(span)
 		if start_index >= 0:
@@ -880,6 +929,8 @@ func _draw() -> void:
 	_draw_selection_band()
 	if _tab == TAB_VALUE:
 		_draw_value_tab(keys)
+	elif _tab == TAB_SPEED:
+		_draw_speed_tab()
 	else:
 		_draw_curve(keys)
 	_draw_keys(keys)
@@ -889,6 +940,7 @@ func _draw() -> void:
 		_draw_hint(value_hint())
 	elif _tab == TAB_SPEED:
 		_draw_hint("Speed is read-only.")
+		_draw_speed_summary()
 
 
 func _draw_hint(text_value: String) -> void:
@@ -1102,8 +1154,50 @@ func _draw_playhead() -> void:
 	]), Kit.ACCENT)
 
 
-func _draw_speed_hint() -> void:
-	pass
+func _draw_speed_tab() -> void:
+	var plot := plot_rect()
+	var curve := _curve_rect()
+	if doc == null or plot.size.x <= 1.0 or curve.size.y <= 1.0:
+		return
+	var columns := clampi(int(plot.size.x), 2, 900)
+	var speeds: Array = []
+	var peak := 0.0
+	for i in range(columns):
+		var t := point_to_time(Vector2(plot.position.x + float(i), plot.position.y))
+		var speed := _speed_at(t)
+		speeds.append(speed)
+		peak = maxf(peak, speed)
+	var top := maxf(0.001, peak * 1.10)
+	var points := PackedVector2Array()
+	for i in range(columns):
+		var y := curve.end.y - (float(speeds[i]) / top) * curve.size.y
+		points.append(Vector2(plot.position.x + float(i), y))
+	if points.size() >= 2:
+		draw_polyline(points, Kit.TIME_BRIGHT, 1.4, true)
+	draw_line(Vector2(curve.position.x, curve.end.y), Vector2(curve.end.x, curve.end.y),
+		Kit.BORDER_SOFT, 1.0)
+
+
+func _draw_speed_summary() -> void:
+	if doc == null:
+		return
+	var summary := speed_summary()
+	var plot := plot_rect()
+	var text := "Average %s   Peak %s" % [
+		_speed_text(float(summary.get("average", 0.0))),
+		_speed_text(float(summary.get("peak", 0.0))),
+	]
+	draw_string(Kit.font_mono, Vector2(plot.position.x, plot.position.y + 18.0),
+		text, HORIZONTAL_ALIGNMENT_RIGHT, plot.size.x - 8.0,
+		Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
+
+
+func _speed_text(value: float) -> String:
+	if absf(value) >= 100.0:
+		return "%.0f/s" % value
+	if absf(value) >= 10.0:
+		return "%.1f/s" % value
+	return "%.2f/s" % value
 
 
 # -------------------------------------------------------------------------
@@ -1117,19 +1211,28 @@ func _curve_rect() -> Rect2:
 
 
 func _window() -> Vector2:
-	if doc == null:
-		return Vector2(0.0, 1.0)
-	var plot := plot_rect()
-	var span := _active_span()
-	if not span.is_empty():
-		var start := float(span.get("start", 0.0))
-		var end := float(span.get("end", 0.0))
-		if end > start + 0.000001:
-			var usable := maxf(1.0, plot.size.x - 48.0)
-			var tpp := (end - start) / usable
-			return Vector2(start - 24.0 * tpp, end + 24.0 * tpp)
-	var end := maxf(0.001, doc.duration)
-	return Vector2(0.0, end)
+	if _window_cache_valid:
+		return _window_cache
+	var result := Vector2.ZERO
+	var resolved := false
+	if doc != null:
+		var plot := plot_rect()
+		var span := _active_span()
+		if not span.is_empty():
+			var start := float(span.get("start", 0.0))
+			var end := float(span.get("end", 0.0))
+			if end > start + 0.000001:
+				var usable := maxf(1.0, plot.size.x - 48.0)
+				var tpp := (end - start) / usable
+				result = Vector2(start - 24.0 * tpp, end + 24.0 * tpp)
+				resolved = true
+		if not resolved:
+			result = Vector2(0.0, maxf(0.001, doc.duration))
+	else:
+		result = Vector2(0.0, 1.0)
+	_window_cache = result
+	_window_cache_valid = true
+	return result
 
 
 func _time_to_x(time: float, plot: Rect2) -> float:
@@ -1146,6 +1249,15 @@ func _time_step(px_per_second: float) -> float:
 
 
 func _value_range() -> Vector2:
+	if _range_cache_valid:
+		return _range_cache
+	var result := _compute_value_range()
+	_range_cache = result
+	_range_cache_valid = true
+	return result
+
+
+func _compute_value_range() -> Vector2:
 	var curve := _curve_rect()
 	if doc == null or _object_id == "":
 		return Vector2(0.0, 1.0)

@@ -33,6 +33,9 @@ func _ready() -> void:
 	await _test_preset_rail()
 	await _test_value_tab()
 	await _test_endpoint_rebake_and_invalidation()
+	await _test_speed_tab()
+	await _test_family_presets_and_clear()
+	await _test_all_presets()
 	await _test_timeline_transport_and_headers()
 	await _test_animate_sizes()
 	_finish()
@@ -600,3 +603,136 @@ func _test_endpoint_rebake_and_invalidation() -> void:
 		"the edited key is kept as a normal key")
 	ctx["timeline"].queue_free()
 	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 20 — Speed tab, family presets and conversion
+# -------------------------------------------------------------------------
+
+func _test_speed_tab() -> void:
+	print("GRAPH STEP: speed tab")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("speed")
+	var summary: Dictionary = graph.speed_summary()
+	_check(is_finite(float(summary.get("average", NAN))), "speed average is finite")
+	_check(is_finite(float(summary.get("peak", NAN))), "speed peak is finite")
+	_check(absf(float(summary.get("average", 0.0)) - 10.0) < 0.5,
+		"a 10-unit move over 1 s averages 10 units/s")
+	_check(absf(float(summary.get("peak", 0.0)) - 10.0) < 0.5,
+		"linear speed peaks at the same 10 units/s")
+	_check(graph.handle_positions().is_empty(), "Speed never draws draggable handles")
+	_check(graph.value_editable() == false, "Speed is read-only")
+	var before_tab: String = graph.tab()
+	graph.edit_ease_button().pressed.emit()
+	_check(graph.tab() == "ease" and before_tab == "speed",
+		"Edit ease switches to Ease with the same segment")
+	_check(graph.selection() == doc.segment_span_at(id, "position", 0.5),
+		"the selection survives the tab switch")
+
+	# Rotation speed is angular, not a component delta. Use a second cube in
+	# the same document: the graph is bound to `doc` and cannot sample another
+	# document's objects.
+	var rid: String = _cube(doc)
+	doc.apply_key_edits(rid, "rotation", [
+		{"index": -1, "time": 0.0, "value": Quaternion.IDENTITY},
+		{"index": -1, "time": 1.0, "value": Quaternion(Vector3.UP, PI / 2.0)},
+	], "Rotation keys")
+	graph.set_context(rid, "rotation")
+	graph.set_selection(doc.segment_span_at(rid, "rotation", 0.5))
+	graph.set_tab("speed")
+	var rsummary: Dictionary = graph.speed_summary()
+	_check(absf(float(rsummary.get("average", 0.0)) - PI / 2.0) < 0.15,
+		"rotation speed is angular radians per second")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_family_presets_and_clear() -> void:
+	print("GRAPH STEP: family presets and clear")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("ease")
+	var undo_before: int = (doc._undo_stack as Array).size()
+	graph.preset_chip("bounce").pressed.emit()
+	await get_tree().process_frame
+	_check(doc.curve_segments().size() == 1, "Bounce writes a record")
+	_check(str(doc.curve_segments()[0].get("family", "")) == "preset",
+		"Bounce records the preset family")
+	_check(graph.handle_positions().is_empty(), "a family preset shows no cubic handles")
+	_check(graph.baked_label().contains("Baked preset"), "a family preset says Baked preset")
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"one family preset is one undo entry")
+	_check(graph.convert_button().visible, "a family preset offers Convert to cubic")
+	graph.convert_button().pressed.emit()
+	await get_tree().process_frame
+	_check(str(doc.curve_segments()[0].get("family", "")) == "cubic",
+		"Convert to cubic changes the family")
+	_check(graph.handle_positions().size() == 2,
+		"the converted segment exposes linear cubic handles")
+	var converted_undo: int = (doc._undo_stack as Array).size()
+	var record: Dictionary = doc.curve_segments()[0]
+	_check(absf(float(record.get("x1", 0.0)) - 1.0 / 3.0) < 0.001
+		and absf(float(record.get("y1", 0.0)) - 1.0 / 3.0) < 0.001,
+		"Convert to cubic starts at the linear handles")
+	var op: Vector2 = graph.plot_rect().position
+	var plot_size: Vector2 = graph.plot_rect().size
+	graph.handle_drag(op + plot_size * Vector2(0.3, 0.8),
+		op + plot_size * Vector2(0.7, 0.2))
+	_check((doc._undo_stack as Array).size() == converted_undo + 1,
+		"the first handle drag after conversion is one undo entry")
+	_check(str(doc.curve_segments()[0].get("preset", "")) == "custom",
+		"dragging after conversion marks the preset Custom")
+
+	var live: Dictionary = doc.curve_segments()[0]
+	_check(live.has("restore_transition"),
+		"the handle drag keeps the recorded restore transition")
+	var start_transition := float(live.get("restore_transition", 1.0))
+	var clear_undo: int = (doc._undo_stack as Array).size()
+	graph.clear_button().pressed.emit()
+	await get_tree().process_frame
+	_check(doc.curve_segments().is_empty(), "Clear curve removes the record")
+	_check(doc.get_channel_keys(id, "position").size() == 2,
+		"Clear curve keeps the two endpoint keys")
+	_check(absf(float(doc.get_key_transition(id, "position", 0)) - start_transition) < 0.000001,
+		"Clear curve restores the recorded start transition")
+	_check((doc._undo_stack as Array).size() == clear_undo + 1,
+		"Clear curve is one undo entry")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_all_presets() -> void:
+	print("GRAPH STEP: preset handles")
+	var expected := {
+		"linear": [1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0],
+		"ease_in": [0.42, 0.0, 1.0, 1.0],
+		"ease_out": [0.0, 0.0, 0.58, 1.0],
+		"ease_in_out": [0.42, 0.0, 0.58, 1.0],
+		"slow_in_fast_out": [0.7, 0.0, 1.0, 1.0],
+		"back_out": [0.34, 1.56, 0.64, 1.0],
+	}
+	for preset_id in expected.keys():
+		var ctx = await _host_graph(600, 324)
+		var doc = ctx["doc"]
+		var graph = ctx["graph"]
+		var id: String = ctx["id"]
+		graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+		graph.set_tab("ease")
+		graph.preset_chip(preset_id).pressed.emit()
+		await get_tree().process_frame
+		var record: Dictionary = doc.curve_segments()[0]
+		var values: Array = expected[preset_id]
+		_check(absf(float(record.get("x1", 0.0)) - float(values[0])) < 0.001
+			and absf(float(record.get("y1", 0.0)) - float(values[1])) < 0.001
+			and absf(float(record.get("x2", 0.0)) - float(values[2])) < 0.001
+			and absf(float(record.get("y2", 0.0)) - float(values[3])) < 0.001,
+			"%s writes its exact handles" % preset_id)
+		ctx["timeline"].queue_free()
+		doc.queue_free()
