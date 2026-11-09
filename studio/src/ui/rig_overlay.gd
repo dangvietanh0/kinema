@@ -27,6 +27,13 @@ const EDIT_HANDLE_DRAW_RADIUS := 10.0
 const MIN_BONE_LENGTH := 0.01
 const MAX_BONE_LENGTH := 100.0
 const REST_LIMIT := 100.0
+const GIZMO_RING_SEGMENTS := 32
+const GIZMO_RING_PX := 64.0
+const GIZMO_FREE_RING_PX := 96.0
+const GIZMO_ARROW_PX := 64.0
+const GIZMO_HIT_RADIUS := 22.0
+const GIZMO_CENTER_RADIUS := 22.0
+const GIZMO_AXIS_COLORS := {"x": Kit.DANGER, "y": Kit.SUCCESS, "z": Kit.FOCUS_BRIGHT}
 
 var doc = null
 var view = null
@@ -51,6 +58,12 @@ var _drag_head_world := Vector3.ZERO
 var _drag_plane := Plane()
 var _readout_text := ""
 var _readout_screen := Vector2.ZERO
+var _gizmo_hover_axis := ""
+var _gizmo_active_axis := ""
+var _draw_count := 0
+var _dirty := true
+var _last_camera_xform := Transform3D()
+var _last_camera_fov := -1.0
 
 
 func _ready() -> void:
@@ -66,20 +79,31 @@ func setup(document, view_ref, rig_system_ref) -> void:
 		doc.rigs_changed.connect(_on_rigs_changed)
 	if doc != null and not doc.rig_selection_changed.is_connected(_on_rig_selection_changed):
 		doc.rig_selection_changed.connect(_on_rig_selection_changed)
-	queue_redraw()
+	if doc != null and not doc.object_changed.is_connected(_on_object_changed):
+		doc.object_changed.connect(_on_object_changed)
+	if doc != null and not doc.transform_changed.is_connected(_on_transform_changed):
+		doc.transform_changed.connect(_on_transform_changed)
+	if doc != null and not doc.playback_changed.is_connected(_on_playback_changed):
+		doc.playback_changed.connect(_on_playback_changed)
+	if doc != null and not doc.scene_changed.is_connected(_on_scene_changed):
+		doc.scene_changed.connect(_on_scene_changed)
+	_mark_dirty()
 
 
 func set_rig(rig_id: String) -> void:
 	if _rig_id != rig_id:
 		_cancel_drag()
 	_rig_id = rig_id
-	queue_redraw()
+	_mark_dirty()
 
 
 func set_enabled(value: bool) -> void:
-	if not value and _drag_kind != "":
-		_end_drag()
+	if not value and (_dragging or _drag_kind != ""):
+		_cancel_drag()
 	_enabled = value
+	# Hiding the Control is what clears the last disabled frame; `_process`
+	# remains the only redraw caller while enabled, so it cannot redraw here.
+	visible = _enabled
 	mouse_filter = Control.MOUSE_FILTER_STOP if _enabled else Control.MOUSE_FILTER_PASS
 	if not _enabled:
 		_dragging = false
@@ -87,7 +111,9 @@ func set_enabled(value: bool) -> void:
 		_drag_target = ""
 		_drag_kind = ""
 		_drag_rest_current = {}
-	queue_redraw()
+		_gizmo_active_axis = ""
+		_gizmo_hover_axis = ""
+	_mark_dirty()
 
 
 func is_enabled() -> bool:
@@ -106,8 +132,28 @@ func transform_mode() -> String:
 	return _transform
 
 
+## The gesture in flight. A bone body drag is "bone" in both Pose and Edit; the
+## rest handles and gizmo kinds only start in Edit.
+func current_drag_kind() -> String:
+	if _drag_kind != "":
+		return _drag_kind
+	return "bone" if _dragging else ""
+
+
 func axis_mode() -> String:
 	return _axis
+
+
+func gizmo_axes() -> PackedStringArray:
+	return PackedStringArray(["x", "y", "z", "free"])
+
+
+func gizmo_active_axis() -> String:
+	return _gizmo_active_axis
+
+
+func draw_count() -> int:
+	return _draw_count
 
 
 func set_transform_mode(mode: String) -> void:
@@ -115,7 +161,8 @@ func set_transform_mode(mode: String) -> void:
 	if _transform == clean:
 		return
 	_transform = clean
-	queue_redraw()
+	_gizmo_hover_axis = ""
+	_mark_dirty()
 
 
 func set_axis_mode(axis: String) -> void:
@@ -123,7 +170,7 @@ func set_axis_mode(axis: String) -> void:
 	if _axis == clean:
 		return
 	_axis = clean
-	queue_redraw()
+	_mark_dirty()
 
 
 func readout_visible() -> bool:
@@ -148,7 +195,7 @@ func set_mode(mode: String) -> void:
 		return
 	_cancel_drag()
 	_mode = clean
-	queue_redraw()
+	_mark_dirty()
 	mode_changed.emit(_mode)
 
 
@@ -304,18 +351,170 @@ func _distance_to_segment_2d(point: Vector2, head: Vector2, tail: Vector2) -> fl
 	return point.distance_to(head + segment * t)
 
 
+func _distance_to_polyline(point: Vector2, points: PackedVector2Array) -> float:
+	var best := INF
+	var count := points.size()
+	if count == 0:
+		return best
+	for i in range(count):
+		best = minf(best, _distance_to_segment_2d(point, points[i], points[(i + 1) % count]))
+	return best
+
+
+func _gizmo_origin_world() -> Vector3:
+	if rig_system == null or _rig_id == "":
+		return Vector3.ZERO
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return Vector3.ZERO
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	var bones: Array = rig.get("bones", [])
+	var name := str(rig.get("active_bone", ""))
+	var index := skeleton.find_bone(name)
+	if index < 0:
+		return Vector3.ZERO
+	var override := _drag_rest_current if name == _drag_bone else {}
+	var segment := _bone_world_segment(bones, index, skeleton, is_edit_mode(), override)
+	if segment.is_empty():
+		return Vector3.ZERO
+	return skeleton.to_global(segment["head"])
+
+
+func _gizmo_origin_screen() -> Vector2:
+	if view == null:
+		return Vector2.ZERO
+	return view.world_to_screen(_gizmo_origin_world())
+
+
+func _gizmo_camera_basis() -> Basis:
+	if view == null:
+		return Basis.IDENTITY
+	if view.has_method("camera_transform"):
+		return view.camera_transform().basis
+	var camera = view.get("_camera")
+	if camera is Camera3D:
+		return (camera as Camera3D).global_transform.basis
+	return Basis.IDENTITY
+
+
+func _gizmo_ring_basis(axis: String) -> Array:
+	if axis == "free":
+		var camera := _gizmo_camera_basis()
+		return [camera.x.normalized(), camera.y.normalized()]
+	# Pose rotates around the active bone's local axis, so the rings must show
+	# those same local axes. Edit commits a rest rotation around a world axis
+	# and keeps the world-axis rings.
+	if not is_edit_mode():
+		var skeleton := _skeleton()
+		if skeleton != null:
+			var index := skeleton.find_bone(_active_bone_name())
+			if index >= 0:
+				var pose := skeleton.global_transform.basis * skeleton.get_bone_global_pose(index).basis
+				match axis:
+					"x":
+						return [pose.y.normalized(), pose.z.normalized()]
+					"y":
+						return [pose.z.normalized(), pose.x.normalized()]
+					"z":
+						return [pose.x.normalized(), pose.y.normalized()]
+	match axis:
+		"x":
+			return [Vector3.UP, Vector3.BACK]
+		"y":
+			return [Vector3.RIGHT, Vector3.BACK]
+		"z":
+			return [Vector3.RIGHT, Vector3.UP]
+	var basis := _gizmo_camera_basis()
+	return [basis.x.normalized(), basis.y.normalized()]
+
+
+func _gizmo_world_axis(axis: String) -> Vector3:
+	match axis:
+		"x":
+			return Vector3.RIGHT
+		"y":
+			return Vector3.UP
+		"z":
+			return Vector3.BACK
+	return Vector3.ZERO
+
+
+func _gizmo_ring_pixels(origin: Vector3, axis: String) -> float:
+	# A local ring can be edge-on along either basis vector, so size it from
+	# the basis that actually projects. Using only pair[0] collapses one of the
+	# bone-local rings to the maximum clamp under an orthographic view.
+	var pair := _gizmo_ring_basis(axis)
+	var basis_a: Vector3 = pair[0]
+	var basis_b: Vector3 = pair[1]
+	var px_a: float = (view.world_to_screen(origin + basis_a) - view.world_to_screen(origin)).length()
+	var px_b: float = (view.world_to_screen(origin + basis_b) - view.world_to_screen(origin)).length()
+	return maxf(px_a, px_b)
+
+
+func _gizmo_ring_radius(origin: Vector3, axis: String) -> float:
+	var px := _gizmo_ring_pixels(origin, axis)
+	var target := GIZMO_FREE_RING_PX if axis == "free" else GIZMO_RING_PX
+	return clampf(target / maxf(px, 0.0001), 0.05, 50.0)
+
+
+func _gizmo_ring_screen_radius(axis: String) -> float:
+	var origin := _gizmo_origin_world()
+	var px := _gizmo_ring_pixels(origin, axis)
+	return _gizmo_ring_radius(origin, axis) * px
+
+
+func _gizmo_axis_color(axis: String, active: bool) -> Color:
+	var color: Color = GIZMO_AXIS_COLORS.get(axis, Kit.FOCUS_BRIGHT)
+	if not active:
+		color.a *= 0.45
+	return color
+
+
+func _closed_polyline(points: PackedVector2Array) -> PackedVector2Array:
+	var closed := points.duplicate()
+	closed.append(points[0])
+	return closed
+
+
 func _skeleton() -> Skeleton3D:
 	if doc == null or _rig_id == "":
 		return null
-	var node: Node3D = doc.nodes.get(_rig_id)
-	if node == null:
-		return null
-	return node.get_node_or_null("Skeleton3D") as Skeleton3D
+	return doc.rig_system.skeleton_for_object(_rig_id)
 
 
 func _process(_delta: float) -> void:
-	if _enabled:
+	if not _enabled:
+		return
+	var signature := _camera_signature()
+	var xform: Transform3D = signature[0]
+	var fov: float = signature[1]
+	if xform != _last_camera_xform or not is_equal_approx(fov, _last_camera_fov):
+		_last_camera_xform = xform
+		_last_camera_fov = fov
+		_dirty = true
+	if _dirty:
 		queue_redraw()
+		_dirty = false
+
+
+## The one dirty entry point. _process turns the flag into a real redraw, so
+## an idle overlay with a still camera performs zero draws.
+func _mark_dirty(_arg1: Variant = null, _arg2: Variant = null) -> void:
+	_dirty = true
+
+
+func _camera_signature() -> Array:
+	var xform := Transform3D()
+	var fov := -1.0
+	if view != null:
+		if view.has_method("camera_transform"):
+			xform = view.camera_transform()
+		else:
+			var camera = view.get("_camera")
+			if camera is Camera3D:
+				xform = (camera as Camera3D).global_transform
+				fov = (camera as Camera3D).fov
+	return [xform, fov]
 
 
 func _draw() -> void:
@@ -327,6 +526,7 @@ func _draw() -> void:
 	var rig: Dictionary = rig_system.get_rig(_rig_id)
 	if rig.is_empty():
 		return
+	_draw_count += 1
 	var bones: Array = rig.get("bones", [])
 	var active := str(rig.get("active_bone", ""))
 	var use_rest := is_edit_mode()
@@ -375,6 +575,8 @@ func _draw() -> void:
 			draw_dashed_line(effector, target_screen, Kit.FOCUS_DARK, 1.0)
 		draw_arc(target_screen, TARGET_HANDLE_RADIUS, 0.0, TAU, 32, Kit.FOCUS_BRIGHT, 1.0)
 		draw_circle(target_screen, 4.0, Kit.FOCUS_BRIGHT)
+	if gizmo_visible():
+		_draw_gizmo()
 	if _dragging and _readout_text != "":
 		var font := ThemeDB.fallback_font
 		var text_size := font.get_string_size(_readout_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14)
@@ -382,6 +584,37 @@ func _draw() -> void:
 		var rect := Rect2(anchor - Vector2(6, text_size.y), text_size + Vector2(12, 8))
 		draw_rect(rect, Kit.SURFACE_3, true)
 		draw_string(font, anchor, _readout_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Kit.TEXT)
+
+
+func _draw_gizmo() -> void:
+	var origin := _gizmo_origin_screen()
+	var active := _gizmo_active_axis if _gizmo_active_axis != "" else _gizmo_hover_axis
+	if _transform == "move":
+		for axis in ["x", "y", "z"]:
+			var shaft := gizmo_arrow_points(axis)
+			if shaft.size() < 2:
+				continue
+			var color := _gizmo_axis_color(axis, active == axis)
+			draw_line(shaft[0], shaft[1], color, 2.0, true)
+			var tip := _gizmo_arrow_tip(axis)
+			if tip.size() >= 3:
+				draw_colored_polygon(tip, color)
+		var center_color := Kit.FOCUS_BRIGHT if active == "free" else Kit.FOCUS
+		if active != "free":
+			center_color.a *= 0.45
+		draw_rect(Rect2(origin - Vector2(5, 5), Vector2(10, 10)), center_color, true)
+		return
+	var free_points := gizmo_ring_points("free")
+	if free_points.size() >= 2:
+		var free_color := Kit.FOCUS_BRIGHT if active == "free" else Kit.FOCUS
+		if active != "free":
+			free_color.a *= 0.45
+		draw_polyline(_closed_polyline(free_points), free_color, 1.0, true)
+	for axis in ["x", "y", "z"]:
+		var points := gizmo_ring_points(axis)
+		if points.size() < 2:
+			continue
+		draw_polyline(_closed_polyline(points), _gizmo_axis_color(axis, active == axis), 2.0, true)
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -402,7 +635,13 @@ func _gui_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		if Kit.is_emulated_mouse(event):
 			return
-		drag_at((event as InputEventMouseMotion).position)
+		var motion := event as InputEventMouseMotion
+		if not _dragging and _drag_target == "" and _drag_kind == "":
+			var hover := gizmo_handle_at(motion.position)
+			if hover != _gizmo_hover_axis:
+				_gizmo_hover_axis = hover
+				_mark_dirty()
+		drag_at(motion.position)
 	elif event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
@@ -416,6 +655,7 @@ func _gui_input(event: InputEvent) -> void:
 
 
 func press_at(screen: Vector2) -> void:
+	_mark_dirty()
 	if is_edit_mode():
 		if _imported():
 			return
@@ -425,12 +665,15 @@ func press_at(screen: Vector2) -> void:
 		if tail_handle_at(screen):
 			_begin_rest_drag("tail", screen)
 			return
-		# Edit mode still lets a tap select another bone to edit; it never
-		# rotates a pose.
-		var selected := bone_at(screen)
-		if selected != "":
-			rig_system.set_active_bone(_rig_id, selected)
-			bone_selected.emit(selected)
+		if _gizmo_enabled() and gizmo_handle_at(screen) != "":
+			_begin_gizmo_drag(gizmo_handle_at(screen), screen)
+			return
+		var edit_target := bone_at(screen)
+		if edit_target != "":
+			_begin_edit_body_drag(edit_target, screen)
+		return
+	if _gizmo_enabled() and gizmo_handle_at(screen) != "":
+		_begin_gizmo_drag(gizmo_handle_at(screen), screen)
 		return
 	var chain_id := _chain_at(screen)
 	if chain_id != "":
@@ -441,8 +684,134 @@ func press_at(screen: Vector2) -> void:
 		_begin_drag(bone, screen)
 
 
+func gizmo_visible() -> bool:
+	if not _enabled or rig_system == null or _rig_id == "" or view == null:
+		return false
+	if is_edit_mode() and _imported():
+		return false
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	if str(rig.get("active_bone", "")) == "":
+		return false
+	return _skeleton() != null
+
+
+func _gizmo_enabled() -> bool:
+	return gizmo_visible()
+
+
+## The projected ring for one gizmo axis. The free ring lives in the camera
+## plane and is wider so it never overlaps an axis ring inside the 22 dp band.
+func gizmo_ring_points(axis: String) -> PackedVector2Array:
+	if not gizmo_visible() or not (axis in ["x", "y", "z", "free"]):
+		return PackedVector2Array()
+	var origin := _gizmo_origin_world()
+	var pair := _gizmo_ring_basis(axis)
+	var basis_a: Vector3 = pair[0]
+	var basis_b: Vector3 = pair[1]
+	var radius := _gizmo_ring_radius(origin, axis)
+	var points := PackedVector2Array()
+	for i in range(GIZMO_RING_SEGMENTS):
+		var angle := TAU * float(i) / float(GIZMO_RING_SEGMENTS)
+		points.append(view.world_to_screen(
+			origin + basis_a * (cos(angle) * radius) + basis_b * (sin(angle) * radius)))
+	return points
+
+
+func gizmo_polyline(axis: String) -> PackedVector2Array:
+	return gizmo_ring_points(axis)
+
+
+func gizmo_arrow_points(axis: String) -> PackedVector2Array:
+	if not gizmo_visible() or not (axis in ["x", "y", "z"]):
+		return PackedVector2Array()
+	var origin := _gizmo_origin_world()
+	var world_axis := _gizmo_world_axis(axis)
+	var px: float = (view.world_to_screen(origin + world_axis) - view.world_to_screen(origin)).length()
+	var radius := clampf(GIZMO_ARROW_PX / maxf(px, 0.0001), 0.05, 50.0)
+	return PackedVector2Array([
+		view.world_to_screen(origin),
+		view.world_to_screen(origin + world_axis * radius),
+	])
+
+
+func _gizmo_arrow_tip(axis: String) -> PackedVector2Array:
+	var shaft := gizmo_arrow_points(axis)
+	if shaft.size() < 2:
+		return PackedVector2Array()
+	var direction := (shaft[1] - shaft[0]).normalized()
+	if direction.length_squared() <= 0.000001:
+		return PackedVector2Array()
+	var normal := Vector2(-direction.y, direction.x)
+	return PackedVector2Array([
+		shaft[1],
+		shaft[1] - direction * 8.0 + normal * 4.0,
+		shaft[1] - direction * 8.0 - normal * 4.0,
+	])
+
+
+## Hit testing never mixes the rotate rings with the move arrows. A ring hit
+## also has to sit at the ring's projected radius, so an edge-on ring cannot
+## steal a press in the middle of the bone it circles.
+func gizmo_handle_at(screen: Vector2) -> String:
+	if not gizmo_visible():
+		return ""
+	if _transform == "move":
+		var center := _gizmo_origin_screen()
+		if center.distance_to(screen) <= GIZMO_CENTER_RADIUS:
+			return "free"
+		for axis in ["x", "y", "z"]:
+			var shaft := gizmo_arrow_points(axis)
+			if shaft.size() >= 2 \
+					and _distance_to_segment_2d(screen, shaft[0], shaft[1]) <= GIZMO_HIT_RADIUS:
+				return axis
+		return ""
+	var origin := _gizmo_origin_screen()
+	for axis in ["free", "x", "y", "z"]:
+		var points := gizmo_ring_points(axis)
+		if points.size() < 2:
+			continue
+		if absf(origin.distance_to(screen) - _gizmo_ring_screen_radius(axis)) > GIZMO_HIT_RADIUS:
+			continue
+		if _distance_to_polyline(screen, points) <= GIZMO_HIT_RADIUS:
+			return axis
+	return ""
+
+
+func _begin_gizmo_drag(axis: String, screen: Vector2) -> void:
+	var clean := axis if axis in ["x", "y", "z", "free"] else "free"
+	_gizmo_active_axis = clean
+	_gizmo_hover_axis = clean
+	_axis = clean
+	var kind := "gizmo_move" if _transform == "move" else "gizmo_rotate"
+	if is_edit_mode():
+		_begin_rest_drag(kind, screen)
+	else:
+		var name := _active_bone_name()
+		if name != "":
+			_begin_drag(name, screen)
+			_drag_kind = kind
+	if _drag_kind == "":
+		_gizmo_active_axis = ""
+	_mark_dirty()
+
+
 func drag_at(screen: Vector2) -> void:
-	if _drag_kind != "":
+	if not _dragging and _drag_target == "" and _drag_kind == "":
+		return
+	_mark_dirty()
+	if _drag_kind.begins_with("gizmo_"):
+		if is_edit_mode():
+			_drag_rest(screen)
+		else:
+			_drag_gizmo(screen)
+	elif _drag_kind == "bone":
+		if is_edit_mode():
+			_drag_edit_body(screen)
+		elif _transform == "move":
+			_move_drag(screen)
+		else:
+			_rotate_drag(screen)
+	elif _drag_kind != "":
 		_drag_rest(screen)
 	elif _drag_target != "":
 		_move_target(screen)
@@ -454,11 +823,13 @@ func drag_at(screen: Vector2) -> void:
 
 
 func release_drag() -> void:
+	_mark_dirty()
 	_end_drag()
 
 
 func _begin_drag(bone: String, screen: Vector2) -> void:
 	_dragging = true
+	_drag_kind = "bone"
 	_drag_bone = bone
 	_drag_origin = screen
 	var skeleton := _skeleton()
@@ -470,20 +841,16 @@ func _begin_drag(bone: String, screen: Vector2) -> void:
 			_drag_start_scale = skeleton.get_bone_pose_scale(index)
 			_drag_head_world = skeleton.to_global(skeleton.get_bone_global_pose(index).origin)
 	_readout_text = ""
-	var ray: Dictionary = view.screen_ray(screen) if view != null else {}
-	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
-	var normal := -direction
-	if normal.length_squared() <= 0.000001:
-		normal = Vector3.BACK
-	normal = normal.normalized()
-	_drag_plane = Plane(normal, normal.dot(_drag_head_world))
+	_drag_plane = _camera_plane(_drag_head_world)
 	rig_system.set_active_bone(_rig_id, bone)
 	bone_selected.emit(bone)
 	rig_system.begin_pose_edit("Pose bone")
 
 
 func _end_drag() -> void:
-	if _drag_kind != "" and _drag_bone != "" and not _drag_rest_current.is_empty():
+	var commits_rest := is_edit_mode() \
+		and _drag_kind in ["head", "tail", "gizmo_rotate", "gizmo_move", "bone"]
+	if commits_rest and _drag_bone != "" and not _drag_rest_current.is_empty():
 		if _rest_changed(_drag_rest_start, _drag_rest_current):
 			# One gesture, one undo entry: the preview only becomes a rest
 			# edit when the finger lifts.
@@ -494,10 +861,11 @@ func _end_drag() -> void:
 	_dragging = false
 	_drag_bone = ""
 	_drag_target = ""
-	_drag_kind = ""
 	_drag_rest_start = {}
 	_drag_rest_current = {}
-	queue_redraw()
+	_drag_kind = ""
+	_gizmo_active_axis = ""
+	_mark_dirty()
 
 
 func _cancel_drag() -> void:
@@ -517,7 +885,9 @@ func _cancel_drag() -> void:
 	_drag_kind = ""
 	_drag_rest_start = {}
 	_drag_rest_current = {}
-	queue_redraw()
+	_gizmo_active_axis = ""
+	_gizmo_hover_axis = ""
+	_mark_dirty()
 
 
 func _rest_changed(before: Dictionary, after: Dictionary) -> bool:
@@ -549,6 +919,9 @@ func _begin_rest_drag(kind: String, screen: Vector2) -> void:
 		return
 	_drag_kind = kind
 	_drag_bone = name
+	_drag_origin = screen
+	_drag_start_rotation = bone.get("r", Quaternion.IDENTITY)
+	_drag_start_position = bone.get("p", Vector3.ZERO)
 	_drag_rest_start = {
 		"p": bone.get("p", Vector3.ZERO),
 		"r": bone.get("r", Quaternion.IDENTITY),
@@ -557,13 +930,77 @@ func _begin_rest_drag(kind: String, screen: Vector2) -> void:
 	}
 	_drag_rest_current = _drag_rest_start.duplicate(true)
 	_drag_head_world = skeleton.to_global(segment["head"])
-	var ray: Dictionary = view.screen_ray(screen) if view != null else {}
-	var direction: Vector3 = ray.get("direction", Vector3.FORWARD)
+	_drag_plane = _camera_plane(_drag_head_world)
+
+
+## A plane facing the camera through the drag origin. Reads the viewport
+## camera when it exposes one, so a real perspective camera and the test view
+## share the same code path.
+func _camera_plane(origin_world: Vector3) -> Plane:
+	var direction := Vector3.FORWARD
+	if view != null and view.has_method("camera_transform"):
+		direction = (view.camera_transform().basis.z as Vector3)
+	elif view != null:
+		var camera = view.get("_camera")
+		if camera is Camera3D:
+			direction = (camera as Camera3D).global_transform.basis.z
 	var normal := -direction
 	if normal.length_squared() <= 0.000001:
 		normal = Vector3.BACK
 	normal = normal.normalized()
-	_drag_plane = Plane(normal, normal.dot(_drag_head_world))
+	return Plane(normal, normal.dot(origin_world))
+
+
+func _begin_edit_body_drag(bone: String, screen: Vector2) -> void:
+	var rig: Dictionary = rig_system.get_rig(_rig_id)
+	if rig.is_empty() or bool(rig.get("imported", false)):
+		return
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return
+	var bones: Array = rig.get("bones", [])
+	var index := skeleton.find_bone(bone)
+	if index < 0 or index >= bones.size():
+		return
+	var segment := _bone_world_segment(bones, index, skeleton, true, {})
+	if segment.is_empty():
+		return
+	_drag_kind = "bone"
+	_drag_bone = bone
+	_drag_origin = screen
+	_drag_start_rotation = bones[index].get("r", Quaternion.IDENTITY)
+	_drag_start_position = bones[index].get("p", Vector3.ZERO)
+	_drag_rest_start = {
+		"p": _drag_start_position,
+		"r": _drag_start_rotation,
+		"s": bones[index].get("s", Vector3.ONE),
+		"length": float(bones[index].get("length", 0.4)),
+	}
+	_drag_rest_current = _drag_rest_start.duplicate(true)
+	_drag_head_world = skeleton.to_global(segment["head"])
+	_drag_plane = _camera_plane(_drag_head_world)
+	rig_system.set_active_bone(_rig_id, bone)
+	bone_selected.emit(bone)
+
+
+## Edit body drag is a free rotation of the rest bone around its own head. It
+## previews in _drag_rest_current and commits once, on release, through
+## set_bone_rest; the bone length is never touched.
+func _drag_edit_body(screen: Vector2) -> void:
+	if _drag_rest_current.is_empty():
+		return
+	var delta := screen - _drag_origin
+	var up := Vector3.UP
+	var right := Vector3.RIGHT
+	if view != null:
+		var camera = view.get("_camera")
+		if camera is Camera3D:
+			up = (camera as Camera3D).global_transform.basis.y.normalized()
+			right = (camera as Camera3D).global_transform.basis.x.normalized()
+	var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
+	var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
+	_drag_rest_current["r"] = (yaw * pitch * _drag_start_rotation).normalized()
+	_mark_dirty()
 
 
 func _plane_hit(screen: Vector2):
@@ -578,6 +1015,14 @@ func _plane_hit(screen: Vector2):
 
 
 func _drag_rest(screen: Vector2) -> void:
+	if _drag_kind == "gizmo_rotate":
+		_drag_edit_gizmo_rotate(screen)
+		return
+	if _drag_kind == "gizmo_move":
+		_drag_edit_gizmo_move(screen)
+		return
+	if _drag_kind != "head" and _drag_kind != "tail":
+		return
 	var hit = _plane_hit(screen)
 	if hit == null:
 		return
@@ -610,7 +1055,94 @@ func _drag_rest(screen: Vector2) -> void:
 		_drag_rest_current["r"] = Quaternion(Vector3.UP, local_delta.normalized())
 		_drag_rest_current["length"] = clampf(
 			local_delta.length(), MIN_BONE_LENGTH, MAX_BONE_LENGTH)
-	queue_redraw()
+	_mark_dirty()
+
+
+## Pose gizmo drags reuse the existing axis-locked pose paths; Edit gizmo
+## drags preview the rest transform and commit once on release.
+func _drag_gizmo(screen: Vector2) -> void:
+	if _transform == "move":
+		_move_drag(screen)
+	else:
+		_rotate_drag(screen)
+
+
+func _drag_edit_gizmo_rotate(screen: Vector2) -> void:
+	if _drag_rest_current.is_empty():
+		return
+	var next := _drag_start_rotation
+	if _axis == "free":
+		var delta := screen - _drag_origin
+		var basis := _gizmo_camera_basis()
+		var up := basis.y.normalized()
+		var right := basis.x.normalized()
+		var yaw := Quaternion(up, -delta.x * DRAG_SENSITIVITY)
+		var pitch := Quaternion(right, -delta.y * DRAG_SENSITIVITY)
+		next = (yaw * pitch * _drag_start_rotation).normalized()
+	else:
+		var origin_screen := _gizmo_origin_screen()
+		var start_vec := _drag_origin - origin_screen
+		var now_vec := screen - origin_screen
+		if start_vec.length_squared() <= 0.000001 or now_vec.length_squared() <= 0.000001:
+			return
+		var angle := start_vec.angle_to(now_vec)
+		var parent_axis := _gizmo_parent_axis(_gizmo_world_axis(_axis))
+		next = (Quaternion(parent_axis, angle) * _drag_start_rotation).normalized()
+	_drag_rest_current["r"] = next
+	_mark_dirty()
+
+
+func _drag_edit_gizmo_move(screen: Vector2) -> void:
+	if _drag_rest_current.is_empty():
+		return
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return
+	var index := skeleton.find_bone(_drag_bone)
+	if index < 0:
+		return
+	var parent_basis := Basis.IDENTITY
+	var parent := skeleton.get_bone_parent(index)
+	if parent >= 0:
+		parent_basis = skeleton.get_bone_global_rest(parent).basis
+	var delta := Vector3.ZERO
+	if _axis == "free":
+		var hit = _plane_hit(screen)
+		if hit == null:
+			return
+		delta = parent_basis.inverse() * (
+			skeleton.to_local(hit) - skeleton.to_local(_drag_head_world))
+	else:
+		var axis_world := _gizmo_world_axis(_axis)
+		var screen_axis := _screen_axis(axis_world, _drag_head_world)
+		if screen_axis.length_squared() <= 0.000001:
+			return
+		var units := (screen - _drag_origin).dot(screen_axis.normalized()) / screen_axis.length()
+		var axis_skeleton := skeleton.global_transform.basis.inverse() * axis_world
+		delta = parent_basis.inverse() * (axis_skeleton * units)
+	var start := _drag_rest_start.get("p", Vector3.ZERO) as Vector3
+	var moved := start + delta
+	_drag_rest_current["p"] = Vector3(
+		clampf(moved.x, -REST_LIMIT, REST_LIMIT),
+		clampf(moved.y, -REST_LIMIT, REST_LIMIT),
+		clampf(moved.z, -REST_LIMIT, REST_LIMIT))
+	_mark_dirty()
+
+
+## A world axis expressed in the bone's parent rest space, so it can compose
+## with the stored local rest rotation.
+func _gizmo_parent_axis(world_axis: Vector3) -> Vector3:
+	var skeleton := _skeleton()
+	if skeleton == null:
+		return world_axis.normalized()
+	var skeleton_axis := (skeleton.global_transform.basis.inverse() * world_axis).normalized()
+	var index := skeleton.find_bone(_drag_bone)
+	if index < 0:
+		return skeleton_axis
+	var parent := skeleton.get_bone_parent(index)
+	if parent < 0:
+		return skeleton_axis
+	return (skeleton.get_bone_global_rest(parent).basis.inverse() * skeleton_axis).normalized()
 
 
 func _rotate_drag(screen: Vector2) -> void:
@@ -648,7 +1180,7 @@ func _rotate_drag(screen: Vector2) -> void:
 	rig_system.set_bone_pose(_rig_id, _drag_bone, {"r": next_rotation})
 	_set_readout("%.0f°" % rad_to_deg(next_rotation.angle_to(_drag_start_rotation)),
 		view.world_to_screen(_drag_head_world) if view != null else screen)
-	queue_redraw()
+	_mark_dirty()
 
 
 func _move_drag(screen: Vector2) -> void:
@@ -685,7 +1217,7 @@ func _move_drag(screen: Vector2) -> void:
 	rig_system.set_bone_pose(_rig_id, _drag_bone, {"p": next_position})
 	_set_readout("%.2f u" % next_position.distance_to(_drag_start_position),
 		view.world_to_screen(_drag_head_world))
-	queue_redraw()
+	_mark_dirty()
 
 
 func _axis_vector() -> Vector3:
@@ -757,14 +1289,30 @@ func _move_target(screen: Vector2) -> void:
 		var hit = plane.intersects_ray(origin, direction)
 		if hit != null:
 			target.global_position = hit
-			queue_redraw()
+			_mark_dirty()
 		return
 
 
 func _on_rigs_changed() -> void:
-	queue_redraw()
+	_mark_dirty()
 
 
 func _on_rig_selection_changed(rig_id: String, _bone: String) -> void:
 	if rig_id == _rig_id:
-		queue_redraw()
+		_mark_dirty()
+
+
+func _on_object_changed(_id: String) -> void:
+	_mark_dirty()
+
+
+func _on_transform_changed(_id: String) -> void:
+	_mark_dirty()
+
+
+func _on_playback_changed(_time: float, _playing: bool) -> void:
+	_mark_dirty()
+
+
+func _on_scene_changed() -> void:
+	_mark_dirty()

@@ -40,6 +40,9 @@ class FakeView:
 			"direction": Vector3.FORWARD,
 		}
 
+	func camera_transform() -> Transform3D:
+		return Transform3D(Basis.IDENTITY, Vector3(origin.x, -origin.y, 0.0))
+
 
 func _check(condition: bool, message: String) -> void:
 	_checks += 1
@@ -68,8 +71,15 @@ func _ready() -> void:
 	await _test_pose_and_bone_keys()
 	await _test_pose_v2()
 	await _test_pose_transactions()
+	await _test_one_gesture_and_edit_parity()
+	await _test_gizmo()
+	await _test_pose_gizmo_ring_axes()
+	await _test_rig_redraw_contract()
+	await _test_rig_panel_actions()
+	await _test_drag_cancel_on_disable()
 	await _test_touch_pose_editing()
 	await _test_imported_adoption()
+	await _test_imported_glb_skeleton()
 	await _test_gltf_external_buffers()
 	await _test_fbx_and_adoption()
 	await _test_ui()
@@ -1107,6 +1117,280 @@ func _test_pose_transactions() -> void:
 	doc.queue_free()
 
 
+func _rest_bone(doc: Node3D, rig_id: String, name: String) -> Dictionary:
+	var rig: Dictionary = doc.rig_system.get_rig(rig_id)
+	var index := _bone_index(rig, name)
+	return rig["bones"][index] if index >= 0 else {}
+
+
+func _test_one_gesture_and_edit_parity() -> void:
+	print("RIG STEP: one gesture and edit parity")
+	var doc := _new_doc("One Gesture")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var skel := _skeleton(doc, rig_id)
+	var spine := skel.find_bone("Spine")
+	var press: Vector2 = view.world_to_screen(Vector3(0.0, 1.4, 0.0))
+
+	var pose_before := skel.get_bone_pose_rotation(spine)
+	var undo_before: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	_check(str(rs.get_rig(rig_id).get("active_bone", "")) == "Spine",
+		"pressing a bone body makes that bone active")
+	_check(overlay.current_drag_kind() == "bone",
+		"pressing a bone body starts the drag in the same gesture")
+	overlay.drag_at(press + Vector2(46, 0))
+	_check(skel.get_bone_pose_rotation(spine).angle_to(pose_before) > 0.01,
+		"the pose rotation changes before release")
+	overlay.release_drag()
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"one pose gesture is one undo entry")
+
+	var undo_tap: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	overlay.release_drag()
+	_check((doc._undo_stack as Array).size() == undo_tap,
+		"a tap with no motion selects but adds no undo entry")
+
+	overlay.set_mode("edit")
+	overlay.set_transform_mode("rotate")
+	_check(overlay.transform_mode() == "rotate", "Edit mode accepts Rotate")
+	var rest_before: Dictionary = _rest_bone(doc, rig_id, "Spine")
+	var rest_rot: Quaternion = rest_before.get("r", Quaternion.IDENTITY)
+	var rest_len := float(rest_before.get("length", 0.0))
+	var edit_undo: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	_check(overlay.current_drag_kind() == "bone",
+		"pressing a bone body in Edit starts the drag")
+	overlay.drag_at(press + Vector2(40, 12))
+	overlay.release_drag()
+	var rest_after: Dictionary = _rest_bone(doc, rig_id, "Spine")
+	_check((rest_after.get("r", Quaternion.IDENTITY) as Quaternion).angle_to(rest_rot) > 0.01,
+		"Edit body drag rotates the rest bone")
+	_check(is_equal_approx(float(rest_after.get("length", 0.0)), rest_len),
+		"Edit body drag never changes the bone length")
+	_check((doc._undo_stack as Array).size() == edit_undo + 1,
+		"one Edit body gesture is one undo entry")
+
+	overlay.set_transform_mode("move")
+	_check(overlay.transform_mode() == "move", "Edit mode accepts Move")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+func _gizmo_sample(overlay, axis: String) -> Vector2:
+	# 3/8 of the ring avoids the projected crossings with the other two axis
+	# rings and with the free centre handle under the orthographic fake view.
+	var points: PackedVector2Array = overlay.gizmo_ring_points(axis)
+	return points[points.size() * 3 / 8] if not points.is_empty() else Vector2.ZERO
+
+
+func _gizmo_arrow_sample(overlay, axis: String) -> Vector2:
+	var points: PackedVector2Array = overlay.gizmo_arrow_points(axis)
+	return (points[0] + points[1]) * 0.5 if points.size() >= 2 else Vector2.ZERO
+
+
+func _test_gizmo() -> void:
+	print("RIG STEP: rig gizmo")
+	var doc := _new_doc("Rig Gizmo")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Spine")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+
+	_check(overlay.gizmo_axes() == PackedStringArray(["x", "y", "z", "free"]),
+		"the gizmo exposes x/y/z/free")
+	_check(overlay.gizmo_visible(), "the gizmo is visible with an active bone")
+	for axis in ["x", "y", "z", "free"]:
+		var sample := _gizmo_sample(overlay, axis)
+		_check(overlay.gizmo_handle_at(sample) == axis,
+			"a projected %s ring sample hits its axis" % axis)
+
+	overlay.set_mode("edit")
+	overlay.set_transform_mode("rotate")
+	_check(overlay.gizmo_visible(), "the gizmo stays visible in Edit")
+	var rest_before: Quaternion = _rest_bone(doc, rig_id, "Spine").get("r", Quaternion.IDENTITY)
+	var undo_before: int = (doc._undo_stack as Array).size()
+	var sample := _gizmo_sample(overlay, "x")
+	overlay.press_at(sample)
+	_check(overlay.current_drag_kind() == "gizmo_rotate",
+		"pressing a ring starts a gizmo rotate")
+	overlay.drag_at(sample + Vector2(60, 0))
+	overlay.release_drag()
+	var rest_after: Quaternion = _rest_bone(doc, rig_id, "Spine").get("r", Quaternion.IDENTITY)
+	_check(rest_after.angle_to(rest_before) > 0.01, "the X ring rotates the rest bone")
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"one gizmo rotation is one undo entry")
+
+	overlay.set_transform_mode("move")
+	var p_before: Vector3 = _rest_bone(doc, rig_id, "Spine").get("p", Vector3.ZERO)
+	var move_sample: Vector2 = _gizmo_arrow_sample(overlay, "x")
+	overlay.press_at(move_sample)
+	_check(overlay.current_drag_kind() == "gizmo_move",
+		"pressing an arrow starts a gizmo move")
+	overlay.drag_at(move_sample + Vector2(50, 0))
+	overlay.release_drag()
+	var p_after: Vector3 = _rest_bone(doc, rig_id, "Spine").get("p", Vector3.ZERO)
+	_check(absf(p_after.x - p_before.x) > 0.001, "the X arrow moves the rest bone")
+	_check(absf(p_after.y - p_before.y) < 0.001 and absf(p_after.z - p_before.z) < 0.001,
+		"the X arrow keeps Y and Z near zero")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+func _test_pose_gizmo_ring_axes() -> void:
+	print("RIG STEP: pose gizmo ring axes")
+	var doc := _new_doc("Pose Gizmo Ring")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Spine")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	var skel := _skeleton(doc, rig_id)
+	var spine := skel.find_bone("Spine")
+	# Rotate the bone 90 degrees about world Z. Its local +Y (the first basis
+	# of the local-X ring) then points along world -X, while a world-axis ring
+	# would put the same sample along world +Y.
+	skel.set_bone_pose_rotation(spine, Quaternion(Vector3.BACK, PI * 0.5))
+	await get_tree().process_frame
+	var origin: Vector2 = view.world_to_screen(overlay._gizmo_origin_world())
+	var pose_ring: PackedVector2Array = overlay.gizmo_ring_points("x")
+	_check(pose_ring.size() == 32, "the Pose X ring has 32 projected points")
+	if pose_ring.size() == 32:
+		var pose_offset := pose_ring[0] - origin
+		_check(pose_offset.x < -1.0 and absf(pose_offset.y) < 0.5,
+			"the Pose X ring follows the bone-local Y axis")
+		_check(pose_offset.distance_to(Vector2(0.0, -64.0)) > 1.0,
+			"the Pose X ring is not the world-Y axis")
+	overlay.set_mode("edit")
+	await get_tree().process_frame
+	var edit_ring: PackedVector2Array = overlay.gizmo_ring_points("x")
+	_check(edit_ring.size() == 32, "the Edit X ring has 32 projected points")
+	if edit_ring.size() == 32:
+		var edit_offset := edit_ring[0] - origin
+		_check(absf(edit_offset.x) < 0.5 and edit_offset.y < -1.0,
+			"the Edit X ring still follows the world Y axis")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+func _test_rig_redraw_contract() -> void:
+	print("RIG STEP: redraw contract")
+	var doc := _new_doc("Rig Redraw")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var settled: int = overlay.draw_count()
+	for _i in 10:
+		await get_tree().process_frame
+	_check(overlay.draw_count() == settled, "idle rig overlay draws zero times")
+	view.origin += Vector2(12, 0)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(overlay.draw_count() > settled, "camera movement redraws the overlay")
+	overlay.set_enabled(false)
+	_check(not overlay.visible, "disabling the overlay hides its last frame")
+	_check(not overlay.is_visible_in_tree(),
+		"the disabled overlay is not visible in the tree")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var disabled: int = overlay.draw_count()
+	view.origin += Vector2(12, 0)
+	for _i in 4:
+		await get_tree().process_frame
+	_check(overlay.draw_count() == disabled, "a disabled overlay never draws")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
+func _test_rig_panel_actions() -> void:
+	print("RIG STEP: rig panel actions")
+	var doc := _new_doc("Rig Panel")
+	var panel = RigPanelScript.new()
+	add_child(panel)
+	panel.setup(doc)
+	await get_tree().process_frame
+	_check(panel.empty_state_visible(), "the panel shows the empty state")
+	_check(panel.empty_text() == "No rig on the selected object.",
+		"the empty state names the missing rig")
+	_check(panel.empty_add_button().custom_minimum_size == Vector2(96, 44),
+		"Add rig is a 96x44 target")
+	_check(panel.empty_import_button().custom_minimum_size == Vector2(96, 44),
+		"Import model is a 96x44 target")
+	var imported: Array[String] = []
+	panel.import_model_requested.connect(func() -> void: imported.append("import"))
+	panel.empty_import_button().pressed.emit()
+	_check(imported == ["import"], "Import model emits the real import request")
+	panel.queue_free()
+	doc.queue_free()
+
+
+func _test_drag_cancel_on_disable() -> void:
+	print("RIG STEP: drag cancel")
+	var doc := _new_doc("Rig Cancel")
+	var rs = doc.rig_system
+	var rig_id := _make_chain_rig(doc)
+	rs.set_active_bone(rig_id, "Spine")
+	var view := FakeView.new()
+	add_child(view)
+	var overlay = RigOverlayScript.new()
+	add_child(overlay)
+	overlay.setup(doc, view, rs)
+	overlay.set_rig(rig_id)
+	overlay.set_enabled(true)
+	await get_tree().process_frame
+	var skel := _skeleton(doc, rig_id)
+	var spine := skel.find_bone("Spine")
+	var before := skel.get_bone_pose_rotation(spine)
+	var press: Vector2 = view.world_to_screen(Vector3(0.0, 1.4, 0.0))
+	var undo_before: int = (doc._undo_stack as Array).size()
+	overlay.press_at(press)
+	overlay.drag_at(press + Vector2(40, 0))
+	_check(overlay.current_drag_kind() == "bone", "the drag is live before disabling")
+	overlay.set_enabled(false)
+	_check(overlay.current_drag_kind() == "" and not overlay._dragging,
+		"disabling cancels the live drag")
+	_check((doc._undo_stack as Array).size() == undo_before,
+		"a cancelled drag adds no undo entry")
+	_check(skel.get_bone_pose_rotation(spine).angle_to(before) < 0.01,
+		"a cancelled drag restores the pose")
+	overlay.queue_free()
+	view.queue_free()
+	doc.queue_free()
+
+
 # -------------------------------------------------------------------------
 # C4d — touch transform/axis editing and the Rest/Pose panel
 # -------------------------------------------------------------------------
@@ -1157,7 +1441,9 @@ func _test_touch_pose_editing() -> void:
 	overlay.set_axis_mode("x")
 	skel.set_bone_pose_position(0, Vector3.ZERO)
 	skel.set_bone_pose_rotation(0, Quaternion.IDENTITY)
-	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin))
+	# Press the bone body, away from the gizmo's centre handle and arrows, so
+	# this exercises the bone move path rather than a gizmo drag.
+	screen = view.world_to_screen(skel.to_global(skel.get_bone_global_pose(0).origin)) + Vector2(20, -90)
 	undo_before = (doc._undo_stack as Array).size()
 	overlay.press_at(screen)
 	overlay.drag_at(screen + Vector2(50, 40))
@@ -1321,6 +1607,95 @@ func _test_imported_adoption() -> void:
 			_check((doc.rig_system.get_rig(object_id).get("bones", []) as Array).size() == bones_before, "pressing Add bone on an imported rig changes nothing")
 	panel.queue_free()
 	doc.queue_free()
+
+
+func _test_imported_glb_skeleton() -> void:
+	print("RIG STEP: imported glb skeleton")
+	var doc := _new_doc("Imported GLB")
+	DirAccess.make_dir_recursive_absolute(_tmp_dir.path_join("models"))
+	var glb := _tmp_dir.path_join("models/rigged.glb")
+	_check(_write_rigged_glb(glb), "the rigged GLB fixture is written")
+	var id: String = doc.add_imported("models/rigged.glb", "Rigged")
+	var node: Node3D = doc.nodes.get(id)
+	var rs = doc.rig_system
+	_check(node != null and node.get_node_or_null("Skeleton3D") == null,
+		"the generated skeleton is not a direct child")
+	var nested := node.get_node_or_null("Model/Skeleton3D") as Skeleton3D
+	_check(nested != null and nested.get_bone_count() == 2,
+		"the imported skeleton is nested under the generated model")
+	var rig: Dictionary = rs.get_rig(id)
+	_check(bool(rig.get("imported", false)), "the GLB rig is adopted as imported")
+	_check(str(rig.get("skeleton_path", "")) == "Model/Skeleton3D",
+		"the rig stores the real skeleton path")
+	_check(rs.skeleton_for_object(id) == nested, "the shared resolver finds the nested skeleton")
+	_check(rs._bone_track_prefix(id) == "%s/Model/Skeleton3D:" % str(node.name),
+		"the bone track prefix uses the real skeleton path")
+	var before := nested.get_bone_pose_rotation(nested.find_bone("Hips"))
+	_check(rs.set_bone_pose(id, "Hips", {"r": Quaternion(Vector3.RIGHT, 0.4)}),
+		"pose editing works on the imported skeleton")
+	_check(nested.get_bone_pose_rotation(nested.find_bone("Hips")).angle_to(before) > 0.01,
+		"the imported pose actually changes")
+	var key := Quaternion(Vector3.UP, 0.5)
+	_check(doc.insert_bone_key(id, "Hips", key) >= 0, "a bone key is created")
+	var track := -1
+	for i in range(doc.animation.get_track_count()):
+		if str(doc.animation.track_get_path(i)) == rs._bone_track_prefix(id) + "Hips":
+			track = i
+			break
+	_check(track >= 0, "the bone key uses the resolved skeleton track path")
+	var data: Dictionary = doc.to_data()
+	var doc2 := _new_doc("Imported GLB Reload")
+	_check(doc2.load_project(data, _tmp_dir), "the imported GLB project reloads")
+	var node2: Node3D = doc2.nodes.get(id)
+	var rs2 = doc2.rig_system
+	_check(str(rs2.get_rig(id).get("skeleton_path", "")) == "Model/Skeleton3D",
+		"skeleton_path survives save/load")
+	_check(rs2.skeleton_for_object(id) is Skeleton3D,
+		"the reloaded rig resolves its nested skeleton")
+	_check(node2 != null and node2.get_node_or_null("Model/Skeleton3D") is Skeleton3D,
+		"the reloaded import keeps the nested skeleton")
+	doc.queue_free()
+	doc2.queue_free()
+
+
+func _write_rigged_glb(path: String) -> bool:
+	var root := Node3D.new()
+	root.name = "Fixture"
+	var skel := Skeleton3D.new()
+	skel.name = "Armature"
+	root.add_child(skel)
+	skel.add_bone("Hips")
+	skel.add_bone("Spine")
+	skel.set_bone_parent(1, 0)
+	skel.set_bone_rest(0, Transform3D(Basis.IDENTITY, Vector3.ZERO))
+	skel.set_bone_rest(1, Transform3D(Basis.IDENTITY, Vector3(0, 0.4, 0)))
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.add_vertex(Vector3(0, 0, 0))
+	st.add_vertex(Vector3(1, 0, 0))
+	st.add_vertex(Vector3(0, 1, 0))
+	var arrays: Array = st.commit_to_arrays()
+	arrays[Mesh.ARRAY_BONES] = PackedInt32Array([0,0,0,0, 0,0,0,0, 1,0,0,0])
+	arrays[Mesh.ARRAY_WEIGHTS] = PackedFloat32Array([1,0,0,0, 1,0,0,0, 1,0,0,0])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.BACK, Vector3.BACK, Vector3.BACK])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mi := MeshInstance3D.new()
+	mi.name = "Body"
+	mi.mesh = mesh
+	var skin := Skin.new()
+	skin.add_bind(0, Transform3D())
+	skin.add_bind(1, Transform3D())
+	mi.skin = skin
+	mi.skeleton = NodePath("../Armature")
+	root.add_child(mi)
+	var state := GLTFState.new()
+	var gltf := GLTFDocument.new()
+	var ok := gltf.append_from_scene(root, state) == OK
+	ok = ok and gltf.write_to_filesystem(state, path) == OK
+	root.free()
+	return ok
 
 
 # -------------------------------------------------------------------------
@@ -1958,8 +2333,18 @@ func _test_rig_toolbar() -> void:
 		await get_tree().process_frame
 		_check(edit_button.disabled, "an imported rig disables the Edit segment")
 		_check(edit_button.tooltip_text ==
-			"Imported skeletons keep their rest pose; pose and IK still work.",
+			"Imported skeleton: rest editing is locked.",
 			"the disabled Edit segment states the imported reason")
+		if add_button != null:
+			var imported_bones: int = (doc.rig_system.get_rig(rig_id)["bones"] as Array).size()
+			_check(add_button.disabled, "an imported rig disables Add bone")
+			_check(add_button.tooltip_text ==
+				"Imported rig: bone structure is locked. Pose and IK remain editable.",
+				"the disabled Add bone states the imported reason")
+			add_button.pressed.emit()
+			await get_tree().process_frame
+			_check((doc.rig_system.get_rig(rig_id)["bones"] as Array).size() == imported_bones,
+				"pressing Add bone on an imported rig changes nothing")
 		doc.rig_system.get_rig(rig_id)["imported"] = false
 		editor._sync_context_state()
 		await get_tree().process_frame

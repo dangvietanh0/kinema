@@ -2169,9 +2169,7 @@ func _refresh_animation() -> void:
 # -------------------------------------------------------------------------
 
 func _bone_track_path(rig_object_id: String, bone: String) -> NodePath:
-	var node: Node = nodes.get(rig_object_id)
-	var node_name := str(node.name) if node != null else "Object_" + rig_object_id
-	return NodePath("%s/Skeleton3D:%s" % [node_name, bone])
+	return NodePath(rig_system._bone_track_prefix(rig_object_id) + bone)
 
 func _bone_track_typed(rig_object_id: String, bone: String, type: int, create: bool) -> int:
 	if animation == null:
