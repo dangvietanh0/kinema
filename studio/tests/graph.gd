@@ -33,13 +33,16 @@ func _ready() -> void:
 	await _test_ease_tab()
 	await _test_preset_rail()
 	await _test_value_tab()
+	await _test_press_relative_value_drag()
 	await _test_endpoint_rebake_and_invalidation()
+	await _test_endpoint_shrink()
 	await _test_speed_tab()
 	await _test_family_presets_and_clear()
 	await _test_all_presets()
 	await _test_clip_isolation()
 	await _test_timeline_transport_and_headers()
 	await _test_animate_sizes()
+	await _test_compact_curve_actions()
 	_finish()
 
 
@@ -586,6 +589,89 @@ func _animate_at(width: int, height: int) -> Dictionary:
 	}
 
 
+func _menu_index(menu: PopupMenu, text_value: String) -> int:
+	for i in range(menu.item_count):
+		if menu.get_item_text(i) == text_value:
+			return i
+	return -1
+
+
+func _test_compact_curve_actions() -> void:
+	print("GRAPH STEP: compact curve actions")
+	var ctx: Dictionary = await _animate_at(800, 360)
+	var main = ctx["main"]
+	var editor = ctx["editor"]
+	var doc = editor.doc
+	var id: String = doc.add_primitive("box", Vector3.ZERO)
+	doc.set_fps(30)
+	doc.set_duration(12.0)
+	doc.set_selection(id)
+	doc.apply_key_edits(id, "position", [
+		{"index": -1, "time": 0.0, "value": Vector3.ZERO},
+		{"index": -1, "time": 1.0, "value": Vector3(10, 0, 0)},
+	], "Seed compact keys")
+	var timeline = editor._timeline
+	timeline.set_channel("position")
+	timeline.set_mode("graph")
+	await get_tree().process_frame
+	var graph = timeline.segment_graph()
+	graph.set_context(id, "position")
+	timeline.select_span_at_time(0.5)
+	graph.set_tab("ease")
+	doc.set_key_transition(id, "position", 0, 0.5)
+	graph.refresh()
+	await get_tree().process_frame
+	_check(not graph.rail_visible(), "800x360: the compact graph hides the rail")
+
+	timeline._open_more_menu()
+	var menu: PopupMenu = timeline._more_menu
+	var bake_index := _menu_index(menu, "Bake ease")
+	_check(bake_index >= 0, "800x360: More exposes Bake ease")
+	_check(bake_index >= 0 and not menu.is_item_disabled(bake_index),
+		"800x360: Bake ease is enabled for an engine transition")
+	if bake_index >= 0:
+		timeline._on_more_menu_id(menu.get_item_id(bake_index))
+		await get_tree().process_frame
+	_check(not doc.curve_segments().is_empty()
+		and str(doc.curve_segments()[0].get("family", "")) == "baked",
+		"800x360: More actually bakes the engine ease")
+
+	timeline._open_more_menu()
+	var convert_index := _menu_index(menu, "Convert to cubic")
+	_check(convert_index >= 0, "800x360: More exposes Convert to cubic")
+	_check(convert_index >= 0 and not menu.is_item_disabled(convert_index),
+		"800x360: Convert to cubic is enabled for a baked record")
+	if convert_index >= 0:
+		timeline._on_more_menu_id(menu.get_item_id(convert_index))
+		await get_tree().process_frame
+	_check(not doc.curve_segments().is_empty()
+		and str(doc.curve_segments()[0].get("family", "")) == "cubic",
+		"800x360: More actually converts the record")
+
+	timeline._open_more_menu()
+	var clear_index := _menu_index(menu, "Clear curve")
+	_check(clear_index >= 0, "800x360: More exposes Clear curve")
+	_check(clear_index >= 0 and not menu.is_item_disabled(clear_index),
+		"800x360: Clear curve is enabled for a record")
+	if clear_index >= 0:
+		timeline._on_more_menu_id(menu.get_item_id(clear_index))
+		await get_tree().process_frame
+	_check(doc.curve_segments().is_empty(), "800x360: More actually clears the curve")
+
+	graph.set_tab("speed")
+	timeline._open_more_menu()
+	var edit_index := _menu_index(menu, "Edit ease")
+	_check(edit_index >= 0, "800x360: More exposes Edit ease")
+	_check(edit_index >= 0 and not menu.is_item_disabled(edit_index),
+		"800x360: Edit ease is enabled outside the Ease tab")
+	if edit_index >= 0:
+		timeline._on_more_menu_id(menu.get_item_id(edit_index))
+		await get_tree().process_frame
+	_check(graph.tab() == "ease", "800x360: More actually opens the Ease tab")
+	main.queue_free()
+	await get_tree().process_frame
+
+
 func _test_animate_sizes() -> void:
 	print("GRAPH STEP: animate layout sizes")
 	var ctx: Dictionary = await _animate_at(915, 412)
@@ -708,6 +794,99 @@ func _test_value_tab() -> void:
 	graph.delete_selected_key()
 	_check(doc.get_channel_keys(id, "position").size() == count_before,
 		"Delete key removes the selected key")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _mouse_button(position: Vector2, pressed: bool) -> InputEventMouseButton:
+	var event := InputEventMouseButton.new()
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = pressed
+	event.position = position
+	return event
+
+
+func _test_press_relative_value_drag() -> void:
+	print("GRAPH STEP: press-relative value drag")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	graph.clear_selection()
+	graph.set_tab("value")
+	graph.set_component("x")
+	graph.refresh()
+	var press: Vector2 = graph.time_to_point(1.0)
+	var release: Vector2 = press + Vector2(6, -24)
+	# Resolve the expected time against the view that is on screen before the
+	# press selects (and zooms to) the 0-1 s segment.
+	var expected_time: float = graph.point_to_time(release)
+	_check(expected_time > 1.1, "the pre-zoom 6 px drag resolves past 1.1 s")
+	graph._gui_input(_mouse_button(press, true))
+	graph._gui_input(_mouse_button(release, false))
+	var keys: Array = doc.get_channel_keys(id, "position")
+	var end_key: int = keys.size() - 1
+	_check(absf(float(keys[end_key]["time"]) - expected_time) <= 1.0 / 30.0 + 0.001,
+		"a 6 px press-release drag moves the key by the pre-zoom delta")
+	_check(float(keys[end_key]["time"]) > 1.0,
+		"the release point does not jump to the re-zoomed view")
+	var info: Dictionary = graph.selected_key_info()
+	_check(int(info.get("index", -1)) == end_key,
+		"selection follows the moved key index")
+	_check(absf(float(graph.selection().get("end", -1.0)) - float(keys[end_key]["time"])) < 0.001,
+		"selection uses the moved key time, not the raw release point")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_endpoint_shrink() -> void:
+	print("GRAPH STEP: endpoint shrink")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("value")
+	graph.set_component("x")
+	var end_key: int = doc.get_channel_keys(id, "position").size() - 1
+	graph.drag_key(end_key, graph.time_to_point(0.5))
+	var keys: Array = doc.get_channel_keys(id, "position")
+	_check(absf(float(keys[keys.size() - 1]["time"]) - 0.5) < 0.001,
+		"an endpoint shrinks past the adjacent baked interior keys")
+	_check(keys.size() == 16, "shrinking rebakes the interior and drops stale keys")
+	var record: Dictionary = doc.curve_segments()[0] if not doc.curve_segments().is_empty() else {}
+	_check(absf(float(record.get("end", -1.0)) - 0.5) < 0.001,
+		"the record span follows the shrunk endpoint")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+	# Shrinking all the way onto the other endpoint merges the duplicate times
+	# (Godot keeps one key per time). The merged key must keep the moved value
+	# and be the one the graph selects, not the authored start.
+	ctx = await _host_graph(600, 324)
+	doc = ctx["doc"]
+	graph = ctx["graph"]
+	id = ctx["id"]
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("value")
+	graph.set_component("x")
+	var start_value: Vector3 = doc.get_channel_keys(id, "position")[0]["value"]
+	end_key = doc.get_channel_keys(id, "position").size() - 1
+	graph.drag_key(end_key, graph.time_to_point(0.0) + Vector2(0, -20))
+	keys = doc.get_channel_keys(id, "position")
+	_check(keys.size() == 1, "a zero-length shrink merges the duplicate times")
+	_check(keys.size() == 1 and absf(float(keys[0]["time"])) < 0.000001,
+		"the merged key sits at the authored start time")
+	_check(doc.curve_segments().is_empty(),
+		"a zero-length endpoint move drops the record instead of guessing a span")
+	var info: Dictionary = graph.selected_key_info()
+	_check(int(info.get("index", -1)) == 0,
+		"duplicate-time selection resolves to the merged moved key")
+	_check(keys.size() == 1
+		and float((keys[0]["value"] as Vector3).x) > float(start_value.x),
+		"the merged key keeps the moved value, not the authored start")
 	ctx["timeline"].queue_free()
 	doc.queue_free()
 
@@ -852,6 +1031,9 @@ func _test_family_presets_and_clear() -> void:
 		"Bounce records the preset family")
 	_check(graph.handle_positions().is_empty(), "a family preset shows no cubic handles")
 	_check(graph.baked_label().contains("Baked preset"), "a family preset says Baked preset")
+	var badge: Label = graph.baked_badge() if graph.has_method("baked_badge") else null
+	_check(badge != null and badge.visible and badge.text == "Baked preset",
+		"a family preset renders the Baked preset label")
 	_check((doc._undo_stack as Array).size() == undo_before + 1,
 		"one family preset is one undo entry")
 	_check(graph.convert_button().visible, "a family preset offers Convert to cubic")
@@ -859,6 +1041,8 @@ func _test_family_presets_and_clear() -> void:
 	await get_tree().process_frame
 	_check(str(doc.curve_segments()[0].get("family", "")) == "cubic",
 		"Convert to cubic changes the family")
+	_check(graph.baked_badge() == null or not graph.baked_badge().visible,
+		"the Baked preset label disappears for a cubic record")
 	_check(graph.handle_positions().size() == 2,
 		"the converted segment exposes linear cubic handles")
 	var converted_undo: int = (doc._undo_stack as Array).size()

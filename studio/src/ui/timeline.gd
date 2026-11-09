@@ -701,6 +701,22 @@ func _open_more_menu() -> void:
 	if not _graph_rail_fits():
 		_more_menu.add_separator()
 		_more_menu.add_item("Presets…", 12)
+	# The rail is the only place the curve actions normally live. When the
+	# budget hides it, the same real controls stay reachable here.
+	if _mode == "graph" and not _graph_rail_fits() and _segment_graph != null:
+		_more_menu.add_separator()
+		var bake_item := _more_menu.item_count
+		_more_menu.add_item("Bake ease", 13)
+		_more_menu.set_item_disabled(bake_item, not _segment_graph.bake_ease_available())
+		var convert_item := _more_menu.item_count
+		_more_menu.add_item("Convert to cubic", 14)
+		_more_menu.set_item_disabled(convert_item, not _segment_graph.convert_available())
+		var clear_item := _more_menu.item_count
+		_more_menu.add_item("Clear curve", 15)
+		_more_menu.set_item_disabled(clear_item, not _segment_graph.clear_available())
+		var edit_item := _more_menu.item_count
+		_more_menu.add_item("Edit ease", 16)
+		_more_menu.set_item_disabled(edit_item, not _segment_graph.edit_ease_available())
 	_more_menu.popup_on_parent(Rect2(_more_button.size.x - 1.0, _more_button.size.y, 1.0, 1.0))
 
 
@@ -714,6 +730,18 @@ func _on_more_menu_id(index: int) -> void:
 			_step_segment(1)
 		12:
 			call_deferred("_open_presets_menu", _more_button)
+		13:
+			if _segment_graph != null:
+				_segment_graph.bake_ease_button().pressed.emit()
+		14:
+			if _segment_graph != null:
+				_segment_graph.convert_button().pressed.emit()
+		15:
+			if _segment_graph != null:
+				_segment_graph.clear_button().pressed.emit()
+		16:
+			if _segment_graph != null:
+				_segment_graph.set_tab("ease")
 
 # -------------------------------------------------------------------------
 # Duration row

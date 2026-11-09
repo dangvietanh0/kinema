@@ -62,12 +62,19 @@ var _bake_ease_button: Button
 var _convert_button: Button
 var _clear_button: Button
 var _edit_ease_button: Button
+var _baked_badge: Label
 
 var _dragging_handle := ""
 var _drag_handle_start := Vector2.ZERO
 var _selected_key := -1
 var _press_key := -1
 var _press_position := Vector2.ZERO
+var _press_time := 0.0
+var _press_value := 0.0
+var _press_plot := Rect2()
+var _press_window := Vector2.ZERO
+var _press_range := Vector2.ZERO
+var _press_curve := Rect2()
 var _connected := false
 
 # The plot converts thousands of points per draw. Resolving the selection and
@@ -229,8 +236,10 @@ func time_to_point(t: float) -> Vector2:
 
 
 func point_to_time(p: Vector2) -> float:
-	var plot := plot_rect()
-	var window := _window()
+	return _time_at_point(p, plot_rect(), _window())
+
+
+func _time_at_point(p: Vector2, plot: Rect2, window: Vector2) -> float:
 	if plot.size.x <= 0.0:
 		return window.x
 	return window.x + (p.x - plot.position.x) / plot.size.x * (window.y - window.x)
@@ -337,6 +346,27 @@ func baked_label() -> String:
 	if str(record.get("family", "")) in ["preset", "baked"]:
 		return "Baked preset"
 	return ""
+
+
+func baked_badge() -> Label:
+	return _baked_badge
+
+
+func bake_ease_available() -> bool:
+	return engine_ease_visible()
+
+
+func convert_available() -> bool:
+	var record := _record_for_span(_active_span())
+	return not record.is_empty() and str(record.get("family", "")) in ["preset", "baked"]
+
+
+func clear_available() -> bool:
+	return not _record_for_span(_active_span()).is_empty()
+
+
+func edit_ease_available() -> bool:
+	return _tab != TAB_EASE
 
 
 func speed_summary() -> Dictionary:
@@ -460,6 +490,12 @@ func request_key_info() -> void:
 ## Direct manipulation used by the test harness and by the real touch path.
 ## One call is one document transaction; the caller never has to wrap it.
 func drag_key(index: int, point: Vector2) -> bool:
+	return _drag_key_to(index, point_to_time(point), _y_to_value(point.y))
+
+
+## Shared drag body. `time` and `scalar` are already resolved against the view
+## the user pressed in, so a selection-driven re-zoom cannot remap the release.
+func _drag_key_to(index: int, time: float, scalar: float) -> bool:
 	if doc == null or _object_id == "":
 		return false
 	var keys: Array = doc.get_channel_keys(_object_id, _channel)
@@ -468,11 +504,9 @@ func drag_key(index: int, point: Vector2) -> bool:
 	if not value_editable():
 		_notify(value_hint())
 		return false
-	var time := point_to_time(point)
 	if doc.snap and doc.fps > 0:
 		time = roundf(time * float(doc.fps)) / float(doc.fps)
 	var value: Vector3 = keys[index]["value"]
-	var scalar := _y_to_value(point.y)
 	match _component:
 		"x":
 			value.x = scalar
@@ -485,7 +519,13 @@ func drag_key(index: int, point: Vector2) -> bool:
 		_notify(str(result.get("error", "Curve data no longer matches these keys.")))
 		return false
 	_selected_key = int(result.get("index", -1))
-	_span = doc.segment_span_at(_object_id, _channel, time) if doc != null else {}
+	# The document may clamp or re-bake the requested time. Resolve the new
+	# selection from the moved key's real time, never from the raw point.
+	var moved_time := time
+	var live: Array = doc.get_channel_keys(_object_id, _channel)
+	if _selected_key >= 0 and _selected_key < live.size():
+		moved_time = float(live[_selected_key]["time"])
+	_span = doc.segment_span_at(_object_id, _channel, moved_time)
 	refresh()
 	if _selected_key >= 0:
 		key_selected.emit(_selected_key)
@@ -557,6 +597,17 @@ func _build_controls() -> void:
 	)
 	_edit_ease_button.visible = false
 
+	# A rendered family badge, not only an accessor: it sits in the ruler so it
+	# survives the rail being hidden at the 800x360 budget.
+	_baked_badge = Label.new()
+	_baked_badge.text = "Baked preset"
+	_baked_badge.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
+	_baked_badge.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+	_baked_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_baked_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_baked_badge.visible = false
+	add_child(_baked_badge)
+
 	# Real tab buttons. The timeline's graph header adopts them in Task 17;
 	# until then they stay in this hidden holder so the API is already real.
 	_tab_holder = HBoxContainer.new()
@@ -593,6 +644,9 @@ func _layout_controls() -> void:
 	_rail_scroll.size = Vector2(size.x, RAIL_H)
 	_engine_field.visible = engine_ease_visible()
 	_rail_scroll.queue_sort()
+	if _baked_badge != null:
+		_baked_badge.position = Vector2(maxf(PAD_X, size.x - 160.0), 4.0)
+		_baked_badge.size = Vector2(144.0, 18.0)
 
 
 func _sync_actions() -> void:
@@ -600,13 +654,16 @@ func _sync_actions() -> void:
 		return
 	var span := _active_span()
 	var record := _record_for_span(span)
-	var family := str(record.get("family", ""))
 	var engine := engine_ease_visible()
-	_bake_ease_button.visible = engine
+	_bake_ease_button.visible = bake_ease_available()
 	_engine_field.visible = engine
-	_convert_button.visible = not record.is_empty() and family in ["preset", "baked"]
-	_clear_button.visible = not record.is_empty()
+	_convert_button.visible = convert_available()
+	_clear_button.visible = clear_available()
 	_edit_ease_button.visible = _tab == TAB_SPEED
+	if _baked_badge != null:
+		var baked_text := baked_label()
+		_baked_badge.text = baked_text
+		_baked_badge.visible = baked_text != ""
 	if engine:
 		var start_index := _start_key_index(span)
 		if start_index >= 0:
@@ -1297,8 +1354,10 @@ func _value_to_y(value: float) -> float:
 
 
 func _y_to_value(y: float) -> float:
-	var curve := _curve_rect()
-	var range_values := _value_range()
+	return _value_at_y(y, _curve_rect(), _value_range())
+
+
+func _value_at_y(y: float, curve: Rect2, range_values: Vector2) -> float:
 	if curve.size.y <= 0.0:
 		return range_values.x
 	return range_values.x + (curve.end.y - y) / curve.size.y * (range_values.y - range_values.x)
@@ -1396,6 +1455,14 @@ func _press(position: Vector2) -> void:
 		return
 	_press_key = -1
 	_press_position = position
+	# Snapshot the view before selecting a span may zoom the plot. The release
+	# resolves its delta against this view, not the re-zoomed one.
+	_press_time = point_to_time(position)
+	_press_value = _y_to_value(position.y)
+	_press_plot = plot
+	_press_window = _window()
+	_press_range = _value_range()
+	_press_curve = _curve_rect()
 	if _tab == TAB_EASE:
 		var positions := handle_positions()
 		if not positions.is_empty():
@@ -1445,7 +1512,20 @@ func _release(position: Vector2) -> void:
 	_press_key = -1
 	# A tap selects; only a deliberate 6 px drag edits the document.
 	if position.distance_to(_press_position) >= 6.0:
-		drag_key(index, position)
+		_drag_key_from_press(index, position)
+
+
+func _drag_key_from_press(index: int, position: Vector2) -> bool:
+	if doc == null or _object_id == "":
+		return false
+	var keys: Array = doc.get_channel_keys(_object_id, _channel)
+	if index < 0 or index >= keys.size():
+		return false
+	var time := float(keys[index]["time"]) \
+		+ (_time_at_point(position, _press_plot, _press_window) - _press_time)
+	var scalar := _scalar(keys[index]["value"]) \
+		+ (_value_at_y(position.y, _press_curve, _press_range) - _press_value)
+	return _drag_key_to(index, time, scalar)
 
 
 func _key_at(position: Vector2) -> int:

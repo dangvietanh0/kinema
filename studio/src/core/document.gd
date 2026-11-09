@@ -1773,7 +1773,9 @@ func _bake_curve_plan(id: String, channel: String, start: float, end: float) -> 
 	var end_index := -1
 	for i in range(keys.size()):
 		var time := float(keys[i]["time"])
-		if absf(time - start) <= 0.001:
+		# Duplicate times are resolved by position, never by iteration order:
+		# the first key owns the start and the last key owns the end.
+		if start_index < 0 and absf(time - start) <= 0.001:
 			start_index = i
 		if absf(time - end) <= 0.001:
 			end_index = i
@@ -2004,20 +2006,6 @@ func move_key(id: String, channel: String, key_index: int, new_time: float,
 	if key_index < 0 or key_index >= keys.size():
 		return _move_key_result(false, -1, false, false, "Key index out of range.")
 	var old_time := float(keys[key_index]["time"])
-	var target_time := clampf(new_time, 0.0, duration)
-	if key_index > 0:
-		target_time = maxf(target_time, float(keys[key_index - 1]["time"]))
-	if key_index < keys.size() - 1:
-		target_time = minf(target_time, float(keys[key_index + 1]["time"]))
-	if snap and fps > 0:
-		target_time = roundf(target_time * float(fps)) / float(fps)
-		if key_index > 0:
-			target_time = maxf(target_time, float(keys[key_index - 1]["time"]))
-		if key_index < keys.size() - 1:
-			target_time = minf(target_time, float(keys[key_index + 1]["time"]))
-		target_time = clampf(target_time, 0.0, duration)
-	var edit: Array = [{"index": key_index, "time": target_time, "value": new_value}]
-
 	var record: Dictionary = {}
 	var is_start := false
 	for candidate in segments_for(id, channel):
@@ -2032,21 +2020,36 @@ func move_key(id: String, channel: String, key_index: int, new_time: float,
 			is_start = false
 			break
 
-	var allow_rebake := true
-	if rebake is Dictionary:
-		allow_rebake = bool(rebake.get("enabled", true))
+	# The clamp stops an endpoint crossing an authored neighbour. Baked
+	# interiors are machine-generated and must never constrain the drag, or a
+	# recorded segment could only shrink by about one frame.
+	var lower := 0.0
+	var upper: float = duration
+	if record.is_empty():
+		# A normal key keeps the original immediate-neighbour clamp.
+		if key_index > 0:
+			lower = float(keys[key_index - 1]["time"])
+		if key_index < keys.size() - 1:
+			upper = float(keys[key_index + 1]["time"])
+	elif is_start:
+		lower = _authored_neighbour(id, channel, keys, key_index, -1)
+		upper = float(record.get("end", old_time))
+	else:
+		lower = float(record.get("start", old_time))
+		upper = _authored_neighbour(id, channel, keys, key_index, 1)
+	var target_time := clampf(new_time, 0.0, duration)
+	target_time = clampf(target_time, lower, upper)
+	if snap and fps > 0:
+		target_time = roundf(target_time * float(fps)) / float(fps)
+		target_time = clampf(target_time, lower, upper)
+		target_time = clampf(target_time, 0.0, duration)
+	var edit: Array = [{"index": key_index, "time": target_time, "value": new_value}]
 
-	# A sampled engine-ease record has no authored curve to rebuild, and an
-	# explicit opt-out does the same: invalidate rather than fake a curve.
-	if not record.is_empty() and (str(record.get("family", "")) == "baked" or not allow_rebake):
-		var plain := apply_key_edits(id, channel, edit, "Move key")
-		if not bool(plain.get("ok", false)):
-			return _move_key_result(false, -1, false, false, str(plain.get("error", "")))
-		return _move_key_result(true, _first_index(plain), true, false)
-
+	var span_start := old_time
+	var span_end := old_time
 	if not record.is_empty():
-		var span_start := float(record.get("start", old_time))
-		var span_end := float(record.get("end", old_time))
+		span_start = float(record.get("start", old_time))
+		span_end = float(record.get("end", old_time))
 		if is_start:
 			span_start = target_time
 		else:
@@ -2055,6 +2058,23 @@ func move_key(id: String, channel: String, key_index: int, new_time: float,
 			var swap := span_start
 			span_start = span_end
 			span_end = swap
+
+	var allow_rebake := true
+	if rebake is Dictionary:
+		allow_rebake = bool(rebake.get("enabled", true))
+
+	# A sampled engine-ease record has no authored curve to rebuild, and an
+	# explicit opt-out does the same: invalidate rather than fake a curve.
+	if not record.is_empty() and (str(record.get("family", "")) == "baked" or not allow_rebake):
+		var invalidating: Array = edit.duplicate(true)
+		_append_shrink_deletes(invalidating, keys, key_index, record, span_start, span_end)
+		var plain := apply_key_edits(id, channel, invalidating, "Move key")
+		if not bool(plain.get("ok", false)):
+			return _move_key_result(false, -1, false, false, str(plain.get("error", "")))
+		return _move_key_result(true,
+			_key_index_at_value(id, channel, target_time, new_value), true, false)
+
+	if not record.is_empty():
 		var family := str(record.get("family", "cubic"))
 		var preset := str(record.get("preset", "custom"))
 		var handles := {
@@ -2065,7 +2085,9 @@ func move_key(id: String, channel: String, key_index: int, new_time: float,
 		}
 		var restore := clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
 		begin_edit("Move key")
-		var moved := _apply_key_edits_raw(id, channel, edit, "Move key", true)
+		var rebaking: Array = edit.duplicate(true)
+		_append_shrink_deletes(rebaking, keys, key_index, record, span_start, span_end)
+		var moved := _apply_key_edits_raw(id, channel, rebaking, "Move key", true)
 		if not bool(moved.get("ok", false)):
 			cancel_edit()
 			return _move_key_result(false, -1, false, false, str(moved.get("error", "")))
@@ -2097,11 +2119,11 @@ func move_key(id: String, channel: String, key_index: int, new_time: float,
 				kept.append(candidate)
 			_replace_channel_records(id, channel, kept)
 			end_edit()
-			return _move_key_result(true, _key_index_at_time(id, channel, target_time),
-				true, false)
+			return _move_key_result(true,
+				_key_index_at_value(id, channel, target_time, new_value), true, false)
 		end_edit()
-		return _move_key_result(true, _key_index_at_time(id, channel, target_time),
-			false, true)
+		return _move_key_result(true,
+			_key_index_at_value(id, channel, target_time, new_value), false, true)
 
 	var interior_record := false
 	for candidate in segments_for(id, channel):
@@ -2113,18 +2135,65 @@ func move_key(id: String, channel: String, key_index: int, new_time: float,
 	var written := apply_key_edits(id, channel, edit, "Move key")
 	if not bool(written.get("ok", false)):
 		return _move_key_result(false, -1, false, false, str(written.get("error", "")))
-	return _move_key_result(true, _first_index(written), interior_record, false)
+	return _move_key_result(true,
+		_key_index_at_value(id, channel, target_time, new_value), interior_record, false)
+
+
+## Walk past machine-generated baked keys to the next authored key in one
+## direction. The clamp may stop on that key but never on a baked interior.
+func _authored_neighbour(id: String, channel: String, keys: Array, key_index: int,
+		direction: int) -> float:
+	var i := key_index + direction
+	while i >= 0 and i < keys.size():
+		var time := float(keys[i]["time"])
+		if not _is_baked_interior_key(id, channel, time):
+			return time
+		i += direction
+	return 0.0 if direction < 0 else duration
+
+
+func _is_baked_interior_key(id: String, channel: String, time: float) -> bool:
+	for record in segments_for(id, channel):
+		var start := float(record.get("start", 0.0))
+		var end := float(record.get("end", 0.0))
+		if time > start + 0.001 and time < end - 0.001:
+			return true
+	return false
+
+
+## A shrinking endpoint owns the keys it leaves behind: delete the old baked
+## interiors that now sit outside the new record span so the graph cannot draw
+## stale samples between the new endpoint and the old one.
+func _append_shrink_deletes(edits: Array, keys: Array, key_index: int,
+		record: Dictionary, span_start: float, span_end: float) -> void:
+	var old_start := float(record.get("start", span_start))
+	var old_end := float(record.get("end", span_end))
+	for i in range(keys.size()):
+		if i == key_index:
+			continue
+		var time := float(keys[i]["time"])
+		if time > old_start + 0.001 and time < old_end - 0.001 \
+				and (time < span_start - 0.001 or time > span_end + 0.001):
+			edits.append({"index": i, "delete": true})
+
+
+## Duplicate times are possible when an endpoint lands exactly on a neighbour.
+## Prefer the moved value, then the last matching key, so selection is stable.
+func _key_index_at_value(id: String, channel: String, time: float, value: Variant) -> int:
+	var fallback := -1
+	for key in get_channel_keys(id, channel):
+		if absf(float(key["time"]) - time) > 0.001:
+			continue
+		if key["value"] == value:
+			return int(key["index"])
+		fallback = int(key["index"])
+	return fallback if fallback >= 0 else _key_index_at_time(id, channel, time)
 
 
 func _move_key_result(ok: bool, index: int, invalidated: bool, rebaked: bool,
 		error := "") -> Dictionary:
 	return {"ok": ok, "index": index, "invalidated": invalidated,
 		"rebaked": rebaked, "error": error}
-
-
-func _first_index(result: Dictionary) -> int:
-	var indices: Array = result.get("indices", [])
-	return int(indices[0]) if not indices.is_empty() else -1
 
 
 func _key_index_at_time(id: String, channel: String, time: float) -> int:
