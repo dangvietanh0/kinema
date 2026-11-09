@@ -396,6 +396,8 @@ func _build_timeline() -> void:
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
+	_timeline.time_entry_requested.connect(_open_time_entry_sheet)
+	_timeline.mode_changed.connect(_on_timeline_mode_changed)
 	# The Animate pane is permanent, so fold is a sheet state, not a shell
 	# state. The transport's chevron and the compact header's close action both
 	# collapse the dope sheet and leave the transport reachable.
@@ -716,13 +718,14 @@ func _context_actions(id: String) -> Array:
 				_act("panel", "Rig panel", "panel-right", 30),
 			]
 		"animate":
-			# W1 scope only; W3 inserts dope/graph/stage_toggle here.
 			return [
 				_act("select", "Select", "tool-select", 100, false, true),
 				_act("move", "Move", "tool-move", 95, false, true),
 				_act("rotate", "Rotate", "tool-rotate", 90, false, true),
 				_act("scale", "Scale", "tool-scale", 85, false, true),
-				_act("fit", "Fit", "focus", 80),
+				_act("dope", "Dope", "", 80, true, false, 60.0, "timeline_mode"),
+				_act("graph", "Graph", "", 75, true, false, 60.0, "timeline_mode"),
+				_act("fit", "Fit", "focus", 70),
 			]
 		"render":
 			return [
@@ -758,6 +761,9 @@ func _sync_context_state() -> void:
 		return
 	for tool in ["select", "move", "rotate", "scale"]:
 		_context_bar.set_action_active(tool, _tool == tool)
+	if _timeline != null:
+		_context_bar.set_action_active("dope", _timeline.mode() == "dope")
+		_context_bar.set_action_active("graph", _timeline.mode() == "graph")
 	if _view != null:
 		_context_bar.set_action_active("grid", _view.grid_enabled())
 	var panel_mode: int = _workspace_panel.mode() if _workspace_panel != null \
@@ -840,6 +846,8 @@ func _on_context_action(id: String) -> void:
 			_enter_render_mode()
 		"render", "still":
 			_open_render_sheet()
+		"dope", "graph":
+			_timeline.set_mode(id)
 		"fit":
 			_fit_animate_pane()
 	_sync_context_state()
@@ -983,7 +991,7 @@ func _rig_has_rest_offset(rig: Dictionary) -> bool:
 func _fit_animate_pane() -> void:
 	if doc == null or _timeline == null:
 		return
-	_timeline.set_time_view(0.0, maxf(doc.duration, 0.1))
+	_timeline.fit_time_view()
 
 
 func _visible_shell_action_ids() -> PackedStringArray:
@@ -1146,9 +1154,19 @@ func _open_time_entry_sheet() -> void:
 		[
 			{"text": "Cancel", "compact": true},
 			{"text": "Go", "primary": true, "callback": _apply_time_entry},
-		]
+		],
+		{"on_close": _return_focus_to_timeline}
 	)
 	_time_frame_field.grab_focus()
+
+
+## The Animate timecode opens the same sheet as the shared transport; closing
+## it returns focus to the timeline so keyboard shortcuts stay in the pane.
+func _return_focus_to_timeline() -> void:
+	if _workspace != "animate" or _timeline == null or not _timeline.visible:
+		return
+	if _timeline.time_button() != null and _timeline.time_button().visible:
+		_timeline.time_button().grab_focus()
 
 
 func _apply_time_entry() -> void:
@@ -1636,6 +1654,15 @@ func _on_perf_sample(sample: Dictionary) -> void:
 func _on_timeline_notice(text_value: String) -> void:
 	if _overlay != null:
 		_overlay.toast(text_value, "diamond", Kit.ACCENT)
+
+
+## The pane header tabs and the context pair are the same segmented state.
+## `Timeline.set_mode` is idempotent, so this cannot recurse.
+func _on_timeline_mode_changed(mode: String) -> void:
+	if _context_bar == null:
+		return
+	_context_bar.set_action_active("dope", mode == "dope")
+	_context_bar.set_action_active("graph", mode == "graph")
 
 # -------------------------------------------------------------------------
 # Saving and leaving

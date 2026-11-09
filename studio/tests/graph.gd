@@ -31,6 +31,7 @@ func _ready() -> void:
 	await _test_segment_selection()
 	await _test_ease_tab()
 	await _test_preset_rail()
+	await _test_timeline_transport_and_headers()
 	_finish()
 
 
@@ -335,5 +336,76 @@ func _test_preset_rail() -> void:
 	var record: Dictionary = doc.curve_segments()[0]
 	_check(absf(float(record.get("x1", 0.0)) - 0.42) < 0.001, "Ease in-out applies x1 0.42")
 	_check(str(record.get("preset", "")) == "ease_in_out", "the preset id is recorded")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 17 — transport, pane header, graph header and dope selection
+# -------------------------------------------------------------------------
+
+func _test_timeline_transport_and_headers() -> void:
+	print("GRAPH STEP: timeline transport and headers")
+	var ctx = await _host_graph(915, 500)
+	var timeline = ctx["timeline"]
+	var doc = ctx["doc"]
+	var id: String = ctx["id"]
+	_check(timeline.transport_panel().size.y >= 43.5, "the timeline transport is 44 dp")
+	_check(timeline.pane_header().size.y >= 43.5, "the pane header is 44 dp")
+	_check(timeline.graph_header().size.y >= 43.5, "the graph header is 44 dp")
+	_check(timeline.play_button() != null, "the transport owns play/pause")
+	_check(timeline.fps_button() != null, "the transport owns the fps chip")
+	_check(timeline.snap_button() != null, "the transport owns snap")
+	_check(timeline.add_key_button() != null, "the transport owns add key")
+	_check(timeline.delete_key_button() != null, "the transport owns delete key")
+	_check(timeline.fit_button() != null, "the transport owns fit")
+	_check(timeline.duration_chip().custom_minimum_size.y >= 43.5,
+		"the duration chip stays a 44 dp target")
+	_check(timeline.clip_selector().custom_minimum_size.x >= 96.0
+		and timeline.clip_selector().custom_minimum_size.x <= 160.0,
+		"the clip selector is 96–160 dp")
+	_check(timeline.dope_tab().custom_minimum_size.x >= 60.0
+		and timeline.graph_tab_button().custom_minimum_size.x >= 60.0,
+		"Dope and Graph are 60 dp tabs")
+	_check(timeline.prev_segment_button().custom_minimum_size.x >= 44.0
+		and timeline.next_segment_button().custom_minimum_size.x >= 44.0,
+		"prev/next segment are 44 dp")
+
+	# The timeline asks the editor for the same real time entry sheet; the
+	# editor connection is asserted in the booted shell test in Task 18.
+	var time_requests: Array[String] = []
+	timeline.time_entry_requested.connect(func() -> void: time_requests.append("time"))
+	timeline.time_button().pressed.emit()
+	_check(time_requests == ["time"],
+		"the Animate timecode requests the real time entry sheet")
+
+	# Graph mode uses the segment graph; Dope mode shows the dope sheet.
+	timeline.set_mode("graph")
+	_check(timeline.segment_graph().visible, "Graph shows the segment graph")
+	_check(not timeline.dope_sheet_visible(), "Graph hides the dope sheet")
+	timeline.set_mode("dope")
+	_check(timeline.dope_sheet_visible(), "Dope shows the dope sheet")
+	_check(not timeline.segment_graph().visible, "Dope hides the segment graph")
+
+	# Dope tap selects the recorded span.
+	doc.apply_key_edits(id, "position", [
+		{"index": -1, "time": 2.0, "value": Vector3(20, 0, 0)},
+	], "Third key")
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	timeline.set_mode("dope")
+	timeline.set_channel("position")
+	_check(timeline.select_span_at_time(0.5), "a dope tap at an interior key selects its record")
+	_check(str(timeline.selected_span().get("kind", "")) == "record",
+		"the selected recorded segment is shared with the dope sheet")
+	timeline.set_mode("graph")
+
+	timeline.next_segment_button().pressed.emit()
+	await get_tree().process_frame
+	_check(str(timeline.selected_span().get("kind", "")) == "plain",
+		"next segment skips the baked interior keys and lands on the next plain interval")
+	timeline.prev_segment_button().pressed.emit()
+	await get_tree().process_frame
+	_check(str(timeline.selected_span().get("kind", "")) == "record",
+		"prev segment returns to the recorded span")
 	ctx["timeline"].queue_free()
 	doc.queue_free()

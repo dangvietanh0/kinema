@@ -999,7 +999,7 @@ func _ready() -> void:
 	editor._timeline.set_mode("graph")
 	await get_tree().process_frame
 	_check(editor._timeline.mode() == "graph", "the pane switches to graph mode")
-	_check(editor._timeline.graph_plot_rect().size.x > 100.0,
+	_check(editor._timeline.segment_graph().plot_rect().size.x > 100.0,
 		"the graph plot has a real drawing area")
 	editor._timeline.set_mode("dope")
 	await get_tree().process_frame
@@ -1549,10 +1549,8 @@ func _ready() -> void:
 	for _i in 3:
 		await get_tree().process_frame
 	_check(editor._timeline.sheet_visible(), "the landscape graph opens the sheet")
-	_check(editor._timeline.graph_plot_rect().size.y < 120.0,
-		"the short landscape pane reports a short graph plot")
-	_check(editor._timeline.graph_caption() == "Rotate upright for more curve-editing space",
-		"the short graph states the honest rotation caption")
+	_check(editor._timeline.segment_graph().plot_rect().size.y > 40.0,
+		"the landscape graph keeps a real plot")
 	editor._timeline.set_mode("dope")
 	editor.set_workspace("scene")
 	await get_tree().process_frame
@@ -1591,23 +1589,31 @@ func _ready() -> void:
 	_check(editor._workspace_panel.mode() == WorkspacePanelScript.Mode.HIDDEN,
 		"closing the narrow overlay returns the stage")
 
-	print("SMOKE STEP: timeline fold control")
+	print("SMOKE STEP: timeline transport and headers")
 	editor.set_layout_mode("studio")
 	editor.set_workspace("animate")
 	for _i in 2:
 		await get_tree().process_frame
 	editor._timeline.set_sheet_visible(true)
 	await get_tree().process_frame
-	_check(editor._timeline._fold_button != null, "timeline exposes a fold control")
-	if editor._timeline._fold_button != null:
-		_check(editor._timeline._fold_button.custom_minimum_size.y >= 44.0,
-			"timeline fold control keeps a 44 dp target")
-		editor._timeline._fold_button.pressed.emit()
-		await get_tree().process_frame
-		_check(not editor._timeline.sheet_visible(), "timeline fold control folds the sheet")
-		editor._timeline._fold_button.pressed.emit()
-		await get_tree().process_frame
-		_check(editor._timeline.sheet_visible(), "timeline fold control reopens the sheet")
+	_check(editor._timeline.transport_panel().size.y >= 43.5,
+		"the pane transport keeps its 44 dp row")
+	_check(editor._timeline.pane_header().size.y >= 43.5,
+		"the pane header keeps its 44 dp row")
+	_check(editor._timeline.play_button() != null
+		and editor._timeline.time_button() != null
+		and editor._timeline.snap_button() != null,
+		"the pane transport owns play, time and snap")
+	editor._timeline.dope_tab().pressed.emit()
+	await get_tree().process_frame
+	_check(editor._timeline.mode() == "dope" and editor._timeline.dope_sheet_visible(),
+		"the pane header Dope tab shows the sheet")
+	editor._timeline.graph_tab_button().pressed.emit()
+	await get_tree().process_frame
+	_check(editor._timeline.mode() == "graph" and not editor._timeline.dope_sheet_visible(),
+		"the pane header Graph tab shows the segment graph")
+	editor._timeline.dope_tab().pressed.emit()
+	await get_tree().process_frame
 	editor._timeline.set_sheet_visible(false)
 	editor.set_workspace("scene")
 	await get_tree().process_frame
@@ -1636,9 +1642,9 @@ func _ready() -> void:
 	await get_tree().create_timer(0.2).timeout
 	_check(doc.is_sequence_playing() and doc.current_time > sequence_time_before + 0.05,
 		"the sequence clock advances while it plays")
-	_check(editor._timeline._time_label.text == doc.format_timecode(doc.current_time),
+	_check(editor._timeline.time_button().text == doc.format_timecode(doc.current_time),
 		"the timeline follows the advancing sequence time")
-	_check(editor._timeline._time_label.text != doc.format_timecode(sequence_time_before),
+	_check(editor._timeline.time_button().text != doc.format_timecode(sequence_time_before),
 		"the timeline label moved with the sequence")
 	doc.pause_sequence()
 	_check(not doc.is_sequence_playing(), "pause_sequence stops the sequence clock")
@@ -1906,122 +1912,64 @@ func _ready() -> void:
 			Kit.font_regular.get_height(Kit.TYPE_BODY) + int(Kit.theme.get_constant("v_separation", "PopupMenu")) >= 44,
 			"easing menu rows meet the 44 dp touch floor"
 		)
-		var graph_speed: float = timeline._channel_speed(key_id, "position", 0.5)
-		_check(graph_speed > 0.01, "graph samples real channel speed")
-		var presets_raw = timeline.get("GRAPH_PRESETS")
-		var presets: Array = presets_raw if presets_raw is Array else []
-		_check(presets.size() >= 8, "graph exposes an expanded preset set")
-		_check(timeline.has_method("graph_height_hint"), "graph reports a height hint")
-		if timeline.has_method("graph_height_hint"):
-			_check(timeline.graph_height_hint() > 0.0, "graph mode requests a taller sheet")
 		await get_tree().process_frame
 		await get_tree().process_frame
 		var graph_panel_height: float = timeline.size.y
 		_check(graph_panel_height > 180.0, "the Animate pane gives the graph a real height")
-		_check(timeline.has_method("graph_plot_rect"), "graph exposes its plot rect")
-		if timeline.has_method("graph_plot_rect"):
-			var graph_rect: Rect2 = timeline.graph_plot_rect()
-			_check(graph_rect.size.x > 100.0, "graph plot has a real drawing area")
-			_check(graph_rect.position.y >= timeline._ruler_h + 44.0, "channel tabs sit above the graph plot")
-		_check(timeline.has_method("channel_tab_rects"), "graph exposes channel tab hit rects")
-		if timeline.has_method("channel_tab_rects"):
-			var tabs: Array = timeline.channel_tab_rects()
-			_check(tabs.size() == 3, "graph exposes three channel tabs")
-			if tabs.size() == 3:
-				_check((tabs[0]["rect"] as Rect2).size.y >= 44.0, "graph channel tabs keep 44 dp targets")
+		var graph = timeline.segment_graph()
+		_check(graph != null, "graph mode mounts the segment graph")
+		if graph != null:
+			_check(graph.plot_rect().size.x > 100.0, "graph plot has a real drawing area")
+			_check(graph.plot_rect().size.y >= 120.0, "graph plot keeps the 120 dp floor")
+			_check(graph.handle_hit_radius() == 22.0 and graph.key_hit_radius() == 22.0,
+				"graph handles and keys keep 22 dp hit radii")
+			_check(graph.key_points().size() >= 3, "the graph draws the real channel keys")
+			graph.set_tab("value")
+			_check(graph.tab() == "value", "graph switches to the Value tab")
+			graph.set_tab("speed")
+			_check(graph.tab() == "speed", "graph switches to the Speed tab")
+			graph.set_tab("ease")
+			_check(graph.tab() == "ease", "graph returns to the Ease tab")
 
-		_check(timeline.has_method("set_channel"), "graph switches channels directly")
-		if timeline.has_method("set_channel"):
-			timeline.select_segment_at_time(0.5)
-			_check(timeline._segments.size() > 0, "graph caches real segment hit rects")
-			timeline.set_channel("rotation")
-			_check(timeline._selected_channel == "rotation", "graph switches channels directly")
-			_check(timeline._segments.is_empty(), "channel switch clears stale segment hit rects")
-			timeline.set_channel("position")
-			await get_tree().process_frame
-			await get_tree().process_frame
+		timeline.set_sheet_visible(true)
+		timeline.set_mode("graph")
+		await get_tree().process_frame
+		timeline.set_channel("position")
+		_check(timeline.channel() == "position", "graph switches channels directly")
+		var span: Dictionary = doc.segment_span_at(key_id, "position", 0.5)
+		_check(not span.is_empty(), "the document resolves a real position segment")
+		if not span.is_empty():
+			_check(timeline.select_segment_at_time(0.5), "graph supports segment selection")
+			_check(not timeline.selected_span().is_empty(),
+				"a graph tap records the selected span")
+			if graph != null:
+				graph.set_selection(span)
+				_check(graph.selection() == span, "the graph keeps the selected span")
+		timeline.set_channel("rotation")
+		_check(timeline.channel() == "rotation", "the graph header switches channels")
+		_check(timeline.selected_span().is_empty(), "a channel switch clears the stale span")
+		timeline.set_channel("position")
+		await get_tree().process_frame
+		await get_tree().process_frame
 
-		_check(timeline.has_method("select_segment_at_time"), "graph supports segment selection")
-		if timeline.has_method("select_segment_at_time"):
-			timeline.select_segment_at_time(0.5)
-			_check(timeline._selected_index >= 0, "tapping a segment selects it")
-		_check(timeline.has_method("graph_stats"), "graph exposes live stats")
-		if timeline.has_method("graph_stats"):
-			var stats: Dictionary = timeline.graph_stats()
-			_check(int(stats.get("keys", 0)) >= 3, "graph stats report real key count")
-			_check(float(stats.get("peak", 0.0)) > 0.0, "graph stats report a real peak speed")
-			var segment_stats: Dictionary = stats.get("segment", {})
-			_check(not segment_stats.is_empty(), "graph stats describe the selected segment")
-			_check(float(segment_stats.get("duration", 0.0)) > 0.0, "segment stats include duration")
-
-		_check(timeline.has_method("ease_value_for_drag"), "graph maps vertical drag to easing")
-		if timeline.has_method("ease_value_for_drag"):
-			_check(is_equal_approx(timeline.ease_value_for_drag(0.5, 100.0, 58.0), 1.0), "upward drag doubles the transition")
-			_check(is_equal_approx(timeline.ease_value_for_drag(0.5, 100.0, 142.0), 0.25), "downward drag halves the transition")
-
-		# Copy, paste and invert operate on the real Godot transition scalar.
-		if timeline.has_method("copy_ease") and timeline.has_method("paste_ease") and timeline.has_method("invert_ease"):
-			doc.set_key_transition(key_id, "position", 0, 0.5)
-			timeline.select_segment_at_time(0.5)
-			_check(timeline.copy_ease(), "graph copies the selected easing")
-			_check(timeline._selected_index == 0 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "copy preserves the segment selection")
-			doc.set_key_transition(key_id, "position", 1, 1.0)
-			timeline.select_segment_at_time(1.5)
-			_check(timeline.paste_ease(), "graph pastes easing onto another segment")
-			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 1), 0.5), "paste writes the copied transition")
-			_check(timeline._selected_index == 1 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "paste preserves the segment selection")
-			_check(timeline.invert_ease(), "graph inverts the selected easing")
-			_check(is_equal_approx(doc.get_key_transition(key_id, "position", 1), 2.0), "invert maps 0.5 to 2.0")
-			_check(timeline._selected_index == 1 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "invert preserves the segment selection")
-
-		if timeline.has_method("apply_ease_to_channel"):
-			timeline.select_segment_at_time(0.5)
-			_check(timeline.apply_ease_to_channel(), "graph applies easing to the channel")
-			var applied := true
-			for ki in range(graph_keys.size()):
-				if not is_equal_approx(doc.get_key_transition(key_id, "position", ki), 0.5):
-					applied = false
-			_check(applied, "apply-to-channel writes every segment")
-			_check(timeline._selected_index == 0 and timeline._selected_data_id == key_id and timeline._selected_channel == "position", "apply preserves the segment selection")
-			doc.set_channel_transition(key_id, "position", 1.0)
-
-		timeline.select_segment_at_time(0.5)
-		timeline._apply_ease_preset(4)
-		_check(timeline._selected_index == 0 and timeline._selected_data_id == key_id, "preset preserves the segment selection")
-		doc.set_channel_transition(key_id, "position", 1.0)
-
-		print("SMOKE STEP: short landscape graph")
+		print("SMOKE STEP: landscape graph budget")
 		await _resize_shell(main, editor, Vector2(915.0, 412.0))
 		editor.set_layout_mode("studio")
 		editor.set_workspace("animate")
 		timeline.set_sheet_visible(true)
+		timeline.set_mode("graph")
 		await get_tree().process_frame
 		await get_tree().process_frame
-		_check(timeline.get("_short_layout") == true, "timeline tracks the short landscape layout")
 		_check(editor._stage_host.size.y >= 96.0, "915x412 graph keeps a usable viewport")
-		_check(timeline.graph_plot_rect().size.y < 120.0,
-			"the 915x412 split reports a short graph plot")
-		_check(timeline.graph_caption() == "Rotate upright for more curve-editing space",
-			"915x412 graph states the honest rotation caption")
-		await _resize_shell(main, editor, Vector2(800.0, 360.0))
-		editor.set_layout_mode("studio")
-		editor.set_workspace("animate")
-		timeline.set_sheet_visible(true)
-		await get_tree().process_frame
-		await get_tree().process_frame
-		_check(editor._stage_host.size.y >= 96.0, "800x360 graph keeps a usable viewport")
-		_check(timeline.graph_plot_rect().size.y < 120.0,
-			"800x360 graph reports a short plot")
-		_check(timeline.graph_caption() == "Rotate upright for more curve-editing space",
-			"800x360 graph states the honest rotation caption")
+		_check(timeline.plot_height() > 40.0,
+			"the 915x412 graph keeps a real plot")
+		_check(timeline.pane_compacted(), "915x412 uses the merged single-row header")
 		await _resize_shell(main, editor, Vector2(412.0, 915.0))
 		editor.set_layout_mode("studio")
 		editor.set_workspace("animate")
 		timeline.set_sheet_visible(true)
 		await get_tree().process_frame
 		await get_tree().process_frame
-		_check(timeline.graph_plot_rect().size.y >= 120.0,
-			"the tall pane keeps the 120 dp graph plot floor")
 
 		timeline.set_mode("dope")
 		await get_tree().process_frame
