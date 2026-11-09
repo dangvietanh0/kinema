@@ -27,7 +27,8 @@ func _ready() -> void:
 	await _test_cubic_math()
 	await _test_cubic_bake()
 	await _test_bake_limits()
-	await _test_format4_persistence()
+	await _test_cubic_bake_edges()
+	await _test_v3_round_trip()
 	await _test_segment_selection()
 	await _test_ease_tab()
 	await _test_preset_rail()
@@ -36,6 +37,7 @@ func _ready() -> void:
 	await _test_speed_tab()
 	await _test_family_presets_and_clear()
 	await _test_all_presets()
+	await _test_clip_isolation()
 	await _test_timeline_transport_and_headers()
 	await _test_animate_sizes()
 	_finish()
@@ -179,8 +181,77 @@ func _test_bake_limits() -> void:
 	doc2.queue_free()
 
 
-func _test_format4_persistence() -> void:
-	print("GRAPH STEP: format 4 persistence")
+func _test_cubic_bake_edges() -> void:
+	print("GRAPH STEP: cubic bake edges")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var timeline = ctx["timeline"]
+	var id: String = ctx["id"]
+	# A third key leaves a plain interval after the record so navigation has
+	# somewhere real to land.
+	doc.apply_key_edits(id, "position", [
+		{"index": -1, "time": 2.0, "value": Vector3(0, 5, 0)},
+	], "Third key")
+	var undo_before: int = (doc._undo_stack as Array).size()
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"the edges bake is exactly one undo entry")
+	var keys: Array = doc.get_channel_keys(id, "position")
+	_check(keys.size() == 32, "the edges bake keeps the key after the record")
+	var interior := 0
+	for i in range(1, keys.size() - 1):
+		var t := float(keys[i]["time"])
+		if t > 0.001 and t < 0.999:
+			interior += 1
+	_check(interior == 29, "the edges bake writes 29 keys strictly inside 0-1 s")
+	_check(absf(float(keys[keys.size() - 1]["time"]) - 2.0) < 0.0001,
+		"the key at 2 s survives the bake untouched")
+
+	# Sample the real baked track at five frame-grid times. This is the same
+	# interpolation playback uses, not a separate UI approximation.
+	var v0: Vector3 = keys[0]["value"]
+	var v1: Vector3 = doc.sample_channel(id, "position", 1.0)
+	var samples_ok := true
+	for sample_time in [0.0, 0.2, 0.5, 0.8, 1.0]:
+		doc.seek(float(sample_time))
+		var played: Vector3 = doc.sample_channel(id, "position", float(sample_time))
+		var expected: Vector3 = doc._curve_value("position", v0, v1,
+			SpeedCurveScript.cubic_ease(float(sample_time), 0.2, 0.8, 0.8, 0.2))
+		if played.distance_to(expected) > 0.002:
+			samples_ok = false
+	_check(samples_ok, "playback matches the cubic at five sample times")
+
+	# A tap inside the bake selects the whole record; prev/next treat it as
+	# one interval instead of 29 separate interior keys.
+	graph.clear_selection()
+	graph.set_tab("ease")
+	var tap := Vector2(graph.time_to_point(0.5).x, graph.plot_rect().get_center().y)
+	graph._press(tap)
+	var tapped: Dictionary = graph.selection()
+	_check(str(tapped.get("kind", "")) == "record",
+		"a graph tap inside the bake selects the record")
+	_check(absf(float(tapped.get("start", -1.0))) < 0.0001
+		and absf(float(tapped.get("end", -1.0)) - 1.0) < 0.0001,
+		"the tapped record keeps its authored 0-1 s span")
+	_check(str(timeline.selected_span().get("kind", "")) == "record",
+		"the tapped record is shared with the timeline")
+	timeline.next_segment_button().pressed.emit()
+	await get_tree().process_frame
+	var next_span: Dictionary = timeline.selected_span()
+	_check(str(next_span.get("kind", "")) == "plain"
+		and absf(float(next_span.get("start", -1.0)) - 1.0) < 0.0001,
+		"next segment skips the record's interior keys")
+	timeline.prev_segment_button().pressed.emit()
+	await get_tree().process_frame
+	_check(str(timeline.selected_span().get("kind", "")) == "record",
+		"prev segment returns to the record")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_v3_round_trip() -> void:
+	print("GRAPH STEP: format 4 and v3 round trip")
 	var doc := _new_doc()
 	var id := _cube(doc)
 	_two_keys(doc, id, 0.0, 1.0)
@@ -200,6 +271,32 @@ func _test_format4_persistence() -> void:
 		"the cubic handles survive the round-trip")
 	var span: Dictionary = copy.segment_span_at(id, "position", 0.5)
 	_check(str(span.get("kind", "")) == "record", "the record is selectable by its span after reload")
+
+	# The reloaded record is a live curve, not frozen metadata: its handles
+	# still resolve and a drag rewrites it in one transaction.
+	var timeline = TimelineScript.new()
+	add_child(timeline)
+	timeline.setup(copy)
+	timeline.set_available_width(600)
+	timeline.size = Vector2(600, 324)
+	await get_tree().process_frame
+	timeline.set_mode("graph")
+	await get_tree().process_frame
+	var graph = timeline.segment_graph()
+	graph.set_context(id, "position")
+	graph.set_tab("ease")
+	graph.set_selection(copy.segment_span_at(id, "position", 0.5))
+	_check(graph.handle_positions().size() == 2,
+		"the reloaded record exposes two draggable handles")
+	var undo_before: int = (copy._undo_stack as Array).size()
+	var op: Vector2 = graph.plot_rect().position
+	var plot_size: Vector2 = graph.plot_rect().size
+	graph.handle_drag(op + plot_size * Vector2(0.3, 0.8), op + plot_size * Vector2(0.7, 0.2))
+	_check((copy._undo_stack as Array).size() == undo_before + 1,
+		"a reloaded handle drag is one undo entry")
+	_check(absf(float(copy.curve_segments()[0].get("x1", 0.0)) - 0.42) > 0.001,
+		"a reloaded handle drag rewrites the cubic record")
+	timeline.queue_free()
 
 	var v3: Dictionary = saved.duplicate(true)
 	v3["format"] = 3
@@ -261,9 +358,24 @@ func _test_segment_selection() -> void:
 	var beyond: Dictionary = doc.next_segment_span(id, "position", float(span["start"]), 1)
 	_check(beyond.is_empty(), "next after the last interval returns empty, not a wrap")
 
+	# Tapping the middle plain segment selects it through the real graph path,
+	# and the shared timeline receives the same span.
+	graph.clear_selection()
+	graph.set_tab("ease")
+	var tap := Vector2(graph.time_to_point(1.5).x, graph.plot_rect().get_center().y)
+	graph._press(tap)
+	graph._release(tap)
+	var tapped: Dictionary = graph.selection()
+	_check(str(tapped.get("kind", "")) == "plain"
+		and absf(float(tapped.get("start", -1.0)) - 1.0) < 0.0001
+		and absf(float(tapped.get("end", -1.0)) - 2.0) < 0.0001,
+		"tapping the middle plain segment selects its real 1-2 s span")
+	_check(str(ctx["timeline"].selected_span().get("kind", "")) == "plain"
+		and absf(float(ctx["timeline"].selected_span().get("start", -1.0)) - 1.0) < 0.0001,
+		"the tapped segment is shared with the timeline")
+
 	# The graph zooms to the selected span with 24 dp padding.
-	graph.set_selection(span)
-	var point: Vector2 = graph.time_to_point(float(span["start"]))
+	var point: Vector2 = graph.time_to_point(float(tapped["start"]))
 	_check(absf(point.x - (graph.plot_rect().position.x + 24.0)) < 1.0,
 		"the selected start sits 24 dp from the plot edge")
 	ctx["timeline"].queue_free()
@@ -276,9 +388,12 @@ func _test_ease_tab() -> void:
 	var doc = ctx["doc"]
 	var graph = ctx["graph"]
 	var id: String = ctx["id"]
+	# The real tab buttons switch the Three views without losing context.
+	for tab_id in ["value", "speed", "ease"]:
+		graph.tab_button(tab_id).pressed.emit()
+		_check(graph.tab() == tab_id, "the %s tab button switches tabs" % tab_id)
 	var span: Dictionary = doc.segment_span_at(id, "position", 0.5)
 	graph.set_selection(span)
-	graph.set_tab("ease")
 	_check(graph.tab() == "ease", "the Ease tab can be selected")
 	_check(graph.handle_positions().size() == 2, "a linear segment shows two cubic handles")
 	_check(not graph.engine_ease_visible(), "a transition-1.0 segment has no engine ease badge")
@@ -311,13 +426,18 @@ func _test_ease_tab() -> void:
 	await get_tree().process_frame
 	_check(doc.curve_segments().size() == 1, "Bake ease writes a baked record")
 	_check(str(doc.curve_segments()[0].get("family", "")) == "baked", "the baked family is recorded")
+	_check(doc.get_channel_keys(id, "position").size() > 2,
+		"Bake ease writes real interior keys")
 	_check((doc._undo_stack as Array).size() == engine_undo + 1,
 		"Bake ease is one undo entry")
 	_check(graph.convert_button().visible, "a baked preset offers Convert to cubic")
+	var convert_undo: int = (doc._undo_stack as Array).size()
 	graph.convert_button().pressed.emit()
 	await get_tree().process_frame
 	_check(str(doc.curve_segments()[0].get("family", "")) == "cubic",
 		"Convert to cubic writes linear handles")
+	_check((doc._undo_stack as Array).size() == convert_undo + 1,
+		"Convert to cubic is one undo entry")
 	ctx["timeline"].queue_free()
 	doc.queue_free()
 
@@ -335,13 +455,18 @@ func _test_preset_rail() -> void:
 	]), "the rail lists the six cubic presets and three families")
 	for preset in ["linear", "ease_in", "ease_out", "ease_in_out", "slow_in_fast_out", "back_out"]:
 		_check(graph.preset_chip(preset) != null, "%s has a real chip" % preset)
-		_check(graph.preset_chip(preset).custom_minimum_size.y >= 43.5,
-			"%s chip is 44 dp tall" % preset)
+		_check(graph.preset_chip(preset).custom_minimum_size.x >= 43.5
+			and graph.preset_chip(preset).custom_minimum_size.y >= 43.5,
+			"%s chip keeps a 44 dp target" % preset)
 	graph.preset_chip("ease_in_out").pressed.emit()
 	await get_tree().process_frame
 	var record: Dictionary = doc.curve_segments()[0]
 	_check(absf(float(record.get("x1", 0.0)) - 0.42) < 0.001, "Ease in-out applies x1 0.42")
 	_check(str(record.get("preset", "")) == "ease_in_out", "the preset id is recorded")
+	doc.undo()
+	_check(doc.curve_segments().is_empty(), "undo removes the preset record")
+	_check(doc.get_channel_keys(id, "position").size() == 2,
+		"undo restores the preset's original keys")
 	ctx["timeline"].queue_free()
 	doc.queue_free()
 
@@ -373,9 +498,18 @@ func _test_timeline_transport_and_headers() -> void:
 	_check(timeline.dope_tab().custom_minimum_size.x >= 60.0
 		and timeline.graph_tab_button().custom_minimum_size.x >= 60.0,
 		"Dope and Graph are 60 dp tabs")
+	_check(timeline.dope_tab().custom_minimum_size.y >= 43.5
+		and timeline.graph_tab_button().custom_minimum_size.y >= 43.5,
+		"Dope and Graph are 44 dp tall")
 	_check(timeline.prev_segment_button().custom_minimum_size.x >= 44.0
 		and timeline.next_segment_button().custom_minimum_size.x >= 44.0,
 		"prev/next segment are 44 dp")
+	var graph = timeline.segment_graph()
+	for tab_id in ["ease", "value", "speed"]:
+		var tab_button: Button = graph.tab_button(tab_id)
+		_check(tab_button != null and tab_button.custom_minimum_size.x >= 43.5
+			and tab_button.custom_minimum_size.y >= 43.5,
+			"the %s tab keeps a 44 dp touch target" % tab_id)
 
 	# The timeline asks the editor for the same real time entry sheet; the
 	# editor connection is asserted in the booted shell test in Task 18.
@@ -479,6 +613,8 @@ func _test_animate_sizes() -> void:
 	_check(absf(e._timeline.plot_height() - 140.0) <= 1.0, "800x360: Dope keeps 140 dp")
 	e._timeline.set_mode("graph")
 	_check(not e._timeline.segment_graph().rail_visible(), "800x360: the rail is hidden")
+	_check(e._timeline._presets_button.visible or e._timeline._narrow_presets_button.visible,
+		"800x360: Graph offers its presets through the menu")
 	_check(absf(e._timeline.segment_graph().plot_rect().size.y - 140.0) <= 1.0,
 		"800x360: Graph keeps a 140 dp plot through the Presets menu")
 	main.queue_free()
@@ -490,6 +626,11 @@ func _test_animate_sizes() -> void:
 	_check(absf(float(ctx["stage"]) - 161.0) <= 1.0, "1280x800: the preview is 161 dp")
 	_check(e._animate_preview_visible, "1280x800: the preview is on by default")
 	_check(absf(float(ctx["pane"]) - 571.0) <= 1.0, "1280x800: the pane is 571 dp with the preview")
+	_check(e._animate_pane.get_parent() == e._stage_host.get_parent(),
+		"the Animate pane is a layout sibling of the stage")
+	_check(not e._stage_host.is_ancestor_of(e._animate_pane)
+		and not e._stage_host.is_ancestor_of(e._timeline),
+		"the Animate pane and Timeline are not children of the stage host")
 	e._toggle_animate_preview()
 	await get_tree().process_frame
 	_check(absf(e._animate_pane.size.y - 732.0) <= 1.0,
@@ -604,6 +745,34 @@ func _test_endpoint_rebake_and_invalidation() -> void:
 	ctx["timeline"].queue_free()
 	doc.queue_free()
 
+	# Deleting an interior key is the same edit path: the record that owned it
+	# is dropped in the same transaction and every other key survives.
+	ctx = await _host_graph(600, 324)
+	doc = ctx["doc"]
+	graph = ctx["graph"]
+	id = ctx["id"]
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("value")
+	graph.set_component("x")
+	var delete_keys: Array = doc.get_channel_keys(id, "position")
+	var delete_time := float(delete_keys[5]["time"])
+	var delete_point: Vector2 = graph.time_to_point(delete_time)
+	var delete_undo: int = (doc._undo_stack as Array).size()
+	graph._press(delete_point)
+	graph._release(delete_point)
+	_check(graph.selected_key_info().size() > 0,
+		"a value-tab tap selects the interior key before deletion")
+	graph.delete_selected_key()
+	_check(doc.curve_segments().is_empty(),
+		"deleting an interior key invalidates the record")
+	_check(doc.get_channel_keys(id, "position").size() == delete_keys.size() - 1,
+		"deleting an interior key keeps every other key")
+	_check((doc._undo_stack as Array).size() == delete_undo + 1,
+		"delete key inside a record is one undo entry")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
 
 # -------------------------------------------------------------------------
 # Task 20 — Speed tab, family presets and conversion
@@ -659,6 +828,22 @@ func _test_family_presets_and_clear() -> void:
 	var id: String = ctx["id"]
 	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
 	graph.set_tab("ease")
+	var expected_curves := {
+		"bounce": "bounce_out",
+		"elastic": "elastic_out",
+		"spring": "spring",
+	}
+	for family_id in expected_curves.keys():
+		graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+		graph.preset_chip(family_id).pressed.emit()
+		await get_tree().process_frame
+		var family_record: Dictionary = doc.curve_segments()[0]
+		_check(str(family_record.get("family", "")) == "preset",
+			"%s records the preset family" % family_id)
+		_check(str(family_record.get("preset", "")) == str(expected_curves[family_id]),
+			"%s records its curve id" % family_id)
+		_check(int(family_record.get("samples", 0)) > 0,
+			"%s bakes real samples" % family_id)
 	var undo_before: int = (doc._undo_stack as Array).size()
 	graph.preset_chip("bounce").pressed.emit()
 	await get_tree().process_frame
@@ -704,6 +889,14 @@ func _test_family_presets_and_clear() -> void:
 		"Clear curve restores the recorded start transition")
 	_check((doc._undo_stack as Array).size() == clear_undo + 1,
 		"Clear curve is one undo entry")
+	doc.undo()
+	_check(doc.curve_segments().size() == 1, "undo restores the cleared record")
+	var restored: Dictionary = doc.curve_segments()[0]
+	_check(str(restored.get("preset", "")) == "custom"
+		and absf(float(restored.get("x1", 0.0)) - float(live.get("x1", 0.0))) < 0.000001,
+		"undo restores the record's metadata")
+	_check(absf(float(restored.get("restore_transition", 0.0)) - start_transition) < 0.000001,
+		"undo restores the recorded transition")
 	ctx["timeline"].queue_free()
 	doc.queue_free()
 
@@ -736,3 +929,48 @@ func _test_all_presets() -> void:
 			"%s writes its exact handles" % preset_id)
 		ctx["timeline"].queue_free()
 		doc.queue_free()
+
+
+func _test_clip_isolation() -> void:
+	print("GRAPH STEP: clip curve isolation")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	var first_clip: String = doc.active_clip_id()
+	_check(doc.curve_segments().size() == 1, "the first clip owns its record")
+	var second: String = doc.animation_system.create_clip("Second", 12.0)
+	doc.set_active_clip(second)
+	_check(doc.curve_segments().is_empty(), "a fresh clip starts with no records")
+	doc.apply_key_edits(id, "position", [
+		{"index": -1, "time": 0.0, "value": Vector3.ZERO},
+		{"index": -1, "time": 2.0, "value": Vector3(0, 10, 0)},
+	], "Second clip keys")
+	doc.bake_cubic_segment(id, "position", 0.0, 2.0, 0.42, 0.0, 0.58, 1.0)
+	_check(doc.curve_segments().size() == 1, "the second clip writes its own record")
+	var second_record: Dictionary = doc.curve_segments()[0]
+	_check(absf(float(second_record.get("x1", 0.0)) - 0.42) < 0.000001
+		and absf(float(second_record.get("end", 0.0)) - 2.0) < 0.000001,
+		"the second clip keeps its own handles and span")
+	doc.set_active_clip(first_clip)
+	var first_record: Dictionary = doc.curve_segments()[0]
+	_check(absf(float(first_record.get("x1", 0.0)) - 0.2) < 0.000001
+		and absf(float(first_record.get("end", 0.0)) - 1.0) < 0.000001,
+		"switching back restores the first clip's metadata")
+	graph.set_context(id, "position")
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	var first_span: Dictionary = graph.selection()
+	_check(str(first_span.get("kind", "")) == "record"
+		and absf(float(first_span.get("end", 0.0)) - 1.0) < 0.0001,
+		"the graph follows the first clip's span")
+	doc.set_active_clip(second)
+	var second_span: Dictionary = doc.segment_span_at(id, "position", 1.0)
+	_check(str(second_span.get("kind", "")) == "record"
+		and absf(float(second_span.get("end", 0.0)) - 2.0) < 0.0001,
+		"the second clip resolves its own 2 s record")
+	_check(doc.curve_segments().size() == 1
+		and absf(float(doc.curve_segments()[0].get("x2", 0.0)) - 0.58) < 0.000001,
+		"the second clip does not inherit the first clip's metadata")
+	ctx["timeline"].queue_free()
+	doc.queue_free()

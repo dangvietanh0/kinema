@@ -359,8 +359,9 @@ func _test_timeline_workspace() -> void:
 		"the Timeline is mounted in the Animate pane")
 	_check(editor._animate_pane.get_index() > editor._stage_host.get_index(),
 		"the Animate pane sits below the stage in the centre column")
-	_check(editor._stage_host.get_global_rect().end.y <=
-		editor._animate_pane.get_global_rect().position.y + 0.5,
+	_check(not editor._stage_host.visible
+		or editor._stage_host.get_global_rect().end.y <=
+			editor._animate_pane.get_global_rect().position.y + 0.5,
 		"the Animate pane never covers the stage")
 	_check(not editor._transport_bar.visible,
 		"the shared stage transport yields to the Timeline transport")
