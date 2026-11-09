@@ -9,6 +9,7 @@ extends Control
 signal notice(text: String)
 signal span_selected(span: Dictionary)
 signal span_changed
+signal tab_changed(tab: String)
 
 const DocumentScript = preload("res://src/core/document.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
@@ -136,6 +137,7 @@ func refresh() -> void:
 func set_tab(tab: String) -> void:
 	if not (tab in TAB_IDS):
 		return
+	var changed := tab != _tab
 	_tab = tab
 	for id in _tab_buttons.keys():
 		var button: Button = _tab_buttons[id]
@@ -143,6 +145,8 @@ func set_tab(tab: String) -> void:
 			button.set_pressed_no_signal(id == _tab)
 	_sync_actions()
 	queue_redraw()
+	if changed:
+		tab_changed.emit(_tab)
 
 
 func tab() -> String:

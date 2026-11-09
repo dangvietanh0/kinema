@@ -1372,6 +1372,10 @@ func set_mode(mode: String) -> void:
 	if _sheet != null:
 		_sheet.queue_redraw()
 	if _segment_graph != null:
+		# Containers settle on the next frame, but callers read the plot budget
+		# synchronously after switching modes; report the real body now.
+		if _mode == "graph":
+			_segment_graph.size.y = _graph_body_height()
 		_segment_graph.queue_redraw()
 	if changed:
 		mode_changed.emit(_mode)

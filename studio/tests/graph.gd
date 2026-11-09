@@ -32,6 +32,7 @@ func _ready() -> void:
 	await _test_ease_tab()
 	await _test_preset_rail()
 	await _test_timeline_transport_and_headers()
+	await _test_animate_sizes()
 	_finish()
 
 
@@ -409,3 +410,96 @@ func _test_timeline_transport_and_headers() -> void:
 		"prev segment returns to the recorded span")
 	ctx["timeline"].queue_free()
 	doc.queue_free()
+
+
+# -------------------------------------------------------------------------
+# Task 18 — Animate layout, stage preview and persisted state
+# -------------------------------------------------------------------------
+
+func _boot_main(width: int, height: int):
+	get_window().size = Vector2i(width, height)
+	await get_tree().process_frame
+	var packed: PackedScene = load("res://src/app/main.tscn")
+	var main: Control = packed.instantiate()
+	add_child(main)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main._on_new_project_requested("Animate Layout", "blank")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	return main
+
+
+func _animate_at(width: int, height: int) -> Dictionary:
+	# Auto-default tests need "never explicitly written"; tests share Prefs.
+	Prefs.clear_value("editor.animate_stage")
+	var main = await _boot_main(width, height)
+	var editor = main._editor
+	editor.set_workspace("animate")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	return {
+		"main": main,
+		"editor": editor,
+		"stage": editor._stage_host.size.y,
+		"pane": editor._animate_pane.size.y,
+		"timeline": editor._timeline.size.y,
+	}
+
+
+func _test_animate_sizes() -> void:
+	print("GRAPH STEP: animate layout sizes")
+	var ctx: Dictionary = await _animate_at(915, 412)
+	var main = ctx["main"]
+	var e = ctx["editor"]
+	_check(absf(float(ctx["pane"]) - 324.0) <= 1.0, "915x412: the pane is 324 dp")
+	_check(not e._animate_preview_visible, "915x412: stage preview is off")
+	_check(e._timeline.pane_compacted(), "915x412: the headers are compacted")
+	e._timeline.set_mode("dope")
+	_check(absf(e._timeline.plot_height() - 192.0) <= 1.0, "915x412: Dope keeps a 192 dp plot")
+	e._timeline.set_mode("graph")
+	_check(e._timeline.segment_graph().rail_visible(), "915x412: Graph keeps the preset rail")
+	_check(absf(e._timeline.segment_graph().plot_rect().size.y - 148.0) <= 1.0,
+		"915x412: Graph keeps a 148 dp plot")
+	_check(e._stage_toggle_action().get("disabled_reason", "") ==
+		"Not enough height for stage preview", "915x412: the stage toggle states the reason")
+	main.queue_free()
+	await get_tree().process_frame
+
+	ctx = await _animate_at(800, 360)
+	main = ctx["main"]
+	e = ctx["editor"]
+	_check(absf(float(ctx["pane"]) - 272.0) <= 1.0, "800x360: the pane is 272 dp")
+	e._timeline.set_mode("dope")
+	_check(absf(e._timeline.plot_height() - 140.0) <= 1.0, "800x360: Dope keeps 140 dp")
+	e._timeline.set_mode("graph")
+	_check(not e._timeline.segment_graph().rail_visible(), "800x360: the rail is hidden")
+	_check(absf(e._timeline.segment_graph().plot_rect().size.y - 140.0) <= 1.0,
+		"800x360: Graph keeps a 140 dp plot through the Presets menu")
+	main.queue_free()
+	await get_tree().process_frame
+
+	ctx = await _animate_at(1280, 800)
+	main = ctx["main"]
+	e = ctx["editor"]
+	_check(absf(float(ctx["stage"]) - 161.0) <= 1.0, "1280x800: the preview is 161 dp")
+	_check(e._animate_preview_visible, "1280x800: the preview is on by default")
+	_check(absf(float(ctx["pane"]) - 571.0) <= 1.0, "1280x800: the pane is 571 dp with the preview")
+	e._toggle_animate_preview()
+	await get_tree().process_frame
+	_check(absf(e._animate_pane.size.y - 732.0) <= 1.0,
+		"toggling the preview off restores the 732 dp pane")
+	_check(bool(Prefs.get_value("editor.animate_stage", true)) == false,
+		"the stage toggle persists under editor.animate_stage")
+	main.queue_free()
+	await get_tree().process_frame
+
+	# A fresh boot restores the explicit choice instead of the auto default.
+	var restored = await _boot_main(1280, 800)
+	restored._editor.set_workspace("animate")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(not restored._editor._animate_preview_visible,
+		"a fresh boot restores the persisted stage choice")
+	restored.queue_free()
+	Prefs.clear_value("editor.animate_stage")

@@ -210,10 +210,14 @@ var _render_ui_state: Dictionary = {}
 var _look_through := false
 var _look_camera_id := ""
 var _look_perf_was_visible := false
+## The Animate stage preview split. The auto default is derived from the live
+## window height; only the user's toggle writes `editor.animate_stage`.
+var _animate_preview_visible := false
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	clip_contents = true
+	_restore_animate_preview()
 	_layout = VBoxContainer.new()
 	_layout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_layout.add_theme_constant_override("separation", int(Kit.GUTTER))
@@ -405,6 +409,11 @@ func _build_timeline() -> void:
 		_timeline.set_sheet_visible(not _timeline.sheet_visible())
 	)
 	_animate_pane.setup(_timeline)
+	# Ease/Value/Speed is graph state, unrelated to the Dope/Graph pane tabs.
+	var graph: Control = _timeline.segment_graph()
+	if graph != null:
+		graph.connect("tab_changed", _on_graph_tab_changed)
+		graph.call("set_tab", str(Prefs.get_value("editor.graph_tab", "ease")))
 
 ## The panel host owns the existing content. The outliner, inspector and rig
 ## panel keep their signals and state; only their mount point moves.
@@ -726,6 +735,7 @@ func _context_actions(id: String) -> Array:
 				_act("dope", "Dope", "", 80, true, false, 60.0, "timeline_mode"),
 				_act("graph", "Graph", "", 75, true, false, 60.0, "timeline_mode"),
 				_act("fit", "Fit", "focus", 70),
+				_stage_toggle_action(),
 			]
 		"render":
 			return [
@@ -764,6 +774,12 @@ func _sync_context_state() -> void:
 	if _timeline != null:
 		_context_bar.set_action_active("dope", _timeline.mode() == "dope")
 		_context_bar.set_action_active("graph", _timeline.mode() == "graph")
+	if _workspace == "animate":
+		var preview_fits := _stage_preview_fits()
+		_context_bar.set_action_enabled("stage_toggle", preview_fits,
+			"Not enough height for stage preview")
+		_context_bar.set_action_active("stage_toggle",
+			_animate_preview_visible and preview_fits)
 	if _view != null:
 		_context_bar.set_action_active("grid", _view.grid_enabled())
 	var panel_mode: int = _workspace_panel.mode() if _workspace_panel != null \
@@ -850,6 +866,8 @@ func _on_context_action(id: String) -> void:
 			_timeline.set_mode(id)
 		"fit":
 			_fit_animate_pane()
+		"stage_toggle":
+			_toggle_animate_preview()
 	_sync_context_state()
 
 
@@ -1770,6 +1788,67 @@ func _notification(what: int) -> void:
 			_save_project(false, true)
 
 # -------------------------------------------------------------------------
+# Animate stage preview
+# -------------------------------------------------------------------------
+
+## The body the Animate split divides: everything below the two fixed bars.
+## Bar sizes are real after layout; their minimums are the honest fallback on
+## the first build.
+func _shell_body_height() -> float:
+	var top := 0.0
+	if _workspace_bar != null:
+		top = _workspace_bar.size.y if _workspace_bar.size.y > 0.0 \
+			else _workspace_bar.custom_minimum_size.y
+	var context := 0.0
+	if _context_bar != null:
+		context = _context_bar.size.y if _context_bar.size.y > 0.0 \
+			else _context_bar.custom_minimum_size.y
+	var instrumentation := 0.0
+	if _instrumentation != null and _instrumentation.visible:
+		instrumentation = _instrumentation.size.y if _instrumentation.size.y > 0.0 \
+			else _instrumentation.custom_minimum_size.y
+	return maxf(0.0, size.y - top - context - instrumentation)
+
+
+func _animate_preview_height() -> float:
+	return clampf(_shell_body_height() * 0.22, 96.0, 200.0)
+
+
+## The tightest case is Graph: the preview must still leave the 120 dp plot
+## floor after the transport, one header and the dope/graph ruler, plus the
+## preset rail (44). A merged header keeps the same total fixed height.
+func _stage_preview_fits() -> bool:
+	var pane_height := _shell_body_height() - _animate_preview_height()
+	return pane_height - 132.0 - 44.0 >= 120.0
+
+
+func _stage_toggle_action() -> Dictionary:
+	var action := _act("stage_toggle", "Stage", "panel-top", 65, false, true, 44.0)
+	if not _stage_preview_fits():
+		action["disabled_reason"] = "Not enough height for stage preview"
+	return action
+
+
+## An explicit choice always wins across sizes; the automatic rule only
+## describes a session that never touched the toggle, and never writes Prefs.
+func _restore_animate_preview() -> void:
+	if Prefs.has_explicit("editor.animate_stage"):
+		_animate_preview_visible = bool(Prefs.get_value("editor.animate_stage", true))
+	else:
+		_animate_preview_visible = size.y >= 480.0
+
+
+func _toggle_animate_preview() -> void:
+	_animate_preview_visible = not _animate_preview_visible
+	Prefs.set_value("editor.animate_stage", _animate_preview_visible)
+	_apply_shell()
+
+
+func _on_graph_tab_changed(tab: String) -> void:
+	Prefs.set_value("editor.graph_tab", tab)
+
+
+# -------------------------------------------------------------------------
 # Responsive shell
 # -------------------------------------------------------------------------
 
@@ -1787,8 +1866,25 @@ func _apply_shell() -> void:
 	# reapplies the shell in one pass.
 	if _render_mode:
 		return
+	_restore_animate_preview()
 	_short = size.y < SHORT_MAX_HEIGHT
-	_stage_host.custom_minimum_size.y = 96.0 if _short else 120.0
+	# The Animate body is exactly the two fixed bars plus the split; the
+	# spec's dp arithmetic counts the pane, not the 1 dp separators.
+	var animate := _workspace == "animate"
+	_layout.add_theme_constant_override("separation",
+		0 if animate else int(Kit.GUTTER))
+	_center.add_theme_constant_override("separation",
+		0 if animate else int(Kit.GUTTER))
+	var preview_height := _animate_preview_height()
+	var preview_on := animate and _animate_preview_visible and _stage_preview_fits()
+	_stage_host.visible = not animate or preview_on
+	if preview_on:
+		_stage_host.custom_minimum_size.y = preview_height
+		_stage_host.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	else:
+		_stage_host.custom_minimum_size.y = 96.0 if _short else 120.0
+		_stage_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_animate_pane.set_stage_preview(preview_on, preview_height)
 	_timeline.set_short_layout(_short)
 	_workspace_bar.set_layout_mode(layout_mode())
 	_workspace_bar.set_available_width(size.x)
@@ -1813,6 +1909,8 @@ func _apply_shell() -> void:
 		_workspace_panel.set_mode(WorkspacePanelScript.Mode.HIDDEN)
 		_panel_spacer.custom_minimum_size.x = 0.0
 		_animate_pane.visible = false
+		_stage_host.visible = true
+		_stage_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		_timeline.set_available_width(size.x)
 		_refresh_chrome_values()
 		return

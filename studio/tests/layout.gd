@@ -130,7 +130,8 @@ func _ready() -> void:
 			editor.set_workspace("animate")
 			await get_tree().process_frame
 			_check(editor._animate_pane.visible, label + ": animate pane visible")
-			_check(editor._animate_pane.get_global_rect().position.y >=
+			_check(not editor._stage_host.visible or
+				editor._animate_pane.get_global_rect().position.y >=
 				editor._stage_host.get_global_rect().end.y - 0.5,
 				label + ": animate pane below the stage")
 			_check(editor._timeline.size.y >= TIMELINE_FLOOR,
