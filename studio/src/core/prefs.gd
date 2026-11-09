@@ -28,6 +28,8 @@ const DEFAULTS := {
 	"editor.show_fps": true,
 	"editor.reduce_motion": false,
 	"editor.haptics": false,
+	"editor.animate_stage": true,
+	"editor.graph_tab": "ease",
 	"editor.collapsed_sections": [],
 	"editor.scene_panel_expanded": true,
 	"editor.project_sort": "recent",
@@ -60,6 +62,7 @@ const ENUMS := {
 	"display.orientation": ["auto", "portrait", "landscape"],
 	"editor.default_interpolation": ["linear", "cubic"],
 	"editor.timeline_default": ["dope", "graph"],
+	"editor.graph_tab": ["ease", "value", "speed"],
 	"editor.workspace": ["scene", "shading", "rig", "animate", "render"],
 	"editor.project_sort": ["recent", "name"],
 	"performance.overlay": ["off", "compact", "full"],
@@ -93,6 +96,9 @@ var settings_path := "user://settings.json"
 var last_error := ""
 var _values: Dictionary = {}
 var _loaded := false
+## Keys the user or a saved file made explicit. Only these are written back:
+## materializing a default must never turn it into a remembered choice.
+var _explicit_keys: Dictionary = {}
 
 
 func _ready() -> void:
@@ -101,6 +107,7 @@ func _ready() -> void:
 
 func load_settings() -> void:
 	_values = DEFAULTS.duplicate(true)
+	_explicit_keys.clear()
 	last_error = ""
 	_loaded = true
 	if not FileAccess.file_exists(settings_path):
@@ -120,6 +127,7 @@ func load_settings() -> void:
 		var key := str(raw_key)
 		if DEFAULTS.has(key):
 			_values[key] = _coerce(key, parsed[raw_key])
+			_explicit_keys[key] = true
 
 
 func save_settings() -> bool:
@@ -129,7 +137,11 @@ func save_settings() -> bool:
 	if file == null:
 		last_error = "Settings could not be saved."
 		return false
-	file.store_string(JSON.stringify(_values, "\t"))
+	var out: Dictionary = {}
+	for key in _explicit_keys.keys():
+		if _values.has(key):
+			out[key] = _values[key]
+	file.store_string(JSON.stringify(out, "\t"))
 	file.close()
 	DirAccess.remove_absolute(settings_path)
 	var err := DirAccess.rename_absolute(tmp, settings_path)
@@ -154,7 +166,12 @@ func set_value(key: String, value: Variant, save: bool = true) -> void:
 	if not DEFAULTS.has(key):
 		return
 	var coerced: Variant = _coerce(key, value)
+	# Mark before the equality early-return: choosing the default explicitly
+	# must be remembered, not discarded as "already this value".
+	_explicit_keys[key] = true
 	if _values.has(key) and _values[key] == coerced and typeof(_values[key]) == typeof(coerced):
+		if save:
+			save_settings()
 		return
 	_values[key] = coerced
 	if save:
@@ -162,17 +179,35 @@ func set_value(key: String, value: Variant, save: bool = true) -> void:
 	changed.emit(key, coerced)
 
 
+func has_explicit(key: String) -> bool:
+	if not _loaded:
+		load_settings()
+	return _explicit_keys.has(key)
+
+
+func clear_value(key: String, save := true) -> void:
+	if not DEFAULTS.has(key):
+		return
+	_values[key] = _duplicate_default(DEFAULTS[key])
+	_explicit_keys.erase(key)
+	if save:
+		save_settings()
+	changed.emit(key, _values[key])
+
+
 func reset_section(section: String) -> void:
 	for key in DEFAULTS.keys():
 		if not str(key).begins_with(section + "."):
 			continue
 		_values[key] = _duplicate_default(DEFAULTS[key])
+		_explicit_keys.erase(key)
 		changed.emit(key, _values[key])
 	save_settings()
 
 
 func reset_all() -> void:
 	_values = DEFAULTS.duplicate(true)
+	_explicit_keys.clear()
 	for key in DEFAULTS.keys():
 		changed.emit(key, _values[key])
 	save_settings()

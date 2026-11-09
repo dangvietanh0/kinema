@@ -625,7 +625,8 @@ func _test_shell_anatomy_and_panels() -> void:
 		"animate: the mounted Timeline is the existing component")
 	_check(editor._timeline.get_parent() == editor._animate_pane,
 		"animate: the timeline is not a stage overlay")
-	_check(editor._stage_host.get_global_rect().end.y <=
+	_check(not editor._stage_host.visible or
+		editor._stage_host.get_global_rect().end.y <=
 		editor._animate_pane.get_global_rect().position.y + 0.5,
 		"animate: the pane never covers the stage")
 	_check(not editor._transport_bar.visible, "animate: the shared transport is replaced")

@@ -213,10 +213,14 @@ var _render_ui_state: Dictionary = {}
 var _look_through := false
 var _look_camera_id := ""
 var _look_perf_was_visible := false
+## The Animate stage preview split. The auto default is derived from the live
+## window height; only the user's toggle writes `editor.animate_stage`.
+var _animate_preview_visible := false
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	clip_contents = true
+	_restore_animate_preview()
 	_layout = VBoxContainer.new()
 	_layout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_layout.add_theme_constant_override("separation", int(Kit.GUTTER))
@@ -403,6 +407,9 @@ func _build_timeline() -> void:
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
+	_timeline.time_entry_requested.connect(_open_time_entry_sheet)
+	_timeline.key_info_requested.connect(_open_key_info_sheet)
+	_timeline.mode_changed.connect(_on_timeline_mode_changed)
 	# The Animate pane is permanent, so fold is a sheet state, not a shell
 	# state. The transport's chevron and the compact header's close action both
 	# collapse the dope sheet and leave the transport reachable.
@@ -410,6 +417,11 @@ func _build_timeline() -> void:
 		_timeline.set_sheet_visible(not _timeline.sheet_visible())
 	)
 	_animate_pane.setup(_timeline)
+	# Ease/Value/Speed is graph state, unrelated to the Dope/Graph pane tabs.
+	var graph: Control = _timeline.segment_graph()
+	if graph != null:
+		graph.connect("tab_changed", _on_graph_tab_changed)
+		graph.call("set_tab", str(Prefs.get_value("editor.graph_tab", "ease")))
 
 ## The panel host owns the existing content. The outliner, inspector and rig
 ## panel keep their signals and state; only their mount point moves.
@@ -707,13 +719,15 @@ func _context_actions(id: String) -> Array:
 				_act("panel", "Rig panel", "panel-right", 30),
 			]
 		"animate":
-			# W1 scope only; W3 inserts dope/graph/stage_toggle here.
 			return [
 				_act("select", "Select", "tool-select", 100, false, true),
 				_act("move", "Move", "tool-move", 95, false, true),
 				_act("rotate", "Rotate", "tool-rotate", 90, false, true),
 				_act("scale", "Scale", "tool-scale", 85, false, true),
-				_act("fit", "Fit", "focus", 80),
+				_act("dope", "Dope", "", 80, true, false, 60.0, "timeline_mode"),
+				_act("graph", "Graph", "", 75, true, false, 60.0, "timeline_mode"),
+				_act("fit", "Fit", "focus", 70),
+				_stage_toggle_action(),
 			]
 		"render":
 			return [
@@ -749,6 +763,15 @@ func _sync_context_state() -> void:
 		return
 	for tool in ["select", "move", "rotate", "scale"]:
 		_context_bar.set_action_active(tool, _tool == tool)
+	if _timeline != null:
+		_context_bar.set_action_active("dope", _timeline.mode() == "dope")
+		_context_bar.set_action_active("graph", _timeline.mode() == "graph")
+	if _workspace == "animate":
+		var preview_fits := _stage_preview_fits()
+		_context_bar.set_action_enabled("stage_toggle", preview_fits,
+			"Not enough height for stage preview")
+		_context_bar.set_action_active("stage_toggle",
+			_animate_preview_visible and preview_fits)
 	if _view != null:
 		_context_bar.set_action_active("grid", _view.grid_enabled())
 	var panel_mode: int = _workspace_panel.mode() if _workspace_panel != null \
@@ -838,8 +861,12 @@ func _on_context_action(id: String) -> void:
 			_start_render_output()
 		"still":
 			_start_render_still()
+		"dope", "graph":
+			_timeline.set_mode(id)
 		"fit":
 			_fit_animate_pane()
+		"stage_toggle":
+			_toggle_animate_preview()
 	_sync_context_state()
 
 
@@ -1078,7 +1105,7 @@ func _rig_has_rest_offset(rig: Dictionary) -> bool:
 func _fit_animate_pane() -> void:
 	if doc == null or _timeline == null:
 		return
-	_timeline.set_time_view(0.0, maxf(doc.duration, 0.1))
+	_timeline.fit_time_view()
 
 
 func _visible_shell_action_ids() -> PackedStringArray:
@@ -1241,9 +1268,120 @@ func _open_time_entry_sheet() -> void:
 		[
 			{"text": "Cancel", "compact": true},
 			{"text": "Go", "primary": true, "callback": _apply_time_entry},
-		]
+		],
+		{"on_close": _return_focus_to_timeline}
 	)
 	_time_frame_field.grab_focus()
+
+
+## Numeric key sheet for the selected graph key. Position/scale are edited as
+## real component values; quaternions stay with the rig gizmo because a
+## component-wise quaternion edit is not the rotation the user sees.
+func _open_key_info_sheet(index: int) -> void:
+	if doc == null or _overlay == null or _timeline == null:
+		return
+	var graph: Control = _timeline.segment_graph()
+	var object_id: String = doc.selected_id
+	var channel := "position"
+	if graph != null:
+		if str(graph.call("context_object")) != "":
+			object_id = str(graph.call("context_object"))
+		if str(graph.call("context_channel")) != "":
+			channel = str(graph.call("context_channel"))
+	var keys: Array = doc.get_channel_keys(object_id, channel)
+	if index < 0 or index >= keys.size():
+		_timeline.notice.emit("Select a key first.")
+		return
+	var key: Dictionary = keys[index]
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+	if channel == "rotation":
+		var warning := Kit.label(
+			"Rotation values are quaternion components; edit them with the rig gizmo.",
+			Kit.TYPE_BODY, Kit.TEXT_DIM)
+		warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(warning)
+		_overlay.show_sheet("Key", "Rotation keys are edited with the rig gizmo.",
+			body, [{"text": "Close", "compact": true}])
+		return
+
+	var time_box := VBoxContainer.new()
+	time_box.add_theme_constant_override("separation", 2)
+	time_box.add_child(Kit.mono_label("TIME (S)", 10, Kit.TEXT_DIM))
+	var time_field = Kit.line_edit("Seconds")
+	time_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	time_field.custom_minimum_size.y = 44.0
+	time_field.text = "%.3f" % float(key["time"])
+	time_box.add_child(time_field)
+	body.add_child(time_box)
+
+	var value_row := HBoxContainer.new()
+	value_row.add_theme_constant_override("separation", 8)
+	value_row.custom_minimum_size.y = 44.0
+	body.add_child(value_row)
+	var value: Vector3 = key["value"] if key["value"] is Vector3 else Vector3.ZERO
+	var components := [value.x, value.y, value.z]
+	var fields: Array = []
+	for axis in range(3):
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 2)
+		box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_child(Kit.mono_label(["X", "Y", "Z"][axis], 10, Kit.TEXT_DIM))
+		var field = Kit.line_edit(["X", "Y", "Z"][axis])
+		field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+		field.custom_minimum_size.y = 44.0
+		field.text = "%.3f" % float(components[axis])
+		box.add_child(field)
+		value_row.add_child(box)
+		fields.append(field)
+
+	var error := Kit.label("", 11, Kit.DANGER)
+	error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	error.visible = false
+	body.add_child(error)
+
+	var apply := func() -> void:
+		if not is_instance_valid(time_field):
+			return
+		var seconds_text: String = str(time_field.text).strip_edges()
+		if seconds_text == "" or not seconds_text.is_valid_float():
+			error.text = "Enter a time in seconds."
+			error.visible = true
+			return
+		var parts: Array = []
+		for field in fields:
+			var axis_text: String = field.text.strip_edges()
+			if axis_text == "" or not axis_text.is_valid_float():
+				error.text = "Enter X, Y and Z values."
+				error.visible = true
+				return
+			parts.append(axis_text.to_float())
+		var new_value := Vector3(float(parts[0]), float(parts[1]), float(parts[2]))
+		var result: Dictionary = doc.move_key(object_id, channel, index,
+			seconds_text.to_float(), new_value)
+		if not bool(result.get("ok", false)):
+			error.text = str(result.get("error", "Curve data no longer matches these keys."))
+			error.visible = true
+			return
+		_overlay.close_modal()
+
+	_overlay.show_sheet("Key", "Move the selected key in time or edit its value.",
+		body,
+		[
+			{"text": "Cancel", "compact": true},
+			{"text": "Apply", "primary": true, "callback": apply},
+		],
+		{"on_close": _return_focus_to_timeline})
+	time_field.grab_focus()
+
+
+## The Animate timecode opens the same sheet as the shared transport; closing
+## it returns focus to the timeline so keyboard shortcuts stay in the pane.
+func _return_focus_to_timeline() -> void:
+	if _workspace != "animate" or _timeline == null or not _timeline.visible:
+		return
+	if _timeline.time_button() != null and _timeline.time_button().visible:
+		_timeline.time_button().grab_focus()
 
 
 func _apply_time_entry() -> void:
@@ -1770,6 +1908,15 @@ func _on_timeline_notice(text_value: String) -> void:
 	if _overlay != null:
 		_overlay.toast(text_value, "diamond", Kit.ACCENT)
 
+
+## The pane header tabs and the context pair are the same segmented state.
+## `Timeline.set_mode` is idempotent, so this cannot recurse.
+func _on_timeline_mode_changed(mode: String) -> void:
+	if _context_bar == null:
+		return
+	_context_bar.set_action_active("dope", mode == "dope")
+	_context_bar.set_action_active("graph", mode == "graph")
+
 # -------------------------------------------------------------------------
 # Saving and leaving
 # -------------------------------------------------------------------------
@@ -1876,6 +2023,67 @@ func _notification(what: int) -> void:
 			_save_project(false, true)
 
 # -------------------------------------------------------------------------
+# Animate stage preview
+# -------------------------------------------------------------------------
+
+## The body the Animate split divides: everything below the two fixed bars.
+## Bar sizes are real after layout; their minimums are the honest fallback on
+## the first build.
+func _shell_body_height() -> float:
+	var top := 0.0
+	if _workspace_bar != null:
+		top = _workspace_bar.size.y if _workspace_bar.size.y > 0.0 \
+			else _workspace_bar.custom_minimum_size.y
+	var context := 0.0
+	if _context_bar != null:
+		context = _context_bar.size.y if _context_bar.size.y > 0.0 \
+			else _context_bar.custom_minimum_size.y
+	var instrumentation := 0.0
+	if _instrumentation != null and _instrumentation.visible:
+		instrumentation = _instrumentation.size.y if _instrumentation.size.y > 0.0 \
+			else _instrumentation.custom_minimum_size.y
+	return maxf(0.0, size.y - top - context - instrumentation)
+
+
+func _animate_preview_height() -> float:
+	return clampf(_shell_body_height() * 0.22, 96.0, 200.0)
+
+
+## The tightest case is Graph: the preview must still leave the 120 dp plot
+## floor after the transport, one header and the dope/graph ruler, plus the
+## preset rail (44). A merged header keeps the same total fixed height.
+func _stage_preview_fits() -> bool:
+	var pane_height := _shell_body_height() - _animate_preview_height()
+	return pane_height - 132.0 - 44.0 >= 120.0
+
+
+func _stage_toggle_action() -> Dictionary:
+	var action := _act("stage_toggle", "Stage", "panel-top", 65, false, true, 44.0)
+	if not _stage_preview_fits():
+		action["disabled_reason"] = "Not enough height for stage preview"
+	return action
+
+
+## An explicit choice always wins across sizes; the automatic rule only
+## describes a session that never touched the toggle, and never writes Prefs.
+func _restore_animate_preview() -> void:
+	if Prefs.has_explicit("editor.animate_stage"):
+		_animate_preview_visible = bool(Prefs.get_value("editor.animate_stage", true))
+	else:
+		_animate_preview_visible = size.y >= 480.0
+
+
+func _toggle_animate_preview() -> void:
+	_animate_preview_visible = not _animate_preview_visible
+	Prefs.set_value("editor.animate_stage", _animate_preview_visible)
+	_apply_shell()
+
+
+func _on_graph_tab_changed(tab: String) -> void:
+	Prefs.set_value("editor.graph_tab", tab)
+
+
+# -------------------------------------------------------------------------
 # Responsive shell
 # -------------------------------------------------------------------------
 
@@ -1893,8 +2101,25 @@ func _apply_shell() -> void:
 	# reapplies the shell in one pass.
 	if _render_mode:
 		return
+	_restore_animate_preview()
 	_short = size.y < SHORT_MAX_HEIGHT
-	_stage_host.custom_minimum_size.y = 96.0 if _short else 120.0
+	# The Animate body is exactly the two fixed bars plus the split; the
+	# spec's dp arithmetic counts the pane, not the 1 dp separators.
+	var animate := _workspace == "animate"
+	_layout.add_theme_constant_override("separation",
+		0 if animate else int(Kit.GUTTER))
+	_center.add_theme_constant_override("separation",
+		0 if animate else int(Kit.GUTTER))
+	var preview_height := _animate_preview_height()
+	var preview_on := animate and _animate_preview_visible and _stage_preview_fits()
+	_stage_host.visible = not animate or preview_on
+	if preview_on:
+		_stage_host.custom_minimum_size.y = preview_height
+		_stage_host.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	else:
+		_stage_host.custom_minimum_size.y = 96.0 if _short else 120.0
+		_stage_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_animate_pane.set_stage_preview(preview_on, preview_height)
 	_timeline.set_short_layout(_short)
 	_workspace_bar.set_layout_mode(layout_mode())
 	_workspace_bar.set_available_width(size.x)
@@ -1919,6 +2144,8 @@ func _apply_shell() -> void:
 		_workspace_panel.set_mode(WorkspacePanelScript.Mode.HIDDEN)
 		_panel_spacer.custom_minimum_size.x = 0.0
 		_animate_pane.visible = false
+		_stage_host.visible = true
+		_stage_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		_timeline.set_available_width(size.x)
 		_refresh_chrome_values()
 		return

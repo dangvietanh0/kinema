@@ -209,9 +209,9 @@ func _test_document_contract() -> void:
 	var doc = _new_document()
 	doc.material_system.create_material("Steel", "metal")
 	var data: Dictionary = doc.to_data()
-	_check(int(data.get("format", 0)) == 3, "documents serialize as format 3")
-	_check(data.has("materials"), "format 3 carries a materials array")
-	_check((data["materials"] as Array).size() == 1, "format 3 serializes the library")
+	_check(int(data.get("format", 0)) == 4, "documents serialize as format 4")
+	_check(data.has("materials"), "format 4 carries a materials array")
+	_check((data["materials"] as Array).size() == 1, "format 4 serializes the library")
 
 	var base: Dictionary = doc._base_object("99", "Probe", "mesh")
 	for key in ["material_id", "part_materials", "part_surface_materials"]:

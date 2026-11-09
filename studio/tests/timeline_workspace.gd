@@ -253,7 +253,8 @@ func _test_bake_curve_segment() -> void:
 			normalized = false
 	_check(normalized, "rotation bake keeps every quaternion normalized")
 
-	# A segment shorter than two frames inserts one midpoint with the exact copy.
+	# A segment shorter than three frames is refused: there is no honest
+	# interior sample to bake and writing one would fake a curve.
 	var short_doc := _new_doc()
 	short_doc.fps = 24
 	short_doc.apply_key_edits(short_doc.selected_id, "scale", [
@@ -261,11 +262,12 @@ func _test_bake_curve_segment() -> void:
 		{"index": -1, "time": 0.05, "value": Vector3(2, 2, 2)},
 	])
 	var short_bake: Dictionary = short_doc.bake_curve_segment(short_doc.selected_id, "scale", 0, "sine_out")
-	_check(bool(short_bake["ok"]), "a sub-two-frame segment bakes one midpoint")
-	_check(int(short_bake["inserted"]) == 1 and _keys(short_doc, "scale").size() == 3,
-		"the short segment inserts exactly one midpoint")
-	_check(str(short_bake["message"]) == "Segment is shorter than two frames; baked one midpoint.",
+	_check(not bool(short_bake["ok"]), "a sub-three-frame segment refuses to bake")
+	_check(int(short_bake["inserted"]) == 0 and _keys(short_doc, "scale").size() == 2,
+		"a refused short bake writes no keys")
+	_check(str(short_bake["message"]) == "Segment too short to bake (3 frames minimum)",
 		"the short-segment message is exact")
+	_check(short_doc.curve_segments().is_empty(), "a refused short bake writes no metadata")
 
 
 # -------------------------------------------------------------------------
@@ -277,10 +279,8 @@ func _test_timeline_channel_signal() -> void:
 	var timeline = TimelineScript.new()
 	add_child(timeline)
 	await get_tree().process_frame
-	var transport_host := Control.new()
-	add_child(transport_host)
-	timeline.mount_transport(transport_host)
 	timeline.setup(doc)
+	timeline.set_available_width(600.0)
 	timeline.size = Vector2(600.0, 260.0)
 	await get_tree().process_frame
 
@@ -316,7 +316,6 @@ func _test_timeline_channel_signal() -> void:
 
 	timeline.channel_selected.disconnect(on_channel)
 	timeline.queue_free()
-	transport_host.queue_free()
 	doc.queue_free()
 	await get_tree().process_frame
 
@@ -360,8 +359,9 @@ func _test_timeline_workspace() -> void:
 		"the Timeline is mounted in the Animate pane")
 	_check(editor._animate_pane.get_index() > editor._stage_host.get_index(),
 		"the Animate pane sits below the stage in the centre column")
-	_check(editor._stage_host.get_global_rect().end.y <=
-		editor._animate_pane.get_global_rect().position.y + 0.5,
+	_check(not editor._stage_host.visible
+		or editor._stage_host.get_global_rect().end.y <=
+			editor._animate_pane.get_global_rect().position.y + 0.5,
 		"the Animate pane never covers the stage")
 	_check(not editor._transport_bar.visible,
 		"the shared stage transport yields to the Timeline transport")
@@ -402,11 +402,40 @@ func _test_timeline_workspace() -> void:
 		"the pane still follows a channel change")
 	editor._timeline.set_channel("position")
 
-	editor._timeline._start_button.pressed.emit()
-	_check(absf(doc.current_time) < 0.0001, "the transport start button seeks to zero")
-	editor._timeline._end_button.pressed.emit()
-	_check(absf(doc.current_time - doc.duration) < 0.0001,
-		"the transport end button seeks to the document end")
+	# The 44 dp pane transport replaces the removed compact start/end pair.
+	var transport_panel: Control = editor._timeline.transport_panel()
+	var pane_header: Control = editor._timeline.pane_header()
+	_check(transport_panel.size.y >= 43.5, "the Animate transport is 44 dp")
+	_check(pane_header.size.y >= 43.5, "the Animate pane header is 44 dp")
+	_check(editor._timeline.clip_selector() != null,
+		"the pane header owns the clip selector")
+	_check(editor._timeline.fps_button() != null, "the transport owns the fps chip")
+	_check(editor._timeline.delete_key_button() != null,
+		"the transport owns delete key")
+	_check(editor._timeline.fit_button() != null, "the transport owns fit")
+	editor._timeline.set_time_view(0.0, 0.25)
+	editor._timeline.fit_button().pressed.emit()
+	_check(absf(editor._timeline.viewport_end() - doc.duration) < 0.01,
+		"the transport fit button restores the whole clip view")
+	editor._timeline.set_mode("graph")
+	_check(editor._timeline.mode() == "graph" and not editor._timeline.dope_sheet_visible(),
+		"the pane header Graph tab shows the segment graph")
+	editor._timeline.dope_tab().pressed.emit()
+	_check(editor._timeline.mode() == "dope" and editor._timeline.dope_sheet_visible(),
+		"the pane header Dope tab restores the dope sheet")
+	var time_requests: Array[String] = []
+	var on_time := func() -> void: time_requests.append("time")
+	editor._timeline.time_entry_requested.connect(on_time)
+	editor._timeline.time_button().pressed.emit()
+	_check(time_requests == ["time"],
+		"the pane timecode asks the editor for the shared time sheet")
+	editor._timeline.time_entry_requested.disconnect(on_time)
+	editor._timeline.play_button().pressed.emit()
+	await get_tree().process_frame
+	_check(doc.is_playing, "the pane transport play button starts playback")
+	editor._timeline.play_button().pressed.emit()
+	await get_tree().process_frame
+	_check(not doc.is_playing, "the pane transport play button pauses playback")
 
 	# A non-animate workspace releases the pane and restores the shared bar.
 	editor.set_workspace("scene")

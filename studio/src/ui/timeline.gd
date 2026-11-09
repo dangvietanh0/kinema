@@ -1,14 +1,16 @@
 extends VBoxContainer
-## Compact dope sheet for the selected object.
+## The timeline pane: a 44 dp transport, a pane header with the real
+## Dope/Graph switch, an optional graph header, and the dope sheet or the
+## segment graph body.
 ##
 ## The sheet intentionally shows one object's three transform channels instead
 ## of a full scene-wide spreadsheet. That keeps the timeline legible on a phone
 ## while still allowing keys to be created, retimed and deleted directly.
 
 signal notice(text: String)
-## Emitted by the compact sheet header so the editor can fold the timeline.
+## Emitted when the user asks to fold the timeline.
 signal close_requested
-## Emitted when the sheet actually switches between dope and speed-graph mode.
+## Emitted when the sheet actually switches between dope and graph mode.
 signal mode_changed(mode: String)
 ## The duration chip asked for a row that can edit the active clip length.
 signal duration_row_changed(open: bool)
@@ -16,6 +18,14 @@ signal duration_row_changed(open: bool)
 signal duration_confirmation_requested(value: float, message: String)
 ## The active channel changed, whether by the graph tab strip or a dope row.
 signal channel_selected(channel: String)
+## A segment was selected in the graph body (or forwarded from the dope sheet).
+signal segment_selected(span: Dictionary)
+## The Animate timecode asked for the editor's real time entry sheet.
+signal time_entry_requested
+## The fps chip changed the document frame rate.
+signal fps_changed(fps: int)
+## The graph header's Key button asked the editor for the key info sheet.
+signal key_info_requested(index: int)
 
 class DopeSheet:
 	extends Control
@@ -39,33 +49,28 @@ class DopeSheet:
 
 const DocumentScript = preload("res://src/core/document.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
+const SegmentGraphScript = preload("res://src/ui/segment_graph.gd")
+const FPS_CHOICES := [12, 24, 30, 60]
+const COMPONENTS := ["all", "x", "y", "z"]
+const COMPONENT_LABELS := {"all": "All", "x": "X", "y": "Y", "z": "Z"}
+
 var doc: DocumentScript = null
 
 var _sheet: Control
-var _time_label: Label
-var _frame_label: Label
+var _segment_graph: Control
+var _selected_span: Dictionary = {}
 var _play_button: Button
 var _clip_transport_enabled := true
 var _loop_button: Button
-var _auto_button: Button
 var _snap_button: Button
 var _delete_button: Button
-var _start_button: Button
-var _end_button: Button
-var _mode_button: Button
-var _ease_button: Button
-var _fold_button: Button
+var _time_button: Button
+var _fps_button: Button
+var _add_key_button: Button
+var _fit_button: Button
 
 var _transport_panel: PanelContainer
 var _transport_style: StyleBoxFlat
-var _time_box: VBoxContainer
-var _compact_header: PanelContainer
-var _compact_mode_button: Button
-var _compact_loop_button: Button
-var _compact_snap_button: Button
-var _compact_ease_button: Button
-var _compact_delete_button: Button
-var _compact_close_button: Button
 var _gesture_hint: Label
 var _duration_chip: Button
 var _duration_row: PanelContainer
@@ -75,29 +80,53 @@ var _extend_button: Button
 var _duration_close_button: Button
 var _duration_open := false
 var _hint_seen := false
+
+# Pane header (clip/layer, Dope/Graph, segment navigation).
+var _pane_header_panel: PanelContainer
+var _clip_selector: Button
+var _dope_tab: Button
+var _graph_tab: Button
 var _prev_button: Button
 var _next_button: Button
+var _segment_label: Label
+var _pane_tab_group: ButtonGroup
+var _merged_tab_group: ButtonGroup
+
+# Graph header (channel, component, Ease/Value/Speed, Key).
+var _graph_header_panel: PanelContainer
+var _graph_header_wide: HBoxContainer
+var _graph_header_narrow: VBoxContainer
+var _merged_header_panel: PanelContainer
+var _merged_row: HBoxContainer
+var _wide_channel_button: Button
+var _narrow_channel_button: Button
+var _merged_channel_button: Button
+var _key_button: Button
+var _narrow_key_button: Button
+var _merged_key_button: Button
+var _presets_button: Button
+var _narrow_presets_button: Button
+var _component_menu_button: Button
+var _component_menu: PopupMenu
+var _more_button: Button
+var _more_menu: PopupMenu
+var _component_buttons: Array[Button] = []
+var _wide_tabs_host: HBoxContainer
+var _narrow_tabs_host: HBoxContainer
+var _merged_tabs_host: HBoxContainer
+var _merged_dope_tab: Button
+var _merged_graph_tab: Button
 
 var _selected_channel := "position"
 var _selected_index := -1
 var _selected_data_id := ""
 var _key_hits: Array = []
-var _ease_hits: Array = []
 var _channel_hits: Array = []
-var _segments: Array = []
-var _ease_clipboard := 1.0
-var _has_ease_clipboard := false
 var _scrubbing := false
 var _dragging_key := false
-var _dragging_ease := false
-var _ease_start_y := 0.0
-var _ease_start_value := 1.0
 var _sync_flags := false
 var _mode := "dope"
 var _short_layout := false
-var _graph_max_speed := 0.0001
-var _graph_baseline := 0.0
-var _graph_top := 0.0
 var _sheet_rule: ColorRect
 var _sheet_open := true
 var _chrome_mode := "studio"
@@ -109,16 +138,20 @@ var _available_width := -1.0
 var _transport_buttons: Array[Button] = []
 
 # --- Time viewport (horizontal pan/zoom over the duration) -----------------
-## The dope sheet and speed graph map time to pixels through this visible
-## window instead of squeezing the whole duration into the canvas width. The
-## initial window is the full duration, so the default view is unchanged.
+## The dope sheet maps time to pixels through this visible window instead of
+## squeezing the whole duration into the canvas width. The initial window is
+## the full duration, so the default view is unchanged.
 const SCROLLBAR_HIT := 44.0
 const SCROLLBAR_TRACK_H := 6.0
 const MIN_VIEW_SPAN := 0.5
+const TRANSPORT_H := 44.0
+const HEADER_H := 44.0
+const DOPE_RULER_H := 44.0
+const CHANNEL_EDGE := 1.0
+const KEY_HIT_RADIUS := 22.0
 var _view_start := 0.0
 var _view_span := -1.0
 var _view_duration_seen := -1.0
-var _header_folded := false
 var _scroll_dragging := false
 var _scroll_grab_x := 0.0
 var _touches: Dictionary = {}
@@ -133,23 +166,8 @@ var _gesture_edit_snapshot := false
 var _gesture_view_snapshot := Vector2.ZERO
 var _gesture_active := false
 
-const CHANNEL_EDGE := 1.0
-const GRAPH_TAB_HEIGHT := 44.0
-const GRAPH_SHORT_CAPTION := "Rotate upright for more curve-editing space"
-const GRAPH_PRESETS := [
-	{"name": "Hold", "value": 0.0},
-	{"name": "Ease out strong", "value": 0.25},
-	{"name": "Ease out", "value": 0.5},
-	{"name": "Soft out", "value": 0.75},
-	{"name": "Linear", "value": 1.0},
-	{"name": "Soft in", "value": 1.35},
-	{"name": "Ease in", "value": 2.0},
-	{"name": "Ease in strong", "value": 3.0},
-]
-const GRAPH_CHANNEL_SAMPLES := 48
-const GRAPH_SEGMENT_SAMPLES := 32
 var _label_width := 104.0
-var _ruler_h := 22.0
+var _ruler_h := DOPE_RULER_H
 var _row_h := 26.0
 var _grid_left := 110.0
 var _grid_width := 200.0
@@ -158,38 +176,46 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 0)
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_build_transport()
-	_build_compact_header()
+	_build_pane_header()
+	_build_graph_header()
+	_build_merged_header()
 	_build_duration_row()
 	_build_sheet()
-	resized.connect(_refresh_compact)
+	_build_segment_graph()
+	resized.connect(_refresh_layout)
+	_refresh_layout()
 
 func setup(document: Node3D) -> void:
 	doc = document
+	if _segment_graph != null:
+		_segment_graph.setup(doc)
 	doc.playback_changed.connect(_on_playback_changed)
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
 	doc.transform_changed.connect(_on_transform_changed)
 	doc.keyframes_changed.connect(_on_keyframes_changed)
 	doc.scene_changed.connect(_on_scene_changed)
-	_sync_flags = true
-	_loop_button.button_pressed = doc.loop
-	_auto_button.button_pressed = doc.autokey
-	_snap_button.button_pressed = doc.snap
-	_sync_flags = false
-	_style_flag_button(_loop_button, doc.loop)
-	_style_flag_button(_snap_button, doc.snap)
+	if doc.has_signal("active_clip_changed") \
+			and not doc.active_clip_changed.is_connected(_on_active_clip_changed):
+		doc.active_clip_changed.connect(_on_active_clip_changed)
+	_sync_flag_states()
 	_refresh_transport(doc.current_time, doc.is_playing)
-	_refresh_compact()
+	_refresh_layout()
 	_sheet.queue_redraw()
+
+# -------------------------------------------------------------------------
+# Transport
+# -------------------------------------------------------------------------
 
 func _build_transport() -> void:
 	var panel := PanelContainer.new()
 	_transport_panel = panel
+	panel.custom_minimum_size.y = TRANSPORT_H
 	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
-	style.content_margin_left = 6
-	style.content_margin_right = 6
-	style.content_margin_top = 4
-	style.content_margin_bottom = 4
+	style.content_margin_left = 4
+	style.content_margin_right = 4
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
 	panel.add_theme_stylebox_override("panel", style)
 	_transport_style = style
 	add_child(panel)
@@ -198,179 +224,528 @@ func _build_transport() -> void:
 	row.add_theme_constant_override("separation", 2)
 	panel.add_child(row)
 
-	var time_box := VBoxContainer.new()
-	_time_box = time_box
-	time_box.add_theme_constant_override("separation", 0)
-	time_box.custom_minimum_size.x = 76
-	row.add_child(time_box)
-	_time_label = Kit.mono_label("00:00:00", 12, Kit.TEXT)
-	time_box.add_child(_time_label)
-	_frame_label = Kit.mono_label("F 0 · 24fps", 8, Kit.TEXT_DIM)
-	time_box.add_child(_frame_label)
-
-	# The duration chip is the always-visible truth for the active clip. It
-	# sits in the transport because the compact overlay budget can fold the
-	# sheet header while the transport must stay reachable.
-	_duration_chip = Kit.text_button("", "", false, true)
-	_duration_chip.custom_minimum_size = Vector2(56, 44)
-	# The chip is sized from its rendered text in _sync_duration_row(); clipping
-	# it here would hide the required "· Seq <n> s" half on every narrow surface.
-	_duration_chip.clip_text = false
-	_duration_chip.tooltip_text = "Clip duration and sequence length"
-	_duration_chip.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
-	_duration_chip.pressed.connect(open_duration_row)
-	row.add_child(_duration_chip)
-
-	_mode_button = Kit.icon_button("speed-graph", "Speed graph editor", 28, 14)
-	_mode_button.toggle_mode = true
-	_mode_button.toggled.connect(_on_mode_toggled)
-	row.add_child(_mode_button)
-	_transport_buttons.append(_mode_button)
-
-	var spacer_l := Control.new()
-	spacer_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(spacer_l)
-
-	_start_button = Kit.icon_button("skip-back", "Go to start", 28, 14)
-	_start_button.pressed.connect(_on_start)
-	row.add_child(_start_button)
-	_transport_buttons.append(_start_button)
-	var prev := Kit.icon_button("chevron-left", "Previous key", 28, 15)
-	prev.pressed.connect(_on_prev_key)
-	row.add_child(prev)
-	_transport_buttons.append(prev)
-	_prev_button = prev
-
-	_play_button = Kit.icon_button("play", "Play / pause", 32, 15)
-	# Transport is a tool, not a call to action. A bright glyph on a dark
-	# surface keeps it legible without turning the row into a white slab.
+	_play_button = _transport_icon("play", "Play / pause")
 	_play_button.add_theme_color_override("icon_normal_color", Kit.TIME_BRIGHT)
 	_play_button.add_theme_color_override("icon_hover_color", Kit.FOCUS_BRIGHT)
 	_play_button.add_theme_color_override("icon_pressed_color", Kit.BG)
-	_play_button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
-	_play_button.add_theme_stylebox_override("hover", Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
-	_play_button.add_theme_stylebox_override("pressed", Kit.flat_style(Kit.TIME_BRIGHT, Kit.R_CONTROL, Kit.TIME_BRIGHT, 0))
+	_play_button.add_theme_stylebox_override("normal",
+		Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	_play_button.add_theme_stylebox_override("hover",
+		Kit.flat_style(Kit.SURFACE_HOVER, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+	_play_button.add_theme_stylebox_override("pressed",
+		Kit.flat_style(Kit.TIME_BRIGHT, Kit.R_CONTROL, Kit.TIME_BRIGHT, 0))
 	_play_button.pressed.connect(_on_play)
 	row.add_child(_play_button)
 
-	var next := Kit.icon_button("chevron-right", "Next key", 28, 15)
-	next.pressed.connect(_on_next_key)
-	row.add_child(next)
-	_transport_buttons.append(next)
-	_next_button = next
-	_end_button = Kit.icon_button("skip-forward", "Go to end", 28, 14)
-	_end_button.pressed.connect(_on_end)
-	row.add_child(_end_button)
-	_transport_buttons.append(_end_button)
-
-	var spacer_r := Control.new()
-	spacer_r.custom_minimum_size.x = 6
-	row.add_child(spacer_r)
-
-	_loop_button = Kit.icon_button("repeat", "Loop playback", 28, 14)
+	_loop_button = _transport_icon("repeat", "Loop playback")
 	_loop_button.toggle_mode = true
 	_loop_button.toggled.connect(_on_loop_toggled)
 	row.add_child(_loop_button)
-	_transport_buttons.append(_loop_button)
 
-	_auto_button = Kit.text_toggle("AUTO", "", true)
-	_auto_button.custom_minimum_size = Vector2(38, 26)
-	_auto_button.tooltip_text = "Auto-key transforms while editing"
-	_auto_button.add_theme_stylebox_override("normal", Kit.style_with_margins(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0, Vector4(4, 2, 4, 2)))
-	_auto_button.add_theme_stylebox_override("hover", Kit.style_with_margins(Kit.SURFACE_HOVER, 0, Color(0, 0, 0, 0), 0, Vector4(4, 2, 4, 2)))
-	_auto_button.add_theme_stylebox_override("pressed", Kit.style_with_margins(Kit.FOCUS_DARK, 0, Kit.FOCUS * Color(1, 1, 1, 0.34), 0, Vector4(4, 2, 4, 2)))
-	_auto_button.add_theme_stylebox_override("hover_pressed", Kit.style_with_margins(Kit.FOCUS_DARK.lightened(0.03), 0, Kit.FOCUS * Color(1, 1, 1, 0.52), 0, Vector4(4, 2, 4, 2)))
-	_auto_button.toggled.connect(_on_auto_toggled)
-	row.add_child(_auto_button)
+	_time_button = Kit.text_button("00:00:00", "", false, true)
+	_time_button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_time_button.custom_minimum_size = Vector2(96, TRANSPORT_H)
+	_time_button.add_theme_font_override("font", Kit.font_mono)
+	_time_button.add_theme_font_size_override("font_size", 12)
+	_time_button.tooltip_text = "Go to time"
+	_time_button.set_meta("action_id", "time")
+	_time_button.set_meta("action_icon", "")
+	_time_button.pressed.connect(func() -> void: time_entry_requested.emit())
+	row.add_child(_time_button)
 
-	_snap_button = Kit.icon_button("magnet", "Snap keys to frames", 28, 14)
+	_fps_button = Kit.text_button("24 fps", "", false, true)
+	_fps_button.custom_minimum_size = Vector2(56, TRANSPORT_H)
+	_fps_button.add_theme_font_override("font", Kit.font_mono)
+	_fps_button.add_theme_font_size_override("font_size", 12)
+	_fps_button.tooltip_text = "Frame rate"
+	_fps_button.set_meta("action_id", "fps")
+	_fps_button.pressed.connect(_open_fps_menu)
+	row.add_child(_fps_button)
+
+	_snap_button = _transport_icon("magnet", "Snap keys to frames")
 	_snap_button.toggle_mode = true
 	_snap_button.toggled.connect(_on_snap_toggled)
 	row.add_child(_snap_button)
-	_transport_buttons.append(_snap_button)
 
-	var key_button := Kit.icon_button("diamond-plus", "Insert transform keys at playhead", 28, 14)
-	key_button.pressed.connect(_on_key_all)
-	row.add_child(key_button)
-	_transport_buttons.append(key_button)
+	_add_key_button = _transport_icon("diamond-plus", "Insert transform keys at playhead")
+	_add_key_button.pressed.connect(_on_key_all)
+	row.add_child(_add_key_button)
 
-	_delete_button = Kit.icon_button("trash-2", "Delete selected key", 28, 13)
+	_delete_button = _transport_icon("trash-2", "Delete selected key")
 	_delete_button.disabled = true
 	_delete_button.add_theme_color_override("icon_disabled_color", Kit.TEXT_DIM * Color(1, 1, 1, 0.4))
 	_delete_button.pressed.connect(_on_delete_key)
 	row.add_child(_delete_button)
-	_transport_buttons.append(_delete_button)
 
-	_ease_button = Kit.text_button("EASE", "", false, true)
-	_ease_button.custom_minimum_size = Vector2(44, 26)
-	_ease_button.tooltip_text = "Easing actions for the selected segment"
-	_ease_button.visible = false
-	_ease_button.pressed.connect(_open_ease_menu)
-	row.add_child(_ease_button)
-
-	# The sheet can fold without leaving the workbench: the transport stays,
-	# and this control flips between fold and open. Compact uses the bottom
-	# action bar as its explicit toggle instead.
-	_fold_button = Kit.icon_button("chevron-down", "Fold the timeline", 44, 18)
-	_fold_button.pressed.connect(func() -> void: close_requested.emit())
-	row.add_child(_fold_button)
-	_transport_buttons.append(_fold_button)
-
-
-## The phone sheet header. Compact transport carries only the actions a thumb
-## needs while scrubbing; graph, loop, snap, delete and fold live here, where
-## they belong to the sheet the user is actually looking at. Keeping them out
-## of the transport row is what lets the shell fit a 320 dp phone.
-func _build_compact_header() -> void:
-	_compact_header = PanelContainer.new()
-	_compact_header.custom_minimum_size.y = 48
-	_compact_header.visible = false
-	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
-	style.content_margin_left = 6
-	style.content_margin_right = 6
-	style.content_margin_top = 2
-	style.content_margin_bottom = 2
-	_compact_header.add_theme_stylebox_override("panel", style)
-	add_child(_compact_header)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 2)
-	_compact_header.add_child(row)
-
-	_compact_mode_button = Kit.icon_button("speed-graph", "Speed graph editor", 44, 18)
-	_compact_mode_button.toggle_mode = true
-	_compact_mode_button.toggled.connect(_on_compact_mode_toggled)
-	row.add_child(_compact_mode_button)
-
-	_compact_loop_button = Kit.icon_button("repeat", "Loop playback", 44, 18)
-	_compact_loop_button.toggle_mode = true
-	_compact_loop_button.toggled.connect(_on_compact_loop_toggled)
-	row.add_child(_compact_loop_button)
-
-	_compact_snap_button = Kit.icon_button("magnet", "Snap keys to frames", 44, 18)
-	_compact_snap_button.toggle_mode = true
-	_compact_snap_button.toggled.connect(_on_compact_snap_toggled)
-	row.add_child(_compact_snap_button)
-
-	_compact_ease_button = Kit.icon_button("sliders-horizontal", "Easing actions for the selected segment", 44, 18)
-	_compact_ease_button.visible = false
-	_compact_ease_button.pressed.connect(_open_ease_menu.bind(_compact_ease_button))
-	row.add_child(_compact_ease_button)
-
-	_compact_delete_button = Kit.icon_button("trash-2", "Delete selected key", 44, 17)
-	_compact_delete_button.disabled = true
-	_compact_delete_button.pressed.connect(_on_delete_key)
-	row.add_child(_compact_delete_button)
+	_fit_button = _transport_icon("focus", "Fit the whole clip")
+	_fit_button.pressed.connect(fit_time_view)
+	row.add_child(_fit_button)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(spacer)
 
-	_compact_close_button = Kit.icon_button("chevron-down", "Fold the timeline", 44, 18)
-	_compact_close_button.pressed.connect(func() -> void: close_requested.emit())
-	row.add_child(_compact_close_button)
+	_duration_chip = Kit.text_button("", "", false, true)
+	_duration_chip.custom_minimum_size = Vector2(56, TRANSPORT_H)
+	_duration_chip.clip_text = false
+	_duration_chip.tooltip_text = "Clip duration and sequence length"
+	_duration_chip.add_theme_font_size_override("font_size", Kit.TYPE_CAPTION)
+	_duration_chip.pressed.connect(open_duration_row)
+	row.add_child(_duration_chip)
 
+
+func _transport_icon(icon_name: String, tooltip: String) -> Button:
+	var button := Kit.icon_button(icon_name, tooltip, 44, 18)
+	button.set_meta("action_id", icon_name)
+	button.set_meta("action_icon", icon_name)
+	_transport_buttons.append(button)
+	return button
+
+
+func _open_fps_menu() -> void:
+	if doc == null:
+		return
+	var menu := PopupMenu.new()
+	for choice in FPS_CHOICES:
+		menu.add_item("%d fps" % int(choice), int(choice))
+		if int(choice) == doc.fps:
+			menu.set_item_checked(menu.item_count - 1, true)
+	menu.id_pressed.connect(func(value: int) -> void:
+		_set_fps(value)
+		menu.queue_free()
+	)
+	menu.popup_hide.connect(menu.queue_free)
+	_fps_button.add_child(menu)
+	menu.popup_on_parent(Rect2(0.0, _fps_button.size.y, 1.0, 1.0))
+
+
+func _set_fps(value: int) -> void:
+	if doc == null:
+		return
+	doc.set_fps(value)
+	_refresh_transport(doc.current_time, doc.is_playing)
+	fps_changed.emit(value)
+
+# -------------------------------------------------------------------------
+# Pane header
+# -------------------------------------------------------------------------
+
+func _build_pane_header() -> void:
+	_pane_header_panel = _header_panel()
+	add_child(_pane_header_panel)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	_pane_header_panel.add_child(row)
+
+	_clip_selector = Kit.text_button("", "", false, true)
+	_clip_selector.custom_minimum_size = Vector2(112, HEADER_H)
+	_clip_selector.clip_text = true
+	_clip_selector.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_clip_selector.tooltip_text = "Active clip and layer"
+	_clip_selector.pressed.connect(_open_clip_menu)
+	row.add_child(_clip_selector)
+
+	_pane_tab_group = ButtonGroup.new()
+	_dope_tab = _mode_tab("Dope", _pane_tab_group)
+	_dope_tab.pressed.connect(func() -> void: set_mode("dope"))
+	row.add_child(_dope_tab)
+	_graph_tab = _mode_tab("Graph", _pane_tab_group)
+	_graph_tab.pressed.connect(func() -> void: set_mode("graph"))
+	row.add_child(_graph_tab)
+
+	_prev_button = Kit.icon_button("chevron-left", "Previous segment", 44, 16)
+	_prev_button.set_meta("action_id", "prev_segment")
+	_prev_button.set_meta("action_icon", "chevron-left")
+	_prev_button.pressed.connect(func() -> void: _step_segment(-1))
+	row.add_child(_prev_button)
+
+	_next_button = Kit.icon_button("chevron-right", "Next segment", 44, 16)
+	_next_button.set_meta("action_id", "next_segment")
+	_next_button.set_meta("action_icon", "chevron-right")
+	_next_button.pressed.connect(func() -> void: _step_segment(1))
+	row.add_child(_next_button)
+
+	_segment_label = Kit.mono_label("", 11, Kit.TEXT_MUTED)
+	_segment_label.clip_text = true
+	_segment_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_segment_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_segment_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(_segment_label)
+
+
+func _header_panel() -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size.y = HEADER_H
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 4
+	style.content_margin_right = 4
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	panel.add_theme_stylebox_override("panel", style)
+	return panel
+
+
+func _mode_tab(label: String, group: ButtonGroup) -> Button:
+	var button := Kit.text_button(label, "", false, true)
+	button.toggle_mode = true
+	button.button_group = group
+	button.custom_minimum_size = Vector2(60, HEADER_H)
+	button.add_theme_font_size_override("font_size", 11)
+	return button
+
+
+func _open_clip_menu() -> void:
+	if doc == null or doc.animation_system == null:
+		return
+	var menu := PopupMenu.new()
+	var targets: Array = []
+	var clips: PackedStringArray = doc.animation_system.clip_ids()
+	for clip_id in clips:
+		var clip: Dictionary = doc.animation_system.get_clip(clip_id)
+		menu.add_item("Clip · " + str(clip.get("name", clip_id)))
+		targets.append({"kind": "clip", "id": str(clip_id)})
+	if not clips.is_empty():
+		menu.add_separator()
+	for layer in doc.animation_system.layers():
+		if not layer is Dictionary:
+			continue
+		menu.add_item("Layer · " + str(layer.get("name", layer.get("id", ""))))
+		targets.append({"kind": "layer", "id": str(layer.get("id", ""))})
+	menu.id_pressed.connect(func(index: int) -> void:
+		if index < 0 or index >= targets.size():
+			menu.queue_free()
+			return
+		var target: Dictionary = targets[index]
+		if str(target["kind"]) == "clip":
+			doc.set_active_clip(str(target["id"]))
+		else:
+			doc.animation_system.set_active_layer(str(target["id"]))
+		_selected_span = {}
+		_sync_header_state()
+		_refresh_graph_context()
+		if _sheet != null:
+			_sheet.queue_redraw()
+		menu.queue_free()
+	)
+	menu.popup_hide.connect(menu.queue_free)
+	_clip_selector.add_child(menu)
+	menu.popup_on_parent(Rect2(0.0, _clip_selector.size.y, 1.0, 1.0))
+
+# -------------------------------------------------------------------------
+# Graph header
+# -------------------------------------------------------------------------
+
+func _build_graph_header() -> void:
+	_graph_header_panel = _header_panel()
+	add_child(_graph_header_panel)
+
+	_graph_header_wide = HBoxContainer.new()
+	_graph_header_wide.add_theme_constant_override("separation", 4)
+	_graph_header_panel.add_child(_graph_header_wide)
+
+	_wide_channel_button = _channel_button()
+	_wide_channel_button.pressed.connect(func() -> void: _open_channel_menu(_wide_channel_button))
+	_graph_header_wide.add_child(_wide_channel_button)
+
+	for component in COMPONENTS:
+		var chip := Kit.text_button(str(COMPONENT_LABELS.get(component, component)), "", false, true)
+		chip.toggle_mode = true
+		chip.custom_minimum_size = Vector2(44, HEADER_H)
+		chip.add_theme_font_size_override("font_size", 11)
+		chip.tooltip_text = "Show " + str(COMPONENT_LABELS.get(component, component))
+		chip.pressed.connect(func() -> void: _set_component(component))
+		_component_buttons.append(chip)
+		_graph_header_wide.add_child(chip)
+
+	_wide_tabs_host = HBoxContainer.new()
+	_wide_tabs_host.add_theme_constant_override("separation", 0)
+	_graph_header_wide.add_child(_wide_tabs_host)
+
+	_key_button = Kit.text_button("Key", "", false, true)
+	_key_button.custom_minimum_size = Vector2(44, HEADER_H)
+	_key_button.add_theme_font_size_override("font_size", 11)
+	_key_button.tooltip_text = "Key time and value"
+	_key_button.pressed.connect(_request_key_info)
+	_graph_header_wide.add_child(_key_button)
+
+	_presets_button = Kit.icon_button("sliders-horizontal", "Curve presets", 44, 16)
+	_presets_button.set_meta("action_id", "presets")
+	_presets_button.pressed.connect(func() -> void: _open_presets_menu(_presets_button))
+	_graph_header_wide.add_child(_presets_button)
+
+	_graph_header_narrow = VBoxContainer.new()
+	_graph_header_narrow.add_theme_constant_override("separation", 0)
+	_graph_header_panel.add_child(_graph_header_narrow)
+
+	var narrow_top := HBoxContainer.new()
+	narrow_top.add_theme_constant_override("separation", 4)
+	_graph_header_narrow.add_child(narrow_top)
+	_narrow_channel_button = _channel_button()
+	_narrow_channel_button.custom_minimum_size.x = 96
+	_narrow_channel_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_narrow_channel_button.pressed.connect(func() -> void: _open_channel_menu(_narrow_channel_button))
+	narrow_top.add_child(_narrow_channel_button)
+	_narrow_key_button = Kit.text_button("Key", "", false, true)
+	_narrow_key_button.custom_minimum_size = Vector2(44, HEADER_H)
+	_narrow_key_button.add_theme_font_size_override("font_size", 11)
+	_narrow_key_button.pressed.connect(_request_key_info)
+	narrow_top.add_child(_narrow_key_button)
+	_narrow_presets_button = Kit.icon_button("sliders-horizontal", "Curve presets", 44, 16)
+	_narrow_presets_button.pressed.connect(func() -> void: _open_presets_menu(_narrow_presets_button))
+	narrow_top.add_child(_narrow_presets_button)
+
+	var narrow_bottom := HBoxContainer.new()
+	narrow_bottom.add_theme_constant_override("separation", 4)
+	_graph_header_narrow.add_child(narrow_bottom)
+	_component_menu_button = Kit.text_button("All", "chevron-down", false, true)
+	_component_menu_button.custom_minimum_size = Vector2(64, HEADER_H)
+	_component_menu_button.add_theme_font_size_override("font_size", 11)
+	_component_menu_button.pressed.connect(_open_component_menu)
+	narrow_bottom.add_child(_component_menu_button)
+	_narrow_tabs_host = HBoxContainer.new()
+	_narrow_tabs_host.add_theme_constant_override("separation", 0)
+	narrow_bottom.add_child(_narrow_tabs_host)
+
+	_component_menu = PopupMenu.new()
+	for i in range(COMPONENTS.size()):
+		_component_menu.add_check_item(str(COMPONENT_LABELS.get(COMPONENTS[i], COMPONENTS[i])), i)
+	_component_menu.id_pressed.connect(func(index: int) -> void:
+		if index >= 0 and index < COMPONENTS.size():
+			_set_component(str(COMPONENTS[index]))
+	)
+	add_child(_component_menu)
+
+
+func _channel_button() -> Button:
+	var button := Kit.text_button("", "", false, true)
+	button.custom_minimum_size = Vector2(112, HEADER_H)
+	button.clip_text = true
+	button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	button.tooltip_text = "Object and channel"
+	return button
+
+
+func _build_merged_header() -> void:
+	_merged_header_panel = _header_panel()
+	add_child(_merged_header_panel)
+
+	_merged_row = HBoxContainer.new()
+	_merged_row.add_theme_constant_override("separation", 4)
+	_merged_header_panel.add_child(_merged_row)
+
+	_merged_tab_group = ButtonGroup.new()
+	_merged_dope_tab = _mode_tab("Dope", _merged_tab_group)
+	_merged_dope_tab.pressed.connect(func() -> void: set_mode("dope"))
+	_merged_row.add_child(_merged_dope_tab)
+	_merged_graph_tab = _mode_tab("Graph", _merged_tab_group)
+	_merged_graph_tab.pressed.connect(func() -> void: set_mode("graph"))
+	_merged_row.add_child(_merged_graph_tab)
+
+	_merged_channel_button = _channel_button()
+	_merged_channel_button.custom_minimum_size.x = 96
+	_merged_channel_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_merged_channel_button.pressed.connect(func() -> void: _open_channel_menu(_merged_channel_button))
+	_merged_row.add_child(_merged_channel_button)
+
+	_merged_tabs_host = HBoxContainer.new()
+	_merged_tabs_host.add_theme_constant_override("separation", 0)
+	_merged_row.add_child(_merged_tabs_host)
+
+	_merged_key_button = Kit.text_button("Key", "", false, true)
+	_merged_key_button.custom_minimum_size = Vector2(44, HEADER_H)
+	_merged_key_button.add_theme_font_size_override("font_size", 11)
+	_merged_key_button.pressed.connect(_request_key_info)
+	_merged_row.add_child(_merged_key_button)
+
+	_more_button = Kit.icon_button("ellipsis-vertical", "More graph actions", 44, 16)
+	_more_button.set_meta("action_id", "more")
+	_more_button.set_meta("action_icon", "ellipsis-vertical")
+	_more_button.pressed.connect(_open_more_menu)
+	_merged_row.add_child(_more_button)
+
+	_more_menu = PopupMenu.new()
+	_more_menu.id_pressed.connect(_on_more_menu_id)
+	add_child(_more_menu)
+
+
+func _open_channel_menu(anchor: Button) -> void:
+	if doc == null:
+		return
+	var menu := PopupMenu.new()
+	var targets: Array = []
+	var objects: Array = doc.objects
+	for raw in objects:
+		if not raw is Dictionary:
+			continue
+		var obj: Dictionary = raw
+		menu.add_item("Object · " + str(obj.get("name", obj.get("id", ""))))
+		targets.append({"kind": "object", "id": str(obj.get("id", ""))})
+	if not objects.is_empty():
+		menu.add_separator()
+	for channel in doc.CHANNELS:
+		menu.add_item("Channel · " + str(doc.CHANNEL_LABELS.get(channel, channel)))
+		targets.append({"kind": "channel", "id": str(channel)})
+	menu.id_pressed.connect(func(index: int) -> void:
+		if index < 0 or index >= targets.size():
+			menu.queue_free()
+			return
+		var target: Dictionary = targets[index]
+		if str(target["kind"]) == "object":
+			doc.set_selection(str(target["id"]))
+		else:
+			set_channel(str(target["id"]))
+		menu.queue_free()
+	)
+	menu.popup_hide.connect(menu.queue_free)
+	anchor.add_child(menu)
+	menu.popup_on_parent(Rect2(0.0, anchor.size.y, 1.0, 1.0))
+
+
+func _open_component_menu() -> void:
+	_update_component_menu()
+	_component_menu.popup_on_parent(Rect2(0.0, _component_menu_button.size.y, 1.0, 1.0))
+
+
+func _update_component_menu() -> void:
+	var active := _graph_component()
+	for i in range(COMPONENTS.size()):
+		var item_index := &""
+		# PopupMenu items are indexed by position; every row here is a check item.
+		_component_menu.set_item_checked(i, str(COMPONENTS[i]) == active)
+	if _component_menu_button != null:
+		_component_menu_button.text = str(COMPONENT_LABELS.get(active, "All"))
+		_component_menu_button.tooltip_text = "Component: " + str(COMPONENT_LABELS.get(active, "All"))
+
+
+func _set_component(component: String) -> void:
+	if _segment_graph != null:
+		_segment_graph.set_component(component)
+	_sync_component_chips()
+	_update_component_menu()
+
+
+func _graph_component() -> String:
+	if _segment_graph != null and _segment_graph.has_method("component"):
+		return str(_segment_graph.component())
+	return "all"
+
+
+func _sync_component_chips() -> void:
+	var active := _graph_component()
+	for i in range(_component_buttons.size()):
+		var chip: Button = _component_buttons[i]
+		if chip == null or not is_instance_valid(chip):
+			continue
+		var component := str(COMPONENTS[i]) if i < COMPONENTS.size() else "all"
+		chip.set_pressed_no_signal(component == active)
+	_update_component_menu()
+
+
+func _request_key_info() -> void:
+	if _segment_graph != null:
+		var info: Dictionary = _segment_graph.selected_key_info()
+		if not info.is_empty():
+			key_info_requested.emit(int(info.get("index", -1)))
+			return
+	if doc == null or doc.selected_id == "" or _selected_index < 0 \
+			or _selected_data_id != doc.selected_id:
+		notice.emit("Select a key first.")
+		return
+	key_info_requested.emit(_selected_index)
+
+
+func _open_presets_menu(anchor: Button) -> void:
+	if _segment_graph == null:
+		return
+	var menu := PopupMenu.new()
+	var ids: PackedStringArray = _segment_graph.preset_ids()
+	for i in range(ids.size()):
+		var preset_id := str(ids[i])
+		menu.add_item(_preset_label(preset_id), i)
+	menu.id_pressed.connect(func(index: int) -> void:
+		if index >= 0 and index < ids.size():
+			var chip: Button = _segment_graph.preset_chip(str(ids[index]))
+			if chip != null:
+				chip.pressed.emit()
+		menu.queue_free()
+	)
+	menu.popup_hide.connect(menu.queue_free)
+	anchor.add_child(menu)
+	menu.popup_on_parent(Rect2(0.0, anchor.size.y, 1.0, 1.0))
+
+
+func _preset_label(preset_id: String) -> String:
+	for def in SegmentGraphScript.PRESET_DEFS:
+		if str(def.get("id", "")) == preset_id:
+			return str(def.get("label", preset_id))
+	return preset_id
+
+
+func _open_more_menu() -> void:
+	if _more_menu == null:
+		return
+	_more_menu.clear()
+	var active := _graph_component()
+	for i in range(COMPONENTS.size()):
+		_more_menu.add_check_item(str(COMPONENT_LABELS.get(COMPONENTS[i], COMPONENTS[i])), i)
+		_more_menu.set_item_checked(i, str(COMPONENTS[i]) == active)
+	_more_menu.add_separator()
+	var prev_id := _more_menu.item_count
+	_more_menu.add_item("Previous segment", 10)
+	_more_menu.set_item_disabled(prev_id, _prev_button != null and _prev_button.disabled)
+	var next_id := _more_menu.item_count
+	_more_menu.add_item("Next segment", 11)
+	_more_menu.set_item_disabled(next_id, _next_button != null and _next_button.disabled)
+	if not _graph_rail_fits():
+		_more_menu.add_separator()
+		_more_menu.add_item("Presets…", 12)
+	# The rail is the only place the curve actions normally live. When the
+	# budget hides it, the same real controls stay reachable here.
+	if _mode == "graph" and not _graph_rail_fits() and _segment_graph != null:
+		_more_menu.add_separator()
+		var bake_item := _more_menu.item_count
+		_more_menu.add_item("Bake ease", 13)
+		_more_menu.set_item_disabled(bake_item, not _segment_graph.bake_ease_available())
+		var convert_item := _more_menu.item_count
+		_more_menu.add_item("Convert to cubic", 14)
+		_more_menu.set_item_disabled(convert_item, not _segment_graph.convert_available())
+		var clear_item := _more_menu.item_count
+		_more_menu.add_item("Clear curve", 15)
+		_more_menu.set_item_disabled(clear_item, not _segment_graph.clear_available())
+		var edit_item := _more_menu.item_count
+		_more_menu.add_item("Edit ease", 16)
+		_more_menu.set_item_disabled(edit_item, not _segment_graph.edit_ease_available())
+	_more_menu.popup_on_parent(Rect2(_more_button.size.x - 1.0, _more_button.size.y, 1.0, 1.0))
+
+
+func _on_more_menu_id(index: int) -> void:
+	match index:
+		0, 1, 2, 3:
+			_set_component(str(COMPONENTS[index]))
+		10:
+			_step_segment(-1)
+		11:
+			_step_segment(1)
+		12:
+			call_deferred("_open_presets_menu", _more_button)
+		13:
+			if _segment_graph != null:
+				_segment_graph.bake_ease_button().pressed.emit()
+		14:
+			if _segment_graph != null:
+				_segment_graph.convert_button().pressed.emit()
+		15:
+			if _segment_graph != null:
+				_segment_graph.clear_button().pressed.emit()
+		16:
+			if _segment_graph != null:
+				_segment_graph.set_tab("ease")
+
+# -------------------------------------------------------------------------
+# Duration row
+# -------------------------------------------------------------------------
 
 ## A 44 dp row that temporarily replaces the dope sheet when the duration chip
 ## is tapped. It is built before the sheet so the VBox keeps a stable order;
@@ -462,13 +837,9 @@ func open_duration_row() -> void:
 	_duration_open = true
 	_duration_row.visible = true
 	_dismiss_gesture_hint()
-	if _sheet_rule != null:
-		_sheet_rule.visible = false
-	if _sheet != null:
-		_sheet.visible = false
+	_sync_body_visibility()
 	_sync_duration_row()
-	_apply_sheet_height()
-	_refresh_compact()
+	_refresh_layout()
 	duration_row_changed.emit(true)
 
 
@@ -477,12 +848,8 @@ func close_duration_row() -> void:
 		return
 	_duration_open = false
 	_duration_row.visible = false
-	if _sheet_rule != null:
-		_sheet_rule.visible = _sheet_open
-	if _sheet != null:
-		_sheet.visible = _sheet_open
-	_apply_sheet_height()
-	_refresh_compact()
+	_sync_body_visibility()
+	_refresh_layout()
 	duration_row_changed.emit(false)
 
 
@@ -501,6 +868,7 @@ func _sync_duration_row() -> void:
 		var text_width := chip_font.get_string_size(
 			_duration_chip.text, HORIZONTAL_ALIGNMENT_LEFT, -1, chip_size).x
 		_duration_chip.custom_minimum_size.x = maxf(56.0, ceilf(text_width) + 8.0)
+		_duration_chip.custom_minimum_size.y = TRANSPORT_H
 
 
 ## Applies a duration request. A shrink that would delete keys asks the editor
@@ -535,46 +903,9 @@ func _would_delete_keys(value: float) -> bool:
 				return true
 	return false
 
-
-func _sync_compact_header() -> void:
-	if _compact_mode_button == null:
-		return
-	_sync_flags = true
-	_compact_mode_button.set_pressed_no_signal(_mode == "graph")
-	_compact_loop_button.set_pressed_no_signal(doc != null and doc.loop)
-	_compact_snap_button.set_pressed_no_signal(doc != null and doc.snap)
-	_sync_flags = false
-	_style_flag_button(_compact_mode_button, _mode == "graph")
-	_style_flag_button(_compact_loop_button, doc != null and doc.loop)
-	_style_flag_button(_compact_snap_button, doc != null and doc.snap)
-	var has_key := doc != null and _selected_index >= 0 and _selected_data_id == doc.selected_id
-	_compact_delete_button.disabled = not has_key
-
-
-func _on_compact_mode_toggled(enabled: bool) -> void:
-	if _sync_flags:
-		return
-	set_mode("graph" if enabled else "dope")
-	if _mode == "graph" and doc != null and doc.selected_id == "":
-		notice.emit("Select an object to edit its speed graph.")
-
-
-func _on_compact_loop_toggled(enabled: bool) -> void:
-	if _sync_flags or doc == null:
-		return
-	doc.set_loop(enabled)
-	_loop_button.set_pressed_no_signal(enabled)
-	_style_flag_button(_loop_button, enabled)
-	_style_flag_button(_compact_loop_button, enabled)
-
-
-func _on_compact_snap_toggled(enabled: bool) -> void:
-	if _sync_flags or doc == null:
-		return
-	doc.set_snap(enabled)
-	_snap_button.set_pressed_no_signal(enabled)
-	_style_flag_button(_snap_button, enabled)
-	_style_flag_button(_compact_snap_button, enabled)
+# -------------------------------------------------------------------------
+# Body
+# -------------------------------------------------------------------------
 
 func _build_sheet() -> void:
 	_sheet_rule = Kit.vsep(Kit.BORDER_SOFT)
@@ -586,14 +917,14 @@ func _build_sheet() -> void:
 	add_child(_sheet)
 
 	# One-time hint at the top of the sheet itself, so it survives the compact
-	# header folding away at 915x412. The outline keeps it legible over the
-	# ruler without adding another permanent row to the 48 dp sheet floor.
+	# header folding away. The outline keeps it legible over the ruler without
+	# adding another permanent row to the 44 dp ruler.
 	_gesture_hint = Kit.label("Pinch to zoom · drag to pan", Kit.TYPE_CAPTION, Kit.TEXT, 500)
 	_gesture_hint.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	_gesture_hint.offset_left = 8
 	_gesture_hint.offset_right = -8
 	_gesture_hint.offset_top = 2
-	_gesture_hint.offset_bottom = 20
+	_gesture_hint.offset_bottom = 40
 	_gesture_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_gesture_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_gesture_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -603,23 +934,448 @@ func _build_sheet() -> void:
 	_sheet.add_child(_gesture_hint)
 
 
-## Compact screens keep the transport and fold the sheet away, so the 3D view
-## keeps its height until the user asks for the dope sheet.
+## The graph body is a sibling of the dope sheet in the same stacked body slot:
+## exactly one of them is visible, so the VBox never allocates half a pane to a
+## hidden editor.
+func _build_segment_graph() -> void:
+	_segment_graph = SegmentGraphScript.new()
+	_segment_graph.custom_minimum_size.y = 120
+	_segment_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_segment_graph.visible = false
+	add_child(_segment_graph)
+	_segment_graph.span_selected.connect(_on_graph_span_selected)
+	_segment_graph.span_changed.connect(_on_graph_span_changed)
+	_segment_graph.key_selected.connect(_on_graph_key_selected)
+	_segment_graph.key_info_requested.connect(func(index: int) -> void:
+		key_info_requested.emit(index)
+	)
+	_segment_graph.notice.connect(func(text: String) -> void: notice.emit(text))
+
+
+func _sync_body_visibility() -> void:
+	var body_visible := _sheet_open and not _duration_open
+	if _sheet_rule != null:
+		_sheet_rule.visible = body_visible
+	if _sheet != null:
+		_sheet.visible = body_visible and _mode != "graph"
+	if _segment_graph != null:
+		_segment_graph.visible = body_visible and _mode == "graph"
+
+
+func segment_graph() -> Control:
+	return _segment_graph
+
+
+func segment_selected_span() -> Dictionary:
+	return _selected_span.duplicate(true)
+
+
+func selected_span() -> Dictionary:
+	return _selected_span.duplicate(true)
+
+
+func dope_sheet_visible() -> bool:
+	return _sheet != null and _sheet.visible
+
+
+func _on_graph_span_selected(span: Dictionary) -> void:
+	_apply_span_selection(span, true, false)
+
+
+func _on_graph_span_changed() -> void:
+	_sync_header_state()
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func _on_graph_key_selected(index: int) -> void:
+	_selected_index = index
+	_selected_data_id = doc.selected_id if doc != null else ""
+	if doc != null:
+		_refresh_transport(doc.current_time, doc.is_playing)
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func _apply_span_selection(span: Dictionary, emit_change := true, sync_graph := true) -> void:
+	_selected_span = span.duplicate(true) if not span.is_empty() else {}
+	if _selected_span.is_empty():
+		_selected_index = -1
+		_selected_data_id = ""
+	else:
+		var start := float(_selected_span.get("start", 0.0))
+		_selected_index = _key_index_at(start)
+		_selected_data_id = doc.selected_id if doc != null else ""
+	if sync_graph and _segment_graph != null:
+		if _selected_span.is_empty():
+			_segment_graph.clear_selection()
+		else:
+			_segment_graph.set_selection(_selected_span)
+	_refresh_transport(doc.current_time, doc.is_playing) if doc != null else null
+	_sync_segment_nav()
+	_sync_segment_label()
+	if _sheet != null:
+		_sheet.queue_redraw()
+	if emit_change:
+		segment_selected.emit(span.duplicate(true))
+
+
+func _key_index_at(time: float) -> int:
+	if doc == null or doc.selected_id == "":
+		return -1
+	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
+	for key in keys:
+		if absf(float(key["time"]) - time) <= 0.001:
+			return int(key["index"])
+	return -1
+
+
+func select_span_at_time(time: float) -> bool:
+	if doc == null or doc.selected_id == "":
+		return false
+	var span: Dictionary = doc.segment_span_at(
+		doc.selected_id, _selected_channel, clampf(time, 0.0, doc.duration))
+	if span.is_empty():
+		return false
+	_apply_span_selection(span, true, true)
+	return true
+
+
+func select_segment_at_time(time: float) -> bool:
+	return select_span_at_time(time)
+
+
+func _step_segment(direction: int) -> void:
+	if doc == null or doc.selected_id == "":
+		return
+	var start := doc.current_time
+	if not _selected_span.is_empty() \
+			and str(_selected_span.get("object", "")) == doc.selected_id \
+			and str(_selected_span.get("channel", "")) == _selected_channel:
+		start = float(_selected_span.get("start", start))
+	else:
+		var current: Dictionary = doc.segment_span_at(doc.selected_id, _selected_channel, start)
+		if not current.is_empty():
+			start = float(current.get("start", start))
+	var span: Dictionary = doc.next_segment_span(doc.selected_id, _selected_channel, start, direction)
+	if span.is_empty():
+		return
+	_apply_span_selection(span, true, true)
+
+
+## Re-resolves the selection against the live document. A missing exact span
+## falls back to the interval containing the playhead, then clears.
+func _resolve_current_span() -> Dictionary:
+	if doc == null or _selected_span.is_empty() or doc.selected_id == "":
+		return {}
+	if str(_selected_span.get("object", "")) != doc.selected_id \
+			or str(_selected_span.get("channel", "")) != _selected_channel:
+		return {}
+	var start := float(_selected_span.get("start", 0.0))
+	var end := float(_selected_span.get("end", 0.0))
+	var candidate: Dictionary = doc.segment_span_at(
+		doc.selected_id, _selected_channel, start + 0.000001)
+	if not candidate.is_empty() \
+			and absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+			and absf(float(candidate.get("end", 0.0)) - end) <= 0.001:
+		return candidate
+	return doc.segment_span_at(doc.selected_id, _selected_channel, doc.current_time)
+
+
+func _sync_segment_nav() -> void:
+	if _prev_button == null or _next_button == null:
+		return
+	var has_object := doc != null and doc.selected_id != ""
+	var prev_span: Dictionary = {}
+	var next_span: Dictionary = {}
+	if has_object:
+		var start := doc.current_time
+		if not _selected_span.is_empty():
+			start = float(_selected_span.get("start", start))
+		prev_span = doc.next_segment_span(doc.selected_id, _selected_channel, start, -1)
+		next_span = doc.next_segment_span(doc.selected_id, _selected_channel, start, 1)
+	_prev_button.disabled = prev_span.is_empty()
+	_next_button.disabled = next_span.is_empty()
+	_prev_button.tooltip_text = "Previous segment" if not _prev_button.disabled \
+		else ("No previous segment." if has_object else "Select an object first.")
+	_next_button.tooltip_text = "Next segment" if not _next_button.disabled \
+		else ("No next segment." if has_object else "Select an object first.")
+
+
+func _sync_segment_label() -> void:
+	if _segment_label == null:
+		return
+	if _selected_span.is_empty():
+		_segment_label.text = "No segment selected"
+		_segment_label.tooltip_text = ""
+		return
+	var start := float(_selected_span.get("start", 0.0))
+	var end := float(_selected_span.get("end", 0.0))
+	var kind := "Curve" if str(_selected_span.get("kind", "")) == "record" else "Keys"
+	_segment_label.text = "%s · %.2f → %.2f s" % [kind, start, end]
+	_segment_label.tooltip_text = _segment_label.text
+
+# -------------------------------------------------------------------------
+# Header and layout state
+# -------------------------------------------------------------------------
+
+func pane_compacted() -> bool:
+	return size.y < 400.0 and _measured_width() >= 600.0
+
+
+func _measured_width() -> float:
+	var width := size.x
+	if _available_width > 0.0:
+		width = minf(width, _available_width) if width > 0.0 else _available_width
+	return width
+
+
+func _graph_header_height() -> float:
+	if pane_compacted():
+		return 0.0
+	return 88.0 if _measured_width() < 600.0 else HEADER_H
+
+
+func _pane_header_height() -> float:
+	if pane_compacted():
+		return HEADER_H
+	if _pane_header_panel != null and _pane_header_panel.visible:
+		return HEADER_H
+	return 0.0
+
+
+func _graph_body_height() -> float:
+	var header := _pane_header_height()
+	if _mode == "graph" and not pane_compacted():
+		header += _graph_header_height()
+	return maxf(0.0, size.y - TRANSPORT_H - header)
+
+
+func _graph_rail_fits() -> bool:
+	var body := _graph_body_height()
+	return body - SegmentGraphScript.RULER_H - SegmentGraphScript.RAIL_H \
+		>= SegmentGraphScript.MIN_PLOT_H
+
+
+func plot_height() -> float:
+	if _mode == "graph" and _segment_graph != null:
+		return _segment_graph.plot_rect().size.y
+	var rule_h := 0.0
+	if _sheet_rule != null and _sheet_rule.visible:
+		rule_h = maxf(0.0, _sheet_rule.custom_minimum_size.y)
+	return maxf(0.0, size.y - TRANSPORT_H - _pane_header_height() - rule_h - DOPE_RULER_H)
+
+
+func _refresh_layout() -> void:
+	if _transport_panel == null:
+		return
+	var measured := _measured_width()
+	var compacted := pane_compacted()
+	if _pane_header_panel != null:
+		_pane_header_panel.visible = not compacted
+	if _merged_header_panel != null:
+		_merged_header_panel.visible = compacted
+	if _graph_header_panel != null:
+		_graph_header_panel.visible = not compacted and _mode == "graph"
+	var narrow := measured < 600.0
+	if _graph_header_wide != null:
+		_graph_header_wide.visible = not narrow
+	if _graph_header_narrow != null:
+		_graph_header_narrow.visible = narrow
+	if _segment_label != null:
+		_segment_label.visible = not compacted and not narrow
+	if _dope_tab != null:
+		_dope_tab.visible = not compacted
+	if _graph_tab != null:
+		_graph_tab.visible = not compacted
+	if _clip_selector != null:
+		_clip_selector.visible = not compacted
+	if _prev_button != null:
+		_prev_button.visible = not compacted
+	if _next_button != null:
+		_next_button.visible = not compacted
+
+	# The transport drops its lower-priority controls before the pane's
+	# minimum width can push the centre column wider than the canvas.
+	var hide_loop := measured < 560.0
+	var hide_snap := measured < 460.0
+	_loop_button.visible = not hide_loop
+	_fps_button.visible = not hide_loop
+	_snap_button.visible = not hide_snap
+	_fit_button.visible = not hide_snap
+	_time_button.custom_minimum_size.x = 76.0 if hide_snap else 96.0
+	_transport_style.content_margin_left = 2 if measured < 420.0 else 4
+	_transport_style.content_margin_right = 2 if measured < 420.0 else 4
+
+	var host: HBoxContainer = _wide_tabs_host
+	if compacted:
+		host = _merged_tabs_host
+	elif narrow:
+		host = _narrow_tabs_host
+	if _segment_graph != null and host != null:
+		_segment_graph.bind_tab_buttons(host)
+
+	var presets_shown := _mode == "graph" and not _graph_rail_fits()
+	if _presets_button != null:
+		_presets_button.visible = presets_shown
+	if _narrow_presets_button != null:
+		_narrow_presets_button.visible = presets_shown
+	_sync_mode_buttons()
+	_sync_component_chips()
+	_sync_header_state()
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func _sync_header_state() -> void:
+	_sync_mode_buttons()
+	_sync_component_chips()
+	_sync_segment_nav()
+	_sync_segment_label()
+	if _clip_selector != null:
+		_clip_selector.text = _clip_selector_text()
+		_clip_selector.tooltip_text = _clip_selector.text
+	var channel_text := _channel_selector_text()
+	for button in [_wide_channel_button, _narrow_channel_button, _merged_channel_button]:
+		if button != null:
+			button.text = channel_text
+			button.tooltip_text = channel_text
+
+
+func _clip_selector_text() -> String:
+	if doc == null or doc.animation_system == null:
+		return "No clip"
+	var clip: Dictionary = doc.animation_system.get_clip(doc.active_clip_id())
+	var layer: Dictionary = doc.animation_system.get_layer(
+		doc.animation_system.active_layer_id())
+	var clip_name := str(clip.get("name", "Clip"))
+	var layer_name := str(layer.get("name", "Layer"))
+	return "%s · %s" % [clip_name, layer_name]
+
+
+func _channel_selector_text() -> String:
+	var channel := str(doc.CHANNEL_LABELS.get(_selected_channel, _selected_channel)) if doc != null \
+		else _selected_channel.capitalize()
+	if doc == null or doc.selected_id == "":
+		return "No object · " + channel
+	var obj: Dictionary = doc.get_object(doc.selected_id)
+	return "%s · %s" % [str(obj.get("name", "Object")), channel]
+
+
+func _sync_mode_buttons() -> void:
+	_sync_flags = true
+	if _dope_tab != null:
+		_dope_tab.set_pressed_no_signal(_mode == "dope")
+	if _graph_tab != null:
+		_graph_tab.set_pressed_no_signal(_mode == "graph")
+	if _merged_dope_tab != null:
+		_merged_dope_tab.set_pressed_no_signal(_mode == "dope")
+	if _merged_graph_tab != null:
+		_merged_graph_tab.set_pressed_no_signal(_mode == "graph")
+	_sync_flags = false
+
+
+func clip_selector() -> Button:
+	return _clip_selector
+
+
+func segment_label() -> Label:
+	return _segment_label
+
+
+func dope_tab() -> Button:
+	return _dope_tab
+
+
+func graph_tab_button() -> Button:
+	return _graph_tab
+
+
+func prev_segment_button() -> Button:
+	return _prev_button
+
+
+func next_segment_button() -> Button:
+	return _next_button
+
+
+func pane_header() -> Control:
+	return _merged_header_panel if pane_compacted() else _pane_header_panel
+
+
+func graph_header() -> Control:
+	return _merged_header_panel if pane_compacted() else _graph_header_panel
+
+
+func transport_panel() -> Control:
+	return _transport_panel
+
+
+func play_button() -> Button:
+	return _play_button
+
+
+func fps_button() -> Button:
+	return _fps_button
+
+
+func snap_button() -> Button:
+	return _snap_button
+
+
+func add_key_button() -> Button:
+	return _add_key_button
+
+
+func delete_key_button() -> Button:
+	return _delete_button
+
+
+func time_button() -> Button:
+	return _time_button
+
+
+func fit_button() -> Button:
+	return _fit_button
+
+
+func set_available_width(value: float) -> void:
+	_available_width = value
+	_refresh_layout()
+
+
+## Touch mode keeps every transport control on the 44 dp target. The icon
+## inside may shrink; the target never does.
+func set_chrome_mode(mode: String) -> void:
+	_chrome_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
+	var icon := 20 if _chrome_mode == "compact" else 18
+	for button in _transport_buttons:
+		if button == null or not is_instance_valid(button):
+			continue
+		button.custom_minimum_size = Vector2(44, 44)
+		button.add_theme_constant_override("icon_max_width", icon)
+	_refresh_layout()
+
+
+func set_short_layout(value: bool) -> void:
+	if _short_layout == value:
+		return
+	_short_layout = value
+	if _sheet_rule != null:
+		_sheet_rule.custom_minimum_size.y = 0.0 if _short_layout else 1.0
+	_refresh_layout()
+
+
 func set_sheet_visible(open: bool) -> void:
 	_sheet_open = open
 	if not open and _duration_open:
 		_duration_open = false
 		if _duration_row != null:
 			_duration_row.visible = false
-	_sheet_rule.visible = open and not _duration_open
-	if _sheet != null:
-		_sheet.visible = open and not _duration_open
-	if _fold_button != null:
-		Kit.set_icon(_fold_button, "chevron-down" if open else "chevron-up")
-		_fold_button.tooltip_text = "Fold the timeline" if open else "Open the timeline"
+	_sync_body_visibility()
 	if not open:
 		_dismiss_gesture_hint()
-	_refresh_compact()
+	_refresh_layout()
 
 
 ## Called by the editor's user-open path, never from a layout sync. The hint
@@ -645,243 +1401,64 @@ func sheet_visible() -> bool:
 	return _sheet_open
 
 
-## The editor reserves width for the center column; the sheet must not infer
-## its own available width from a size that its own minimum has already forced.
-func set_available_width(value: float) -> void:
-	_available_width = value
-	_refresh_compact()
-
-
-## Touch mode grows every transport control to a 44 dp target. The same target
-## is kept in Studio and Desktop: a phone can host any of the three modes and a
-## transport is the most-used control in the app.
-func set_chrome_mode(mode: String) -> void:
-	_chrome_mode = mode if mode in ["compact", "studio", "desktop"] else "studio"
-	var target := 44
-	var icon := 20 if _chrome_mode == "compact" else 18
-	for button in _transport_buttons:
-		if button == null or not is_instance_valid(button):
-			continue
-		button.custom_minimum_size = Vector2(target, target)
-		button.add_theme_constant_override("icon_max_width", icon)
-	if _play_button != null:
-		_play_button.custom_minimum_size = Vector2(target, target)
-		_play_button.add_theme_constant_override("icon_max_width", icon)
-	if _mode_button != null:
-		_mode_button.custom_minimum_size = Vector2(target, target)
-	for button in [_auto_button, _ease_button]:
-		if button != null:
-			button.custom_minimum_size = Vector2(target, target)
-	_refresh_compact()
-
-func _refresh_compact() -> void:
-	if _start_button == null:
-		return
-	var touch := _chrome_mode == "compact"
-	# A Studio landscape split by the dock can leave the sheet narrower than a
-	# phone. The same overflow header keeps graph, loop, snap, delete and fold
-	# reachable instead of silently dropping them from the transport. The
-	# threshold is measured against the transport's real 44 dp controls, not
-	# the old 28 dp icons. Prefer the width the editor reserved: this Control's
-	# own size may already be widened by the transport minimum.
-	var measured := size.x
-	if _available_width > 0.0:
-		measured = minf(measured, _available_width)
-	var narrow := measured < 640.0
-	var narrow_chrome := touch or narrow
-	var show_header := _sheet_open and narrow_chrome and not _header_folded and not _duration_open
-	# A narrow canvas cannot hold every transport control at 44 dp, so the
-	# folded and open states trade AUTO and the fold control rather than
-	# pushing the center column past the canvas edge.
-	var narrow_sheet_folded := narrow and not touch and not _sheet_open
-	_start_button.visible = not narrow_chrome
-	_end_button.visible = not narrow_chrome
-	# Key-step navigation stays in the transport on any surface wide enough for
-	# it, including a 915x412 landscape whose stage column is 624 dp after the
-	# rail and scene panel. Only a phone-width canvas drops the pair, where the
-	# ruler remains the path.
-	var key_step_room := measured >= 600.0
-	if _prev_button != null:
-		_prev_button.visible = key_step_room
-	if _next_button != null:
-		_next_button.visible = key_step_room
-	_snap_button.visible = not narrow_chrome
-	_mode_button.visible = not narrow_chrome
-	_loop_button.visible = not narrow_chrome
-	_delete_button.visible = not narrow_chrome
-	if _fold_button != null:
-		# The header owns folding while the sheet is open; once it is folded
-		# the transport's control is the way back. Touch uses the compact
-		# bottom bar instead, so it never needs the transport control. When
-		# the overlay budget folds the header, the transport control takes
-		# over so the fold action stays reachable.
-		_fold_button.visible = not touch and ((not narrow or not _sheet_open) or _header_folded)
-	if _auto_button != null:
-		# A folded narrow sheet swaps AUTO for the fold control: both cannot
-		# hold a 44 dp target on a 320-360 dp canvas. AUTO returns as soon as
-		# the sheet opens again.
-		_auto_button.visible = not narrow_sheet_folded
-	_frame_label.visible = not narrow_chrome and size.x >= 420.0
-	_time_box.custom_minimum_size.x = 58 if narrow_chrome else 76
-	_transport_style.content_margin_left = 4 if narrow_chrome else 6
-	_transport_style.content_margin_right = 4 if narrow_chrome else 6
-	if _compact_header != null:
-		_compact_header.visible = show_header
-	if _compact_ease_button != null:
-		_compact_ease_button.visible = _mode == "graph"
-	if _ease_button != null:
-		_ease_button.visible = not narrow_chrome and _mode == "graph"
-	_sync_compact_header()
-	if _sheet != null:
-		_sheet.queue_redraw()
-
-func set_short_layout(value: bool) -> void:
-	if _short_layout == value:
-		return
-	_short_layout = value
-	# The graph owns min(300, stage) now, so the 1 dp separator is no longer a
-	# budget cliff; it still collapses on short screens to keep the chrome flat.
-	if _sheet_rule != null:
-		_sheet_rule.custom_minimum_size.y = 0.0 if _short_layout else 1.0
-	_apply_sheet_height()
-
-
-## The overlay budget can be too small to keep the compact sheet header. The
-## editor folds it here before the sheet is squeezed under its floor; the
-## transport's fold control stays reachable in its place.
-func set_header_folded(value: bool) -> void:
-	if _header_folded == value:
-		return
-	_header_folded = value
-	_refresh_compact()
-
-func _apply_sheet_height() -> void:
-	if _sheet == null:
-		return
-	_sheet.custom_minimum_size.y = 120.0 if _mode == "graph" else 96.0
-
-
-## The overlay owns the total height, so the sheet gets whatever the transport,
-## the compact header, the lanes and the 72 dp shelf floor leave. The 72 dp
-## floor is the binding minimum: the transport (56) plus it must always fit.
-func fit_sheet_height(available: float) -> void:
-	if _sheet == null:
-		return
-	var header_h := 0.0
-	if _compact_header != null and _compact_header.visible:
-		header_h = _compact_header.custom_minimum_size.y
-	var rule_h := 0.0
-	if _sheet_open and _sheet_rule != null and _sheet_rule.visible:
-		rule_h = maxf(1.0, _sheet_rule.custom_minimum_size.y)
-	var room := maxf(48.0, available - header_h - rule_h)
-	var preferred := 96.0
-	if _mode == "graph":
-		# Graph mode asks for all the room the shell can give; the 120 dp plot
-		# floor is defended by the honest short-window caption, not by shrinking
-		# the sheet into a sliver.
-		preferred = maxf(120.0, available - header_h - rule_h)
-	_sheet.custom_minimum_size.y = maxf(48.0, minf(preferred, room))
-
-
-## The transport belongs to the sheet's model but is mounted outside it by the
-## shell (below the stack, on the bottom edge). Explicit API instead of the
-## editor reaching into `_transport_panel`.
-func mount_transport(parent: Control) -> void:
-	if _transport_panel == null:
-		return
-	if _transport_panel.get_parent() == parent:
-		return
-	_transport_panel.reparent(parent, false)
-
-
 func mode() -> String:
 	return _mode
 
-
-## The one transport instance, for shells and tests that need its rect.
-func transport_panel() -> Control:
-	return _transport_panel
-
-
-## Where the transport is mounted right now (the timeline frame below the
-## stack, once the shell has re-parented it).
-func mount_target() -> Control:
-	if _transport_panel == null:
-		return null
-	return _transport_panel.get_parent() as Control
-
-
-## The sheet's current minimum height (no header, no rule) for budget maths.
-func sheet_min_height() -> float:
-	return _sheet.custom_minimum_size.y if _sheet != null else 0.0
-
-
-## True when the shell wants the compact sheet header (touch or a narrow
-## canvas), regardless of whether the overlay budget can afford it.
-func header_allowed() -> bool:
-	var measured := size.x
-	if _available_width > 0.0:
-		measured = minf(measured, _available_width)
-	var narrow_ui := _chrome_mode == "compact" or measured < 640.0
-	return _sheet_open and narrow_ui
-
-
-## Nominal compact-header height, whether it is currently folded or not.
-func header_height() -> float:
-	if _compact_header == null:
-		return 0.0
-	return _compact_header.custom_minimum_size.y
-
-
-## The 1 px rule between the sheet and the stack, when the sheet is open.
-func sheet_rule_height() -> float:
-	if _sheet_rule == null or not _sheet_rule.visible:
-		return 0.0
-	return maxf(1.0, _sheet_rule.custom_minimum_size.y)
 
 func set_mode(mode: String) -> void:
 	var next := "graph" if mode == "graph" else "dope"
 	var changed := next != _mode
 	_mode = next
-	_apply_sheet_height()
-	if _mode_button != null:
-		_sync_flags = true
-		_mode_button.set_pressed_no_signal(_mode == "graph")
-		_sync_flags = false
-		_style_flag_button(_mode_button, _mode == "graph")
-	_refresh_compact()
+	_refresh_graph_context()
+	if _segment_graph != null and not _selected_span.is_empty():
+		_segment_graph.set_selection(_selected_span)
+	_sync_body_visibility()
+	_refresh_layout()
+	_sync_header_state()
 	if _sheet != null:
 		_sheet.queue_redraw()
+	if _segment_graph != null:
+		# Containers settle on the next frame, but callers read the plot budget
+		# synchronously after switching modes; report the real body now.
+		if _mode == "graph":
+			_segment_graph.size.y = _graph_body_height()
+		_segment_graph.queue_redraw()
 	if changed:
 		mode_changed.emit(_mode)
 
-func _on_mode_toggled(enabled: bool) -> void:
-	if _sync_flags:
-		return
-	set_mode("graph" if enabled else "dope")
-	if _mode == "graph" and doc != null and doc.selected_id == "":
-		notice.emit("Select an object to edit its speed graph.")
+
+func _refresh_graph_context() -> void:
+	if _segment_graph != null and doc != null:
+		_segment_graph.set_context(doc.selected_id, _selected_channel)
+
 
 func _sync_flag_states() -> void:
 	if doc == null:
 		return
 	_sync_flags = true
 	_loop_button.set_pressed_no_signal(doc.loop)
-	_auto_button.set_pressed_no_signal(doc.autokey)
 	_snap_button.set_pressed_no_signal(doc.snap)
 	_sync_flags = false
 	_style_flag_button(_loop_button, doc.loop)
 	_style_flag_button(_snap_button, doc.snap)
-	_sync_compact_header()
+
 
 func _style_flag_button(button: Button, active: bool) -> void:
+	if button == null:
+		return
 	if active:
 		button.add_theme_color_override("icon_normal_color", Kit.FOCUS_BRIGHT)
 		button.add_theme_color_override("icon_pressed_color", Kit.FOCUS_BRIGHT)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+		button.add_theme_color_override("font_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_color_override("font_pressed_color", Kit.FOCUS_BRIGHT)
+		button.add_theme_stylebox_override("normal",
+			Kit.flat_style(Kit.SURFACE_ACTIVE, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	else:
 		button.add_theme_color_override("icon_normal_color", Kit.TEXT_MUTED)
-		button.add_theme_stylebox_override("normal", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+		button.add_theme_color_override("font_color", Kit.TEXT_MUTED)
+		button.add_theme_stylebox_override("normal",
+			Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
+
 
 ## The clip transport is disabled while the sequence clock owns time. The
 ## timeline owns the disabled flag and its reason so a playback refresh cannot
@@ -909,15 +1486,16 @@ func _sync_play_control() -> void:
 func _refresh_transport(time: float, playing: bool) -> void:
 	if doc == null:
 		return
-	_time_label.text = doc.format_timecode(time)
-	_frame_label.text = "F %d · %dfps" % [doc.time_to_frame(time), doc.fps]
+	_time_button.text = doc.format_timecode(time)
+	_fps_button.text = "%d fps" % doc.fps
 	_play_button.icon = Kit.icon_texture("pause" if playing else "play")
+	_play_button.set_meta("action_id", "pause" if playing else "play")
+	_play_button.set_meta("action_icon", "pause" if playing else "play")
 	_sync_play_control()
 	var has_key := _selected_index >= 0 and _selected_data_id == doc.selected_id
 	_delete_button.disabled = not has_key
-	if _compact_delete_button != null:
-		_compact_delete_button.disabled = not has_key
 	_sync_duration_row()
+
 
 func _on_playback_changed(time: float, playing: bool) -> void:
 	_follow_playhead()
@@ -925,44 +1503,76 @@ func _on_playback_changed(time: float, playing: bool) -> void:
 	if _sheet != null:
 		_sheet.queue_redraw()
 
+
 func _on_selection_changed(_id: String) -> void:
 	_selected_index = -1
 	_selected_data_id = ""
+	_selected_span = {}
+	if _segment_graph != null:
+		_segment_graph.set_context(doc.selected_id, _selected_channel)
+		_segment_graph.clear_selection()
+	_sync_header_state()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
 
+
 func _on_object_changed(_id: String) -> void:
+	if _segment_graph != null:
+		_segment_graph.refresh()
+	_sync_header_state()
 	if _sheet != null:
 		_sheet.queue_redraw()
+
 
 func _on_transform_changed(_id: String) -> void:
 	# The sheet only plots keys and the playhead; live values do not redraw it.
 	pass
 
+
 func _on_keyframes_changed(_id: String) -> void:
-	_selected_index = -1
+	var resolved := _resolve_current_span()
+	_selected_span = resolved
+	if _selected_span.is_empty():
+		_selected_index = -1
+		_selected_data_id = ""
+	else:
+		_selected_index = _key_index_at(float(_selected_span.get("start", 0.0)))
+		_selected_data_id = doc.selected_id if doc != null else ""
+	if _segment_graph != null:
+		_segment_graph.refresh()
+		if _selected_span.is_empty():
+			_segment_graph.clear_selection()
+		else:
+			_segment_graph.set_selection(_selected_span)
+	_sync_header_state()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
+
 
 func _on_scene_changed() -> void:
 	_sync_flag_states()
+	if _segment_graph != null:
+		_segment_graph.refresh()
+	_sync_header_state()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
 
-func _on_start() -> void:
-	if doc == null:
-		return
-	doc.pause()
-	doc.seek(0.0)
 
-func _on_end() -> void:
-	if doc == null:
-		return
-	doc.pause()
-	doc.seek(doc.duration)
+func _on_active_clip_changed(_id: String) -> void:
+	_selected_span = {}
+	_selected_index = -1
+	_selected_data_id = ""
+	if _segment_graph != null:
+		_segment_graph.set_context(doc.selected_id, _selected_channel)
+		_segment_graph.clear_selection()
+	_sync_header_state()
+	_refresh_transport(doc.current_time, doc.is_playing)
+	if _sheet != null:
+		_sheet.queue_redraw()
+
 
 func _on_prev_key() -> void:
 	if doc == null:
@@ -970,34 +1580,32 @@ func _on_prev_key() -> void:
 	doc.pause()
 	doc.seek(doc.nearest_key_time(-1))
 
+
 func _on_next_key() -> void:
 	if doc == null:
 		return
 	doc.pause()
 	doc.seek(doc.nearest_key_time(1))
 
+
 func _on_play() -> void:
 	if doc != null and _clip_transport_enabled:
 		doc.toggle_play()
+
 
 func _on_loop_toggled(enabled: bool) -> void:
 	if _sync_flags or doc == null:
 		return
 	doc.set_loop(enabled)
 	_style_flag_button(_loop_button, enabled)
-	_sync_compact_header()
 
-func _on_auto_toggled(enabled: bool) -> void:
-	if _sync_flags or doc == null:
-		return
-	doc.set_autokey(enabled)
 
 func _on_snap_toggled(enabled: bool) -> void:
 	if _sync_flags or doc == null:
 		return
 	doc.set_snap(enabled)
 	_style_flag_button(_snap_button, enabled)
-	_sync_compact_header()
+
 
 func _on_key_all() -> void:
 	if doc == null:
@@ -1009,6 +1617,7 @@ func _on_key_all() -> void:
 	notice.emit("Keys inserted at " + doc.format_timecode(doc.current_time))
 	if _sheet != null:
 		_sheet.queue_redraw()
+
 
 func _on_delete_key() -> void:
 	if doc == null or _selected_index < 0 or _selected_data_id != doc.selected_id:
@@ -1024,10 +1633,6 @@ func _on_delete_key() -> void:
 	notice.emit("Key deleted at " + old_time)
 	if _sheet != null:
 		_sheet.queue_redraw()
-
-# -------------------------------------------------------------------------
-# Dope sheet drawing
-# -------------------------------------------------------------------------
 
 # -------------------------------------------------------------------------
 # Time viewport (pan and zoom)
@@ -1083,6 +1688,17 @@ func set_time_view(start: float, end: float) -> void:
 	start = clampf(start, 0.0, duration - span)
 	_view_start = start
 	_view_span = span if span < duration - 0.0001 else -1.0
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+## The transport's Fit button: drop any zoom and show the whole clip.
+func fit_time_view() -> void:
+	if doc == null:
+		return
+	_view_duration_seen = doc.duration
+	_view_start = 0.0
+	_view_span = -1.0
 	if _sheet != null:
 		_sheet.queue_redraw()
 
@@ -1194,30 +1810,28 @@ func scrollbar_owns_press(pos: Vector2) -> bool:
 	var band := Rect2(thumb.position.x - 8.0, hit.position.y, thumb.size.x + 16.0, hit.size.y)
 	return band.has_point(pos)
 
+# -------------------------------------------------------------------------
+# Dope sheet drawing
+# -------------------------------------------------------------------------
 
 func _geometry(canvas: Control) -> void:
-	_ruler_h = 22.0
-	if _mode == "graph":
-		_grid_left = 8.0
-		_grid_width = maxf(20.0, canvas.size.x - 16.0)
-		# Ruler 22 + channel tabs 44 + 12 dp breathing room. The old 22 dp stats
-		# line is gone from the plot; the plot bottom is the sheet minus 28.
-		_graph_top = _ruler_h + GRAPH_TAB_HEIGHT + 12.0
-		_graph_baseline = maxf(_graph_top + 24.0, canvas.size.y - 28.0)
-		return
+	_ruler_h = DOPE_RULER_H
 	_label_width = 92.0 if canvas.size.x < 500.0 else 112.0
 	var available_h := maxf(60.0, canvas.size.y - _ruler_h - 6.0)
 	_row_h = clampf(available_h / 3.0, 20.0, 34.0)
 	_grid_left = _label_width + 6.0
 	_grid_width = maxf(20.0, canvas.size.x - _grid_left - 8.0)
 
-func _time_to_x(time: float, canvas: Control) -> float:
+
+func _time_to_x(time: float, _canvas: Control) -> float:
 	if doc == null:
 		return _grid_left
 	return _grid_left + (time - viewport_start()) / viewport_span() * _grid_width
 
+
 func _x_to_time(x: float, _canvas: Control) -> float:
 	return viewport_start() + (x - _grid_left) / maxf(1.0, _grid_width) * viewport_span()
+
 
 func _draw_sheet(canvas: Control) -> void:
 	_geometry(canvas)
@@ -1226,18 +1840,14 @@ func _draw_sheet(canvas: Control) -> void:
 	var h := canvas.size.y
 	canvas.draw_rect(Rect2(0, 0, w, h), Kit.SURFACE)
 	canvas.draw_rect(Rect2(0, 0, w, _ruler_h), Kit.SURFACE_2)
-	if _mode != "graph":
-		canvas.draw_line(Vector2(_label_width, 0), Vector2(_label_width, h), Kit.BORDER_SOFT, 1.0)
+	canvas.draw_line(Vector2(_label_width, 0), Vector2(_label_width, h), Kit.BORDER_SOFT, 1.0)
 	canvas.draw_line(Vector2(0, _ruler_h), Vector2(w, _ruler_h), Kit.BORDER_SOFT, 1.0)
-
-	if _mode != "graph":
-		var channel_header := "CHANNELS"
-		canvas.draw_string(Kit.font_for(600), Vector2(12, 15), channel_header, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	canvas.draw_string(Kit.font_for(600), Vector2(12, 27), "CHANNELS",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 
 	if doc == null:
 		return
 
-	var grid_top := _graph_top if _mode == "graph" else 0.0
 	var major := _major_step()
 	# Ticks span the visible window, not the whole duration: a zoomed window
 	# still gets labels at the right times without drawing off-canvas.
@@ -1246,16 +1856,13 @@ func _draw_sheet(canvas: Control) -> void:
 	while tick <= viewport_end() + 0.001:
 		if tick >= -0.001 and tick <= doc.duration + 0.001:
 			var x := _time_to_x(tick, canvas)
-			canvas.draw_line(Vector2(x, grid_top), Vector2(x, h), Kit.BORDER_SOFT * Color(1, 1, 1, 0.55), 1.0)
+			canvas.draw_line(Vector2(x, 0), Vector2(x, h),
+				Kit.BORDER_SOFT * Color(1, 1, 1, 0.55), 1.0)
 			if x < w - 26.0:
 				var label := "%.1fs" % tick if major < 1.0 else "%ds" % int(round(tick))
-				canvas.draw_string(Kit.font_mono, Vector2(x + 3, 15), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_RULER, Kit.TEXT_MUTED)
+				canvas.draw_string(Kit.font_mono, Vector2(x + 3, 27), label,
+					HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_RULER, Kit.TEXT_MUTED)
 		tick += major
-
-	if _mode == "graph":
-		_draw_graph(canvas, w, h)
-		_draw_scrollbar(canvas, w, h)
-		return
 
 	var row_top := _ruler_h
 	var channels: Array = doc.CHANNELS
@@ -1267,11 +1874,14 @@ func _draw_sheet(canvas: Control) -> void:
 			canvas.draw_rect(Rect2(0, top, w, _row_h), Kit.SURFACE_ACTIVE)
 			canvas.draw_rect(Rect2(0, top, CHANNEL_EDGE, _row_h), Kit.ACCENT)
 		elif ci % 2 == 1:
-			canvas.draw_rect(Rect2(_label_width, top, w - _label_width, _row_h), Kit.SURFACE * Color(1, 1, 1, 0.35))
+			canvas.draw_rect(Rect2(_label_width, top, w - _label_width, _row_h),
+				Kit.SURFACE * Color(1, 1, 1, 0.35))
 		canvas.draw_line(Vector2(0, top + _row_h), Vector2(w, top + _row_h), Kit.BORDER_SOFT, 1.0)
 
 		var label := str(doc.CHANNEL_LABELS.get(channel, channel))
-		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
+		canvas.draw_string(Kit.font_for(500), Vector2(20, center_y + 4), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION,
+			Kit.TEXT if channel == _selected_channel else Kit.TEXT_MUTED)
 		# Channel identity lives in the label. Coloured dots would introduce a
 		# second semantic palette into an otherwise luminance-only workbench.
 		var dot_color: Color = [Kit.TEXT_MUTED, Kit.TEXT_DIM, Kit.BORDER][ci]
@@ -1281,13 +1891,24 @@ func _draw_sheet(canvas: Control) -> void:
 		if keys.is_empty():
 			continue
 		var count_text := str(keys.size())
-		var count_size := Kit.font_mono.get_string_size(count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO)
-		canvas.draw_string(Kit.font_mono, Vector2(_label_width - 10 - count_size.x, center_y + 3), count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO, Kit.TEXT_DIM)
+		var count_size := Kit.font_mono.get_string_size(
+			count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO)
+		canvas.draw_string(Kit.font_mono,
+			Vector2(_label_width - 10 - count_size.x, center_y + 3), count_text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO, Kit.TEXT_DIM)
+
+	_draw_selected_band(canvas, row_top, w)
+
+	for ci in range(channels.size()):
+		var channel := str(channels[ci])
+		var center_y := row_top + float(ci) * _row_h + _row_h * 0.5
+		var keys: Array = doc.get_channel_keys(doc.selected_id, channel) if doc.selected_id != "" else []
 		for key in keys:
 			if key["time"] > doc.duration + 0.001:
 				continue
 			var x := _time_to_x(float(key["time"]), canvas)
-			var selected := _selected_data_id == doc.selected_id and _selected_index == int(key["index"]) and _selected_channel == channel
+			var selected := _selected_data_id == doc.selected_id \
+				and _selected_index == int(key["index"]) and _selected_channel == channel
 			var r := 6.0 if selected else 4.6
 			var color := Kit.ACCENT_BRIGHT if selected else Kit.ACCENT
 			var points := PackedVector2Array([
@@ -1296,7 +1917,9 @@ func _draw_sheet(canvas: Control) -> void:
 			])
 			canvas.draw_colored_polygon(points, color)
 			if selected:
-				canvas.draw_polyline(PackedVector2Array([points[0], points[1], points[2], points[3], points[0]]), Color(1, 1, 1, 0.85), 1.0, true)
+				canvas.draw_polyline(PackedVector2Array([
+					points[0], points[1], points[2], points[3], points[0],
+				]), Color(1, 1, 1, 0.85), 1.0, true)
 			_key_hits.append({"channel": channel, "index": int(key["index"]), "pos": Vector2(x, center_y)})
 
 	var play_x := _time_to_x(doc.current_time, canvas)
@@ -1305,20 +1928,40 @@ func _draw_sheet(canvas: Control) -> void:
 	canvas.draw_colored_polygon(head, Kit.ACCENT)
 
 	if doc.selected_id == "":
-		canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 20, _ruler_h + 32), "Select an object to view its animation channels.", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 24, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+		canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 20, _ruler_h + 32),
+			"Select an object to view its animation channels.",
+			HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 24, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	else:
 		var rows_bottom := row_top + float(channels.size()) * _row_h
 		if h > rows_bottom + 12.0:
-			canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 8, rows_bottom + 14), "Drag diamonds to retime · tap the ruler to scrub", HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 16, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+			canvas.draw_string(Kit.font_for(400), Vector2(_label_width + 8, rows_bottom + 14),
+				"Drag diamonds to retime · tap a band to select its segment",
+				HORIZONTAL_ALIGNMENT_LEFT, w - _label_width - 16, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 
 	_draw_scrollbar(canvas, w, h)
+
+
+func _draw_selected_band(canvas: Control, row_top: float, w: float) -> void:
+	if _selected_span.is_empty() or doc == null:
+		return
+	if str(_selected_span.get("object", "")) != doc.selected_id \
+			or str(_selected_span.get("channel", "")) != _selected_channel:
+		return
+	var x0 := _time_to_x(float(_selected_span.get("start", 0.0)), canvas)
+	var x1 := _time_to_x(float(_selected_span.get("end", 0.0)), canvas)
+	var left := maxf(_grid_left, minf(x0, x1))
+	var right := minf(w, maxf(x0, x1))
+	if right <= left:
+		return
+	var height := _row_h * float(doc.CHANNELS.size())
+	canvas.draw_rect(Rect2(left, row_top, right - left, height), Kit.TIME_DARK)
 
 
 ## The sheet draws its own slim horizontal scrollbar: a thin thumb over a
 ## faint track, with a full 44 dp hit band so fingers can grab either. Fit mode
 ## keeps the track and a 40% thumb as a permanent affordance and captions the
 ## pinch gesture; a zoomed window gets the normal thumb and drag caption.
-func _draw_scrollbar(canvas: Control, w: float, h: float) -> void:
+func _draw_scrollbar(canvas: Control, _w: float, _h: float) -> void:
 	var track := scrollbar_track_rect()
 	if track.size.x <= 0.0:
 		return
@@ -1337,220 +1980,18 @@ func _draw_scrollbar(canvas: Control, w: float, h: float) -> void:
 	canvas.draw_string(Kit.font_for(400), Vector2(caption_x, track.position.y - 4.0),
 		caption, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Kit.TEXT_DIM)
 
+
+func _major_step() -> float:
+	var px_per_second := _grid_width / viewport_span()
+	var candidates := [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0]
+	for value in candidates:
+		if float(value) * px_per_second >= 46.0:
+			return float(value)
+	return 600.0
+
 # -------------------------------------------------------------------------
-# Speed graph
+# Channel selection
 # -------------------------------------------------------------------------
-
-func _draw_graph(canvas: Control, w: float, h: float) -> void:
-	_ease_hits.clear()
-	_channel_hits.clear()
-	_segments.clear()
-
-	# The tab strip replaces the dope sheet's vertical channel rows. Each tab
-	# is a full 44 dp target and reports the real key count for its channel.
-	var tabs := channel_tab_rects()
-	var selected_tab := Rect2()
-	var has_selected_tab := false
-	for tab in tabs:
-		var channel := str(tab["channel"])
-		var rect: Rect2 = tab["rect"]
-		var selected := channel == _selected_channel
-		canvas.draw_rect(rect, Kit.SURFACE_ACTIVE if selected else Kit.SURFACE)
-		if selected:
-			selected_tab = rect
-			has_selected_tab = true
-		var label := str(doc.CHANNEL_LABELS.get(channel, channel)).to_upper()
-		var channel_keys: Array = doc.get_channel_keys(doc.selected_id, channel) if doc.selected_id != "" else []
-		var count_text := str(channel_keys.size())
-		var count_size := Kit.font_mono.get_string_size(count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO)
-		canvas.draw_string(Kit.font_for(500), Vector2(rect.position.x + 12.0, rect.position.y + 27.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_CAPTION, Kit.TEXT if selected else Kit.TEXT_MUTED)
-		canvas.draw_string(Kit.font_mono, Vector2(rect.end.x - 12.0 - count_size.x, rect.position.y + 27.0), count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, Kit.TYPE_MONO, Kit.TEXT_MUTED if selected else Kit.TEXT_DIM)
-		_channel_hits.append({"channel": channel, "rect": rect})
-	canvas.draw_line(Vector2(0.0, _ruler_h + GRAPH_TAB_HEIGHT), Vector2(w, _ruler_h + GRAPH_TAB_HEIGHT), Kit.BORDER_SOFT, 1.0)
-	if has_selected_tab:
-		canvas.draw_rect(Rect2(selected_tab.position.x, selected_tab.end.y - 1.0, selected_tab.size.x, 1.0), Kit.TIME)
-	canvas.draw_line(Vector2(0.0, _graph_top), Vector2(w, _graph_top), Kit.BORDER_SOFT, 1.0)
-
-	var plot_height := maxf(0.0, _graph_baseline - _graph_top)
-	if plot_height < 120.0:
-		# The honest short-window state: name the way out instead of drawing a
-		# 24 dp sliver and calling it a curve editor.
-		canvas.draw_string(Kit.font_for(400),
-			Vector2(_grid_left + 12.0, _graph_top + plot_height * 0.5 + 4.0),
-			GRAPH_SHORT_CAPTION, HORIZONTAL_ALIGNMENT_LEFT,
-			maxf(0.0, w - _grid_left - 24.0), Kit.TYPE_CAPTION, Kit.TEXT_DIM)
-		_draw_graph_playhead(canvas, h)
-		return
-
-	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel) if doc.selected_id != "" else []
-	var has_segment := _selected_index >= 0 and _selected_index < keys.size() - 1 and _selected_data_id == doc.selected_id
-
-	var graph_h := maxf(8.0, _graph_baseline - _graph_top)
-	canvas.draw_line(Vector2(_grid_left, _graph_baseline), Vector2(w - 8.0, _graph_baseline), Kit.BORDER, 1.0)
-	for frac in [0.25, 0.5, 0.75]:
-		var gy := _graph_baseline - graph_h * float(frac)
-		canvas.draw_line(Vector2(_grid_left, gy), Vector2(w - 8.0, gy), Kit.BORDER_SOFT * Color(1, 1, 1, 0.5), 1.0)
-	canvas.draw_rect(Rect2(_grid_left, _graph_baseline + 1.0, maxf(0.0, w - _grid_left - 8.0), maxf(0.0, h - _graph_baseline - 1.0)), Kit.SURFACE_2)
-
-	if doc.selected_id == "":
-		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "Select an object to shape its speed.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
-		_draw_graph_playhead(canvas, h)
-		return
-
-	if keys.is_empty():
-		canvas.draw_string(Kit.font_for(400), Vector2(_grid_left + 14.0, _graph_top + 22.0), "No keys on this channel. Insert a key at the playhead.", HORIZONTAL_ALIGNMENT_LEFT, _grid_width - 20.0, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
-		_draw_graph_playhead(canvas, h)
-		return
-
-	var count := clampi(int(_grid_width / 2.5), 32, 180)
-	var speeds := PackedFloat32Array()
-	speeds.resize(count)
-	var max_speed := 0.0001
-	# The vertical scale stays keyed to the whole channel so panning does not
-	# breathe; the horizontal samples walk the visible window only.
-	var channel_max := _channel_peak(doc.selected_id, _selected_channel, GRAPH_CHANNEL_SAMPLES)
-	for i in range(count):
-		var t := lerpf(viewport_start(), viewport_end(), float(i) / float(maxi(1, count - 1)))
-		var speed := _channel_speed(doc.selected_id, _selected_channel, t)
-		speeds[i] = speed
-		max_speed = maxf(max_speed, speed)
-	_graph_max_speed = max_speed
-	var scale_speed := maxf(max_speed, channel_max) * 1.12
-
-	var points := PackedVector2Array()
-	for i in range(count):
-		var x := _grid_left + float(i) / float(maxi(1, count - 1)) * _grid_width
-		var y := _graph_baseline - (speeds[i] / scale_speed) * graph_h
-		points.append(Vector2(x, y))
-	var fill := PackedVector2Array(points)
-	fill.append(Vector2(points[points.size() - 1].x, _graph_baseline))
-	fill.append(Vector2(points[0].x, _graph_baseline))
-	canvas.draw_colored_polygon(fill, Kit.ACCENT * Color(1, 1, 1, 0.10))
-	canvas.draw_polyline(points, Kit.ACCENT_BRIGHT * Color(1, 1, 1, 0.9), 1.4, true)
-
-	# One real segment per pair of keys. Godot stores a single transition
-	# scalar on the key that starts the segment; nothing here invents handles.
-	for i in range(keys.size() - 1):
-		var key_index := int(keys[i]["index"])
-		var t0 := float(keys[i]["time"])
-		var t1 := float(keys[i + 1]["time"])
-		var transition := doc.get_key_transition(doc.selected_id, _selected_channel, key_index)
-		_segments.append({
-			"index": key_index,
-			"t0": t0,
-			"t1": t1,
-			"x0": _time_to_x(t0, canvas),
-			"x1": _time_to_x(t1, canvas),
-			"transition": transition,
-			"peak": _peak_between(doc.selected_id, _selected_channel, t0, t1, GRAPH_SEGMENT_SAMPLES),
-		})
-
-	if has_segment and not _segments.is_empty():
-		var seg: Dictionary = _segments[clampi(_selected_index, 0, _segments.size() - 1)]
-		canvas.draw_rect(Rect2(float(seg["x0"]), _graph_top, maxf(0.0, float(seg["x1"]) - float(seg["x0"])), graph_h), Kit.TIME * Color(1, 1, 1, 0.08))
-		var highlight := PackedVector2Array()
-		var segment_count := 24
-		for i in range(segment_count):
-			var t := lerpf(float(seg["t0"]), float(seg["t1"]), float(i) / float(segment_count - 1))
-			var speed := _channel_speed(doc.selected_id, _selected_channel, t)
-			highlight.append(Vector2(_time_to_x(t, canvas), _graph_baseline - (speed / scale_speed) * graph_h))
-		canvas.draw_polyline(highlight, Kit.TIME_BRIGHT, 2.2, true)
-
-	for seg in _segments:
-		var mid := (float(seg["t0"]) + float(seg["t1"])) * 0.5
-		var x := _time_to_x(mid, canvas)
-		if x - _grid_left < 12.0 or (_grid_left + _grid_width) - x < 12.0:
-			continue
-		var speed := _channel_speed(doc.selected_id, _selected_channel, mid)
-		var y := _graph_baseline - (speed / scale_speed) * graph_h
-		var selected_seg := _selected_index == int(seg["index"]) and _selected_data_id == doc.selected_id
-		canvas.draw_line(Vector2(x, _graph_baseline), Vector2(x, y), Kit.BORDER * Color(1, 1, 1, 0.8), 1.0)
-		canvas.draw_circle(Vector2(x, y), 6.0, Kit.SURFACE)
-		canvas.draw_arc(Vector2(x, y), 5.0, 0.0, TAU, 18, Kit.ACCENT_BRIGHT if selected_seg else Kit.ACCENT, 1.4, true)
-		_ease_hits.append({"index": int(seg["index"]), "pos": Vector2(x, y), "transition": float(seg["transition"])})
-
-	for key in keys:
-		if float(key["time"]) > doc.duration + 0.001:
-			continue
-		var x := _time_to_x(float(key["time"]), canvas)
-		var y := _graph_baseline + 12.0
-		var selected := _selected_data_id == doc.selected_id and _selected_index == int(key["index"])
-		var r := 5.5 if selected else 4.0
-		var color := Kit.ACCENT_BRIGHT if selected else Kit.ACCENT
-		var diamond := PackedVector2Array([
-			Vector2(x, y - r), Vector2(x + r, y),
-			Vector2(x, y + r), Vector2(x - r, y),
-		])
-		canvas.draw_colored_polygon(diamond, color)
-		if selected:
-			canvas.draw_polyline(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3], diamond[0]]), Color(1, 1, 1, 0.9), 1.0, true)
-		_key_hits.append({"channel": _selected_channel, "index": int(key["index"]), "pos": Vector2(x, y)})
-
-	_draw_graph_playhead(canvas, h)
-
-func _channel_peak(id: String, channel: String, samples: int) -> float:
-	var peak := 0.0
-	for i in range(samples):
-		var t := doc.duration * float(i) / float(maxi(1, samples - 1))
-		peak = maxf(peak, _channel_speed(id, channel, t))
-	return peak
-
-func _peak_between(id: String, channel: String, t0: float, t1: float, samples: int) -> float:
-	var peak := 0.0
-	for i in range(samples):
-		var t := lerpf(t0, t1, float(i) / float(maxi(1, samples - 1)))
-		peak = maxf(peak, _channel_speed(id, channel, t))
-	return peak
-
-func _segment_at(x: float) -> int:
-	for i in range(_segments.size()):
-		var seg: Dictionary = _segments[i]
-		if x >= float(seg["x0"]) - 4.0 and x <= float(seg["x1"]) + 4.0:
-			return i
-	return -1
-
-func _ease_short_name(transition: float) -> String:
-	if transition <= 0.01:
-		return "HOLD"
-	if transition < 0.95:
-		return "OUT"
-	if transition > 1.05:
-		return "IN"
-	return "LINEAR"
-
-func channel_tab_rects() -> Array:
-	## Full-width horizontal tabs, one 44 dp target per transform channel.
-	if _sheet != null:
-		_geometry(_sheet)
-	var sheet_width := _sheet.size.x if _sheet != null else 0.0
-	var column := maxf(0.0, sheet_width - 16.0) / 3.0
-	var rects: Array = []
-	for i in range(3):
-		rects.append({
-			"channel": str(DocumentScript.CHANNELS[i]),
-			"rect": Rect2(8.0 + column * float(i), _ruler_h, column, GRAPH_TAB_HEIGHT),
-		})
-	return rects
-
-func graph_plot_rect() -> Rect2:
-	## Plot area between the channel tab strip and the key diamond strip.
-	if _sheet != null:
-		_geometry(_sheet)
-	var top := _graph_top
-	var bottom := maxf(top + 8.0, _graph_baseline)
-	return Rect2(_grid_left, top, _grid_width, bottom - top)
-
-
-func graph_caption() -> String:
-	## The exact honest caption drawn when the sheet cannot afford 120 dp.
-	if _mode != "graph":
-		return ""
-	if graph_plot_rect().size.y < 120.0:
-		return GRAPH_SHORT_CAPTION
-	return ""
-
-func graph_height_hint() -> float:
-	return 64.0 if _mode == "graph" else 0.0
 
 func set_channel(channel: String) -> void:
 	if doc == null or not (channel in doc.CHANNELS):
@@ -1559,13 +2000,15 @@ func set_channel(channel: String) -> void:
 	_selected_channel = channel
 	_selected_index = -1
 	_selected_data_id = ""
+	_selected_span = {}
 	# The hit rects describe the previous channel until the next draw. A tap
 	# between the switch and that draw must not select a stale segment or key.
-	_segments.clear()
-	_ease_hits.clear()
 	_channel_hits.clear()
 	_key_hits.clear()
-	_graph_max_speed = 0.0
+	if _segment_graph != null:
+		_segment_graph.set_context(doc.selected_id, _selected_channel)
+		_segment_graph.clear_selection()
+	_sync_header_state()
 	_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
@@ -1575,225 +2018,6 @@ func set_channel(channel: String) -> void:
 
 func channel() -> String:
 	return _selected_channel
-
-
-func select_segment_at_time(time: float) -> bool:
-	if doc == null or doc.selected_id == "":
-		return false
-	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
-	if keys.size() < 2:
-		return false
-	var t := clampf(time, 0.0, doc.duration)
-	for i in range(keys.size() - 1):
-		var t0 := float(keys[i]["time"])
-		var t1 := float(keys[i + 1]["time"])
-		if t >= t0 - 0.0001 and t <= t1 + 0.0001:
-			_selected_index = int(keys[i]["index"])
-			_selected_data_id = doc.selected_id
-			_refresh_transport(doc.current_time, doc.is_playing)
-			if _sheet != null:
-				_sheet.queue_redraw()
-			return true
-	return false
-
-func graph_stats() -> Dictionary:
-	var stats := {
-		"channel": _selected_channel,
-		"keys": 0,
-		"peak": 0.0,
-		"segment": {},
-	}
-	if doc == null or doc.selected_id == "":
-		return stats
-	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
-	stats["keys"] = keys.size()
-	if keys.is_empty():
-		return stats
-	stats["peak"] = _channel_peak(doc.selected_id, _selected_channel, GRAPH_CHANNEL_SAMPLES)
-	if not _has_valid_selection():
-		return stats
-	var t0 := float(keys[_selected_index]["time"])
-	var t1 := float(keys[_selected_index + 1]["time"])
-	var transition := doc.get_key_transition(doc.selected_id, _selected_channel, _selected_index)
-	stats["segment"] = {
-		"index": _selected_index,
-		"start": t0,
-		"end": t1,
-		"duration": maxf(0.0, t1 - t0),
-		"transition": transition,
-		"ease": _ease_short_name(transition),
-		"peak": _peak_between(doc.selected_id, _selected_channel, t0, t1, GRAPH_SEGMENT_SAMPLES),
-	}
-	return stats
-
-func ease_value_for_drag(base: float, start_y: float, current_y: float) -> float:
-	var anchor := base if base > 0.01 else 0.25
-	var value := anchor * pow(2.0, (start_y - current_y) / 42.0)
-	if value < 0.08:
-		value = 0.0
-	return clampf(value, 0.0, 4.0)
-
-func _has_valid_selection() -> bool:
-	if doc == null or doc.selected_id == "" or _selected_index < 0 or _selected_data_id != doc.selected_id:
-		return false
-	var keys: Array = doc.get_channel_keys(doc.selected_id, _selected_channel)
-	return _selected_index < keys.size() - 1
-
-func _restore_selection(index: int, data_id: String, channel: String) -> void:
-	_selected_index = index
-	_selected_data_id = data_id
-	_selected_channel = channel
-	_refresh_transport(doc.current_time, doc.is_playing)
-	if _sheet != null:
-		_sheet.queue_redraw()
-
-func _draw_graph_playhead(canvas: Control, h: float) -> void:
-	var play_x := _time_to_x(doc.current_time, canvas)
-	canvas.draw_line(Vector2(play_x, 0), Vector2(play_x, h), Kit.ACCENT * Color(1, 1, 1, 0.75), 1.2)
-	canvas.draw_colored_polygon(PackedVector2Array([Vector2(play_x - 4, 0), Vector2(play_x + 4, 0), Vector2(play_x, 5)]), Kit.ACCENT)
-
-func _ease_name(transition: float) -> String:
-	if transition <= 0.01:
-		return "HOLD"
-	if transition < 0.95:
-		return "EASE OUT"
-	if transition > 1.05:
-		return "EASE IN"
-	return "LINEAR"
-
-func _channel_speed(id: String, channel: String, time: float) -> float:
-	## Magnitude of the channel's velocity at a time, sampled from the real
-	## animation resource. This is what the graph draws, so easing edits are
-	## visible exactly as the AnimationPlayer will evaluate them.
-	if doc == null or id == "":
-		return 0.0
-	var dt := 1.0 / 240.0
-	var a_time := maxf(0.0, time - dt)
-	var b_time := minf(doc.duration, time + dt)
-	var span := b_time - a_time
-	if span <= 0.0001:
-		return 0.0
-	var a: Variant = doc.sample_channel(id, channel, a_time)
-	var b: Variant = doc.sample_channel(id, channel, b_time)
-	if a == null or b == null:
-		return 0.0
-	if channel == "rotation":
-		var qa := a as Quaternion
-		var qb := b as Quaternion
-		return qa.angle_to(qb) / span
-	var va := a as Vector3
-	var vb := b as Vector3
-	return (vb - va).length() / span
-
-func _open_ease_menu(anchor: Button = null) -> void:
-	if doc == null:
-		return
-	var target := anchor if anchor != null else _ease_button
-	if target == null:
-		return
-	var has_segment := _has_valid_selection()
-	var menu := PopupMenu.new()
-	for i in range(GRAPH_PRESETS.size()):
-		menu.add_item(str(GRAPH_PRESETS[i]["name"]), i)
-		menu.set_item_disabled(menu.get_item_index(i), not has_segment)
-	menu.add_separator()
-	menu.add_item("Apply to channel", 100)
-	menu.add_item("Copy easing", 101)
-	menu.add_item("Paste easing", 102)
-	menu.add_item("Invert easing", 103)
-	menu.set_item_disabled(menu.get_item_index(100), not has_segment)
-	menu.set_item_disabled(menu.get_item_index(101), not has_segment)
-	menu.set_item_disabled(menu.get_item_index(102), not has_segment or not _has_ease_clipboard)
-	menu.set_item_disabled(menu.get_item_index(103), not has_segment)
-	menu.id_pressed.connect(func(id: int) -> void:
-		match id:
-			100: apply_ease_to_channel()
-			101: copy_ease()
-			102: paste_ease()
-			103: invert_ease()
-			_: _apply_ease_preset(id)
-		menu.queue_free()
-	)
-	menu.popup_hide.connect(menu.queue_free)
-	target.add_child(menu)
-	menu.popup_on_parent(Rect2(0.0, target.size.y, 1.0, 1.0))
-
-func _apply_ease_preset(id: int) -> void:
-	if doc == null or not _has_valid_selection():
-		return
-	if id < 0 or id >= GRAPH_PRESETS.size():
-		return
-	var value := float(GRAPH_PRESETS[id]["value"])
-	var index := _selected_index
-	var data_id := _selected_data_id
-	var channel := _selected_channel
-	doc.begin_edit("Ease key")
-	doc.set_key_transition(data_id, channel, index, value)
-	doc.end_edit()
-	_restore_selection(index, data_id, channel)
-	notice.emit("Ease %.2f× · %s" % [value, _ease_name(value).to_lower()])
-
-func copy_ease() -> bool:
-	if not _has_valid_selection():
-		return false
-	var index := _selected_index
-	var data_id := _selected_data_id
-	var channel := _selected_channel
-	_ease_clipboard = doc.get_key_transition(data_id, channel, index)
-	_has_ease_clipboard = true
-	_restore_selection(index, data_id, channel)
-	notice.emit("Easing copied.")
-	return true
-
-func paste_ease() -> bool:
-	if not _has_valid_selection() or not _has_ease_clipboard:
-		return false
-	var index := _selected_index
-	var data_id := _selected_data_id
-	var channel := _selected_channel
-	doc.begin_edit("Paste easing")
-	doc.set_key_transition(data_id, channel, index, _ease_clipboard)
-	doc.end_edit()
-	_restore_selection(index, data_id, channel)
-	notice.emit("Ease %.2f× · %s" % [_ease_clipboard, _ease_name(_ease_clipboard).to_lower()])
-	return true
-
-func invert_ease() -> bool:
-	if not _has_valid_selection():
-		return false
-	var index := _selected_index
-	var data_id := _selected_data_id
-	var channel := _selected_channel
-	var current := doc.get_key_transition(data_id, channel, index)
-	var value := 0.0 if current <= 0.0001 else clampf(1.0 / current, 0.0, 4.0)
-	doc.begin_edit("Invert easing")
-	doc.set_key_transition(data_id, channel, index, value)
-	doc.end_edit()
-	_restore_selection(index, data_id, channel)
-	notice.emit("Ease %.2f× · %s" % [value, _ease_name(value).to_lower()])
-	return true
-
-func apply_ease_to_channel() -> bool:
-	if not _has_valid_selection():
-		return false
-	var index := _selected_index
-	var data_id := _selected_data_id
-	var channel := _selected_channel
-	var value := doc.get_key_transition(data_id, channel, index)
-	doc.begin_edit("Apply easing to channel")
-	doc.set_channel_transition(data_id, channel, value)
-	doc.end_edit()
-	_restore_selection(index, data_id, channel)
-	notice.emit("Channel ease %.2f× · %s" % [value, _ease_name(value).to_lower()])
-	return true
-
-func _major_step() -> float:
-	var px_per_second := _grid_width / viewport_span()
-	var candidates := [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0]
-	for value in candidates:
-		if float(value) * px_per_second >= 46.0:
-			return float(value)
-	return 600.0
 
 # -------------------------------------------------------------------------
 # Dope sheet interaction
@@ -1822,7 +2046,7 @@ func _sheet_input(event: InputEvent, canvas: Control) -> void:
 		else:
 			_release_sheet(button.position)
 		canvas.accept_event()
-	elif event is InputEventMouseMotion and (_scrubbing or _dragging_key or _dragging_ease or _scroll_dragging):
+	elif event is InputEventMouseMotion and (_scrubbing or _dragging_key or _scroll_dragging):
 		_drag_sheet((event as InputEventMouseMotion).position, canvas)
 		canvas.accept_event()
 	elif event is InputEventScreenTouch:
@@ -1885,14 +2109,13 @@ func _snapshot_gesture_state() -> void:
 
 
 ## A second finger always starts the view gesture. Anything the first touch
-## began (scrub, key retime, ease drag) is rolled back to the snapshot taken
-## before that touch, including an edit transaction the press opened. A
-## pre-existing edit is never ended or cancelled here.
+## began (scrub, key retime) is rolled back to the snapshot taken before that
+## touch, including an edit transaction the press opened. A pre-existing edit
+## is never ended or cancelled here.
 func _start_view_gesture() -> void:
 	_scroll_dragging = false
 	_scrubbing = false
 	_dragging_key = false
-	_dragging_ease = false
 	if doc != null:
 		if not _gesture_edit_snapshot and doc.has_open_edit():
 			doc.cancel_edit()
@@ -1933,20 +2156,18 @@ func _update_view_gesture() -> void:
 		zoom_time_view(_pinch_dist / dist, anchor)
 	_pinch_dist = dist
 
+
 func button_mask_down() -> bool:
-	return _scrubbing or _dragging_key or _dragging_ease
+	return _scrubbing or _dragging_key
+
 
 func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	_geometry(canvas)
 	# The scrollbar band owns its thumb drag and its track tap while there is
 	# something to pan. Keys keep a chance to win first so a diamond at the
-	# bottom row stays grabbable. The ruler and the graph tab strip always win:
-	# on a 48 dp sheet the 44 dp hit band overlaps them, and a touch on the
-	# ruler must scrub (and pause) rather than silently pan the window.
-	var chrome_top := _ruler_h
-	if _mode == "graph":
-		chrome_top += GRAPH_TAB_HEIGHT
-	if _view_pannable() and pos.y > chrome_top and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
+	# bottom row stays grabbable. The ruler always wins: a touch on the ruler
+	# must scrub (and pause) rather than silently pan the window.
+	if _view_pannable() and pos.y > _ruler_h and scrollbar_hit_rect().has_point(pos) and _key_at(pos) < 0:
 		var thumb: Rect2 = scrollbar_thumb_rect()
 		if pos.x >= thumb.position.x - 8.0 and pos.x <= thumb.end.x + 8.0:
 			_scroll_dragging = true
@@ -1960,55 +2181,6 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		return
 	_selected_data_id = doc.selected_id
 	if doc.selected_id == "":
-		return
-	if _mode == "graph":
-		# The tab strip owns its 44 dp band; no scrubbing or key work leaks in.
-		if pos.y >= _ruler_h and pos.y <= _ruler_h + GRAPH_TAB_HEIGHT:
-			for tab in channel_tab_rects():
-				if (tab["rect"] as Rect2).has_point(pos):
-					set_channel(str(tab["channel"]))
-					return
-			return
-		if pos.y <= _ruler_h:
-			_scrubbing = true
-			if doc.is_playing:
-				doc.pause()
-			doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
-			_follow_playhead()
-			canvas.queue_redraw()
-			return
-		var graph_key_hit := _key_at(pos)
-		if graph_key_hit >= 0:
-			var graph_key: Dictionary = _key_hits[graph_key_hit]
-			_selected_channel = str(graph_key["channel"])
-			_selected_index = int(graph_key["index"])
-			_selected_data_id = doc.selected_id
-			_dragging_key = true
-			doc.begin_edit("Retime key")
-			_refresh_transport(doc.current_time, doc.is_playing)
-			canvas.queue_redraw()
-			return
-		if graph_plot_rect().has_point(pos):
-			var segment_hit := _segment_at(pos.x)
-			if segment_hit >= 0:
-				var segment: Dictionary = _segments[segment_hit]
-				_selected_index = int(segment["index"])
-				_selected_data_id = doc.selected_id
-				_dragging_ease = true
-				_ease_start_y = pos.y
-				_ease_start_value = float(segment["transition"])
-				doc.begin_edit("Shape easing")
-				_refresh_transport(doc.current_time, doc.is_playing)
-				canvas.queue_redraw()
-				return
-		_selected_index = -1
-		_refresh_transport(doc.current_time, doc.is_playing)
-		_scrubbing = true
-		if doc.is_playing:
-			doc.pause()
-		doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
-		_follow_playhead()
-		canvas.queue_redraw()
 		return
 	if pos.y <= _ruler_h or pos.x < _label_width:
 		if pos.y > _ruler_h and pos.x < _label_width:
@@ -2025,9 +2197,11 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 		canvas.queue_redraw()
 		return
 	var hit := _key_at(pos)
+	var time := clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration)
 	if hit >= 0:
 		var data: Dictionary = _key_hits[hit]
 		_selected_channel = str(data["channel"])
+		select_span_at_time(float(data["time"])) if data.has("time") else select_span_at_time(time)
 		_selected_index = int(data["index"])
 		_selected_data_id = doc.selected_id
 		_dragging_key = true
@@ -2038,14 +2212,16 @@ func _press_sheet(pos: Vector2, canvas: Control) -> void:
 	var ci := int(floor((pos.y - _ruler_h) / maxf(1.0, _row_h)))
 	if ci >= 0 and ci < doc.CHANNELS.size():
 		set_channel(str(doc.CHANNELS[ci]))
+	select_span_at_time(time)
 	_selected_index = -1
 	_refresh_transport(doc.current_time, doc.is_playing)
 	_scrubbing = true
 	if doc.is_playing:
 		doc.pause()
-	doc.seek(clampf(_x_to_time(pos.x, canvas), 0.0, doc.duration))
+	doc.seek(time)
 	_follow_playhead()
 	canvas.queue_redraw()
+
 
 ## Maps a scrollbar drag to a window start. The grab offset keeps the finger
 ## anchored to the thumb instead of snapping it to the cursor.
@@ -2066,17 +2242,7 @@ func _drag_sheet(pos: Vector2, canvas: Control) -> void:
 		return
 	if doc.selected_id == "":
 		return
-	if _dragging_ease and _selected_index >= 0:
-		var ease_index := _selected_index
-		var ease_data_id := _selected_data_id
-		var ease_channel := _selected_channel
-		var value := ease_value_for_drag(_ease_start_value, _ease_start_y, pos.y)
-		doc.set_key_transition(ease_data_id, ease_channel, ease_index, value)
-		# set_key_transition emits keyframes_changed, which clears the visible
-		# key selection. A drag must keep its target or the next motion event
-		# would have nothing to shape.
-		_restore_selection(ease_index, ease_data_id, ease_channel)
-	elif _dragging_key and _selected_index >= 0:
+	if _dragging_key and _selected_index >= 0:
 		var key_index := _selected_index
 		var key_data_id := _selected_data_id
 		var key_channel := _selected_channel
@@ -2088,15 +2254,10 @@ func _drag_sheet(pos: Vector2, canvas: Control) -> void:
 		_follow_playhead()
 		canvas.queue_redraw()
 
+
 func _release_sheet(_pos: Vector2) -> void:
 	_scroll_dragging = false
-	if _dragging_ease:
-		_dragging_ease = false
-		doc.end_edit()
-		if _selected_index >= 0 and doc.selected_id != "":
-			var value := doc.get_key_transition(doc.selected_id, _selected_channel, _selected_index)
-			notice.emit("Ease %.2f× · %s" % [value, _ease_name(value).to_lower()])
-	elif _dragging_key:
+	if _dragging_key:
 		_dragging_key = false
 		doc.end_edit()
 		if _selected_index >= 0 and doc.selected_id != "":
@@ -2104,11 +2265,22 @@ func _release_sheet(_pos: Vector2) -> void:
 			if _selected_index < keys.size():
 				notice.emit("Key at " + doc.format_timecode(float(keys[_selected_index]["time"])))
 	_scrubbing = false
-	_sheet.queue_redraw()
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func _restore_selection(index: int, data_id: String, channel: String) -> void:
+	_selected_index = index
+	_selected_data_id = data_id
+	_selected_channel = channel
+	_refresh_transport(doc.current_time, doc.is_playing)
+	if _sheet != null:
+		_sheet.queue_redraw()
+
 
 func _key_at(pos: Vector2) -> int:
 	var best := -1
-	var best_dist := 16.0
+	var best_dist := KEY_HIT_RADIUS
 	for i in range(_key_hits.size()):
 		var hit: Dictionary = _key_hits[i]
 		var d: float = (hit["pos"] as Vector2).distance_to(pos)

@@ -379,7 +379,7 @@ func _test_model() -> void:
 	_check(migrated_anim != null and migrated_anim.get_track_count() == 1, "v1 migration keeps the track")
 	_check(migrated_anim != null and migrated_anim.track_get_key_count(0) == 2, "v1 migration keeps both keys")
 	var saved_v2: Dictionary = doc.to_data()
-	_check(int(saved_v2.get("format", 0)) == 3, "v1 save upgrades the format to 3")
+	_check(int(saved_v2.get("format", 0)) == 4, "v1 save upgrades the format to 4")
 	_check(saved_v2.has("clips") and not saved_v2.has("animation"), "a current save writes clips and drops the v1 mirror")
 
 	# v2 roundtrip.

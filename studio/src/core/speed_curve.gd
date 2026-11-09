@@ -69,6 +69,55 @@ static func evaluate(id: String, t: float) -> float:
 	return value
 
 
+static func cubic_ease(t: float, x1: float, y1: float, x2: float, y2: float) -> float:
+	## The cubic Bézier through (0,0), (x1,y1), (x2,y2), (1,1): solve x(s) = t
+	## with Newton and fall back to bisection, then evaluate y(s). x handles are
+	## clamped to [0,1] so x(s) stays monotonic; y handles keep real overshoot.
+	var target := clampf(t, 0.0, 1.0)
+	if target <= 0.0:
+		return 0.0
+	if target >= 1.0:
+		return 1.0
+	x1 = clampf(x1, 0.0, 1.0)
+	x2 = clampf(x2, 0.0, 1.0)
+	y1 = clampf(y1, -2.0, 3.0)
+	y2 = clampf(y2, -2.0, 3.0)
+	var s := target
+	for _i in range(8):
+		var x := _cubic_bezier(s, x1, x2)
+		var dx := _cubic_bezier_derivative(s, x1, x2)
+		if absf(dx) < 0.000001:
+			break
+		var next := s - (x - target) / dx
+		if next < 0.0 or next > 1.0:
+			break
+		s = next
+		if absf(x - target) < 0.0000001:
+			break
+	var lo := 0.0
+	var hi := 1.0
+	for _i in range(32):
+		var x := _cubic_bezier(s, x1, x2)
+		if absf(x - target) < 0.0000001:
+			break
+		if x < target:
+			lo = s
+		else:
+			hi = s
+		s = (lo + hi) * 0.5
+	return _cubic_bezier(s, y1, y2)
+
+
+static func _cubic_bezier(s: float, a: float, b: float) -> float:
+	var inv := 1.0 - s
+	return 3.0 * inv * inv * s * a + 3.0 * inv * s * s * b + s * s * s
+
+
+static func _cubic_bezier_derivative(s: float, a: float, b: float) -> float:
+	var inv := 1.0 - s
+	return 3.0 * inv * inv * a + 6.0 * inv * s * (b - a) + 3.0 * s * s * (1.0 - b)
+
+
 static func _bounce_out(t: float) -> float:
 	var x := t
 	if x < 1.0 / 2.75:
