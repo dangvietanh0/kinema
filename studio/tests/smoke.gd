@@ -2389,6 +2389,11 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(editor._overlay.has_modal(), "settings opens")
 	_check(editor._settings_panel.categories() == ["general", "editor", "display", "graphics", "performance", "render", "import", "media", "rig", "about"], "settings categories are complete")
+	var graphics_labels: Array[String] = []
+	for label in _labels_under(editor._overlay):
+		graphics_labels.append(label.text)
+	_check(_label_contains(graphics_labels, "% · max "),
+		"the 3D resolution cap renders its percent hint")
 	_check(editor._preset_buttons.size() == 5, "graphics has preset controls plus custom and reset")
 	var original_preset: String = Gfx.preset
 	Gfx.preset = "custom"
@@ -2463,6 +2468,19 @@ func _ready() -> void:
 	_check(is_equal_approx(float(Prefs.get_value("display.user_scale", 0.0)), 1.2),
 		"the settings slider persists a 120 percent scale")
 	editor._settings_panel._ui_scale_control.set_percent_value(100.0, true)
+	editor._settings_panel.open("render")
+	await get_tree().process_frame
+	_check(editor._settings_panel.active_category() == "render", "the render settings page opens")
+	_check(_button_with_text(editor._overlay, "Render sheet") == null,
+		"Settings exposes no render-sheet entry point")
+	_check(_button_with_text(editor._overlay, "Quick still") == null,
+		"Settings exposes no quick-still action")
+	var render_labels: Array[String] = []
+	for label in _labels_under(editor._overlay):
+		render_labels.append(label.text)
+	_check(_label_contains(render_labels, "Long edge") or
+		_button_with_text(editor._overlay, "1920") != null,
+		"the render settings page keeps its real preferences")
 	editor._overlay.close_modal()
 	await get_tree().process_frame
 

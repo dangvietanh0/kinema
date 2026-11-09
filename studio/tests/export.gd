@@ -8,8 +8,6 @@ extends Node
 const DocumentScript = preload("res://src/core/document.gd")
 const GlbExportScript = preload("res://src/core/glb_export.gd")
 
-const RIG_PINNED_NOTE := "Rigged meshes export in their current pose without skinning"
-
 var _failures: Array[String] = []
 var _checks := 0
 var _tmp_dir := ""
@@ -318,6 +316,7 @@ func _test_rigged_export() -> void:
 	_check(bool(result.get("ok", false)), "the rigged scene exports")
 	var json := _glb_json(path)
 	var skins: Array = json.get("skins", [])
+	_check(not skins.is_empty(), "the rigged scene exports a real skin")
 	if not skins.is_empty():
 		var import_state := GLTFState.new()
 		var gltf := GLTFDocument.new()
@@ -327,9 +326,6 @@ func _test_rigged_export() -> void:
 		_check(skinned != null, "the re-imported rigged mesh keeps its skin")
 		if imported != null:
 			imported.free()
-	else:
-		_check(str(result.get("note", "")) == RIG_PINNED_NOTE,
-			"the export states the rigged-mesh limitation")
 	doc.queue_free()
 
 

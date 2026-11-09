@@ -587,6 +587,8 @@ func _test_render_and_camera() -> void:
 	transport.reset_transport()
 	transport.playing = true
 	transport.time = 0.5
+	var spy_node: Node3D = transport.nodes["cam"]
+	spy_node.position = Vector3(2.0, 3.0, 4.0)
 	var spy_exporter = CameraExport.new()
 	spy_exporter.setup(transport)
 	var spy_camera_path := FIXTURE_DIR.path_join("camera_spy.json")
@@ -596,6 +598,15 @@ func _test_render_and_camera() -> void:
 	_check(transport.play_calls == 1, "camera export restores the sequence clock")
 	_check(transport.playing, "camera export leaves a playing sequence playing")
 	_check(_near(transport.time, 0.5), "camera export restores the original sequence time")
+	var spy_parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(spy_camera_path))
+	_check(spy_parsed is Dictionary, "the detached camera JSON parses")
+	var spy_track: Dictionary = spy_parsed
+	var spy_frames: Array = spy_track.get("frames", [])
+	var spy_first: Dictionary = spy_frames[0] if not spy_frames.is_empty() else {}
+	var spy_position: Array = spy_first.get("position", [])
+	_check(spy_position.size() == 3 and _near(float(spy_position[0]), 2.0)
+		and _near(float(spy_position[1]), 3.0) and _near(float(spy_position[2]), 4.0),
+		"a detached camera exports its local transform")
 
 
 class FakeView:

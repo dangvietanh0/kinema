@@ -56,7 +56,9 @@ func build(camera_id: String, fps: int, duration: float, frame_count: int = -1) 
 			_document.seek_sequence(time, true)
 		if _document.is_inside_tree():
 			await _document.get_tree().process_frame
-		var xform := node.global_transform
+		# A detached document (transport spy, export preflight) has no global
+		# transform; its local transform is the only meaningful camera pose.
+		var xform := node.global_transform if node.is_inside_tree() else node.transform
 		var rotation := xform.basis.get_rotation_quaternion()
 		frames.append({
 			"t": snappedf(time, 0.000001),

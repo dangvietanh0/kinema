@@ -175,18 +175,23 @@ func _make_button(action: Dictionary) -> Button:
 	var id := str(action.get("id", ""))
 	var label := str(action.get("label", id))
 	var icon_name := str(action.get("icon", ""))
+	var trailing_icon := str(action.get("trailing_icon", ""))
 	var text := bool(action.get("text", false))
 	var toggle := bool(action.get("toggle", false))
 	var width := float(action.get("width", 0.0))
 	var button: Button
 	if text:
 		button = Kit.text_button(label, icon_name, false, true)
+		if trailing_icon != "":
+			button.icon = Kit.combined_icon_texture([icon_name, trailing_icon])
+			button.add_theme_constant_override("icon_max_width", 30)
 		button.add_theme_font_size_override("font_size", 13)
 	else:
 		button = Kit.icon_button(icon_name, label)
 	button.toggle_mode = toggle
 	button.set_meta("action_id", id)
 	button.set_meta("action_icon", icon_name)
+	button.set_meta("trailing_icon", trailing_icon)
 	button.set_meta("is_text", text)
 	button.set_meta("pref_width", width)
 	button.set_meta("label", label)

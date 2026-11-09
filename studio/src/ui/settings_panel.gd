@@ -10,7 +10,6 @@ extends VBoxContainer
 signal renderer_restart_requested(preference: String)
 signal orientation_requested(value: String)
 signal risk_change_requested(enabled: bool)
-signal open_render_requested
 signal open_import_requested
 
 const CATEGORIES := ["general", "editor", "display", "graphics", "performance", "render", "import", "media", "rig", "about"]
@@ -693,7 +692,7 @@ func _graphics(parent: Control) -> void:
 
 	parent.add_child(Kit.vsep())
 	parent.add_child(Kit.section_label("Performance"))
-	_choice_row(parent, "3D resolution", RISK_ACCEPTED_HINT if risk_unlocked else "% · max %d%%" % int(round(scale_cap * 100.0)), [
+	_choice_row(parent, "3D resolution", RISK_ACCEPTED_HINT if risk_unlocked else "%% · max %d%%" % int(round(scale_cap * 100.0)), [
 		{"label": "60", "value": 0.6},
 		{"label": "80", "value": 0.8},
 		{"label": "100", "value": 1.0, "disabled": scale_cap < 1.0},
@@ -893,25 +892,6 @@ func _render(parent: Control) -> void:
 	var output := Kit.label("Output: %s" % str(Prefs.get_value("render.output_dir", "user://renders")), Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	output.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(output)
-
-	var actions := HBoxContainer.new()
-	actions.add_theme_constant_override("separation", 8)
-	parent.add_child(actions)
-	var open := Kit.text_button("Render sheet", "clapperboard", true, true)
-	open.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	open.pressed.connect(func() -> void:
-		close()
-		open_render_requested.emit()
-	)
-	actions.add_child(open)
-	var quick := Kit.text_button("Quick still", "image", false, true)
-	quick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	quick.pressed.connect(func() -> void:
-		close()
-		if editor != null and editor.has_method("_quick_still"):
-			editor.call_deferred("_quick_still")
-	)
-	actions.add_child(quick)
 
 	var note := Kit.label("MP4 is not encoded in this build. Render a PNG sequence and encode it externally. Every still and frame is a real engine capture.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

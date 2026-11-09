@@ -642,7 +642,8 @@ func _on_workspace_changed(_id: String) -> void:
 # -------------------------------------------------------------------------
 
 func _act(id: String, label: String, icon: String, priority: int,
-		text := false, toggle := false, width := 0.0, group := "") -> Dictionary:
+		text := false, toggle := false, width := 0.0, group := "",
+		trailing_icon := "") -> Dictionary:
 	return {
 		"id": id,
 		"label": label,
@@ -654,6 +655,7 @@ func _act(id: String, label: String, icon: String, priority: int,
 		"disabled_reason": "",
 		"width": width,
 		"group": group,
+		"trailing_icon": trailing_icon,
 	}
 
 
@@ -680,8 +682,9 @@ func _context_actions(id: String) -> Array:
 				_act("move", "Move", "tool-move", 97, false, true),
 				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
 				_act("scale", "Scale", "tool-scale", 95, false, true),
-				_act("material_new", "New", "plus", 90),
-				_act("light_add", "Add light", "lightbulb", 80),
+				_act("material_new", "New", "plus", 90, true, false, 96.0),
+				_act("light_add", "Add light", "lightbulb", 80, true, false, 96.0,
+					"", "chevron-down"),
 				_act("panel", "Materials panel", "panel-right", 70),
 				_act("frame", "Frame selection", "focus", 60),
 				_act("grid", "Grid", "grid-3x3", 50, false, true),
@@ -3562,12 +3565,6 @@ func _open_graphics_settings() -> void:
 	_open_settings("graphics")
 
 
-func _open_render_workspace() -> void:
-	if _overlay != null and _overlay.has_modal():
-		_overlay.close_modal()
-	set_workspace("render")
-
-
 func _open_settings(category: String = "general") -> void:
 	if doc == null:
 		return
@@ -3576,7 +3573,6 @@ func _open_settings(category: String = "general") -> void:
 	panel.renderer_restart_requested.connect(_on_settings_renderer_restart)
 	panel.orientation_requested.connect(_on_settings_orientation)
 	panel.risk_change_requested.connect(_on_settings_risk_change)
-	panel.open_render_requested.connect(_open_render_workspace)
 	panel.open_import_requested.connect(_open_import_sheet)
 	_settings_panel = panel
 	panel.open(category)
