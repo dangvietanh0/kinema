@@ -503,6 +503,33 @@ func _test_model() -> void:
 	_check(_approx(seq.sequence_time(), 0.0), "stop_sequence rewinds the sequence")
 	await _free_doc(seq)
 
+	# Removing an object or its last key must remove the now-empty track.
+	var remove_doc := await _new_doc()
+	remove_doc.new_project("Track removal", "blank")
+	remove_doc.set_process(false)
+	var animated_id: String = remove_doc.selected_id
+	remove_doc.current_time = 0.0
+	remove_doc.insert_channel_key("position")
+	var animated_track: int = remove_doc.get_track(animated_id, "position")
+	_check(animated_track >= 0 and remove_doc.animation.track_get_key_count(animated_track) == 1, "the delete-object fixture owns one keyed track")
+	var tracks_before_object_delete: int = remove_doc.animation.get_track_count()
+	remove_doc.delete_object(animated_id)
+	_check(remove_doc.animation.get_track_count() == tracks_before_object_delete - 1, "deleting an animated object removes its track")
+	_check(remove_doc.get_track(animated_id, "position") == -1, "deleting an animated object leaves no matching track")
+
+	# Removing the last key deletes the track itself.
+	var last_id: String = remove_doc.add_primitive("box", Vector3(1, 0.5, 0))
+	remove_doc.set_selection(last_id)
+	remove_doc.current_time = 0.0
+	remove_doc.insert_channel_key("position")
+	var last_track: int = remove_doc.get_track(last_id, "position")
+	_check(last_track >= 0 and remove_doc.animation.track_get_key_count(last_track) == 1, "the last-key fixture owns one keyed track")
+	var tracks_before_key_delete: int = remove_doc.animation.get_track_count()
+	remove_doc.delete_key(last_id, "position", 0)
+	_check(remove_doc.get_track(last_id, "position") == -1, "deleting the last key removes its empty track")
+	_check(remove_doc.animation.get_track_count() == tracks_before_key_delete - 1, "the empty track count drops after the last key")
+	await _free_doc(remove_doc)
+
 	await _free_doc(crud)
 	await _free_doc(doc)
 

@@ -769,6 +769,24 @@ func _test_pose_and_bone_keys() -> void:
 	doc.queue_free()
 	doc2.queue_free()
 
+	# Deleting a rig removes the bone tracks that belonged to it.
+	var delete_doc := _new_doc("Delete Rig Tracks")
+	var delete_rs = delete_doc.rig_system
+	var delete_rig_id := _make_chain_rig(delete_doc)
+	delete_doc.current_time = 1.0
+	delete_doc.insert_bone_key(delete_rig_id, "Spine", Quaternion(Vector3.RIGHT, 0.5))
+	var bone_prefix: String = delete_rs._bone_track_prefix(delete_rig_id)
+	_check(delete_doc.get_bone_keys(delete_rig_id, "Spine").size() == 1, "the delete-rig fixture owns a bone key")
+	var bone_tracks_before: int = delete_doc.animation.get_track_count()
+	_check(delete_rs.delete_rig(delete_rig_id), "delete_rig succeeds for a rig with bone keys")
+	var bone_tracks_after := 0
+	for track_index in range(delete_doc.animation.get_track_count()):
+		if str(delete_doc.animation.track_get_path(track_index)).begins_with(bone_prefix):
+			bone_tracks_after += 1
+	_check(bone_tracks_after == 0, "deleting a rig prunes its bone tracks")
+	_check(delete_doc.animation.get_track_count() == bone_tracks_before - 1, "the deleted rig bone track count drops")
+	delete_doc.queue_free()
+
 
 # -------------------------------------------------------------------------
 # C4b — pose v2 and persistence

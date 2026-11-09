@@ -1129,7 +1129,7 @@ func delete_object(id: String) -> void:
 	if animation != null:
 		for i in range(animation.get_track_count() - 1, -1, -1):
 			if str(animation.track_get_path(i)).begins_with(prefix):
-				animation.track_remove_track(i)
+				animation.remove_track(i)
 	objects.erase(obj)
 	nodes.erase(id)
 	remove_child(node)
@@ -2356,7 +2356,7 @@ func delete_key(id: String, channel: String, key_index: int) -> void:
 	if touches_record:
 		_drop_overlapping_records(id, channel, key_time, key_time)
 	if animation.track_get_key_count(track) == 0:
-		animation.track_remove_track(track)
+		animation.remove_track(track)
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)

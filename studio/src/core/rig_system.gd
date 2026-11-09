@@ -783,7 +783,7 @@ func _remove_bone_tracks(object_id: String) -> void:
 	for animation in _animations():
 		for i in range(animation.get_track_count() - 1, -1, -1):
 			if str(animation.track_get_path(i)).begins_with(prefix):
-				animation.track_remove_track(i)
+				animation.remove_track(i)
 
 
 # -------------------------------------------------------------------------
