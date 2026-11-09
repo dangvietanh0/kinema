@@ -401,6 +401,7 @@ func _build_timeline() -> void:
 	_timeline.notice.connect(_on_timeline_notice)
 	_timeline.duration_confirmation_requested.connect(_on_timeline_duration_confirmation)
 	_timeline.time_entry_requested.connect(_open_time_entry_sheet)
+	_timeline.key_info_requested.connect(_open_key_info_sheet)
 	_timeline.mode_changed.connect(_on_timeline_mode_changed)
 	# The Animate pane is permanent, so fold is a sheet state, not a shell
 	# state. The transport's chevron and the compact header's close action both
@@ -1176,6 +1177,107 @@ func _open_time_entry_sheet() -> void:
 		{"on_close": _return_focus_to_timeline}
 	)
 	_time_frame_field.grab_focus()
+
+
+## Numeric key sheet for the selected graph key. Position/scale are edited as
+## real component values; quaternions stay with the rig gizmo because a
+## component-wise quaternion edit is not the rotation the user sees.
+func _open_key_info_sheet(index: int) -> void:
+	if doc == null or _overlay == null or _timeline == null:
+		return
+	var graph: Control = _timeline.segment_graph()
+	var object_id: String = doc.selected_id
+	var channel := "position"
+	if graph != null:
+		if str(graph.call("context_object")) != "":
+			object_id = str(graph.call("context_object"))
+		if str(graph.call("context_channel")) != "":
+			channel = str(graph.call("context_channel"))
+	var keys: Array = doc.get_channel_keys(object_id, channel)
+	if index < 0 or index >= keys.size():
+		_timeline.notice.emit("Select a key first.")
+		return
+	var key: Dictionary = keys[index]
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+	if channel == "rotation":
+		var warning := Kit.label(
+			"Rotation values are quaternion components; edit them with the rig gizmo.",
+			Kit.TYPE_BODY, Kit.TEXT_DIM)
+		warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(warning)
+		_overlay.show_sheet("Key", "Rotation keys are edited with the rig gizmo.",
+			body, [{"text": "Close", "compact": true}])
+		return
+
+	var time_box := VBoxContainer.new()
+	time_box.add_theme_constant_override("separation", 2)
+	time_box.add_child(Kit.mono_label("TIME (S)", 10, Kit.TEXT_DIM))
+	var time_field = Kit.line_edit("Seconds")
+	time_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	time_field.custom_minimum_size.y = 44.0
+	time_field.text = "%.3f" % float(key["time"])
+	time_box.add_child(time_field)
+	body.add_child(time_box)
+
+	var value_row := HBoxContainer.new()
+	value_row.add_theme_constant_override("separation", 8)
+	value_row.custom_minimum_size.y = 44.0
+	body.add_child(value_row)
+	var value: Vector3 = key["value"] if key["value"] is Vector3 else Vector3.ZERO
+	var components := [value.x, value.y, value.z]
+	var fields: Array = []
+	for axis in range(3):
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 2)
+		box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_child(Kit.mono_label(["X", "Y", "Z"][axis], 10, Kit.TEXT_DIM))
+		var field = Kit.line_edit(["X", "Y", "Z"][axis])
+		field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+		field.custom_minimum_size.y = 44.0
+		field.text = "%.3f" % float(components[axis])
+		box.add_child(field)
+		value_row.add_child(box)
+		fields.append(field)
+
+	var error := Kit.label("", 11, Kit.DANGER)
+	error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	error.visible = false
+	body.add_child(error)
+
+	var apply := func() -> void:
+		if not is_instance_valid(time_field):
+			return
+		var seconds_text: String = str(time_field.text).strip_edges()
+		if seconds_text == "" or not seconds_text.is_valid_float():
+			error.text = "Enter a time in seconds."
+			error.visible = true
+			return
+		var parts: Array = []
+		for field in fields:
+			var axis_text: String = field.text.strip_edges()
+			if axis_text == "" or not axis_text.is_valid_float():
+				error.text = "Enter X, Y and Z values."
+				error.visible = true
+				return
+			parts.append(axis_text.to_float())
+		var new_value := Vector3(float(parts[0]), float(parts[1]), float(parts[2]))
+		var result: Dictionary = doc.move_key(object_id, channel, index,
+			seconds_text.to_float(), new_value)
+		if not bool(result.get("ok", false)):
+			error.text = str(result.get("error", "Curve data no longer matches these keys."))
+			error.visible = true
+			return
+		_overlay.close_modal()
+
+	_overlay.show_sheet("Key", "Move the selected key in time or edit its value.",
+		body,
+		[
+			{"text": "Cancel", "compact": true},
+			{"text": "Apply", "primary": true, "callback": apply},
+		],
+		{"on_close": _return_focus_to_timeline})
+	time_field.grab_focus()
 
 
 ## The Animate timecode opens the same sheet as the shared transport; closing

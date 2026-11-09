@@ -1625,11 +1625,13 @@ func _replace_channel_records(id: String, channel: String, segments_after: Array
 
 
 func _drop_overlapping_records(id: String, channel: String, min_time: float, max_time: float) -> void:
+	## A record owns its span including both endpoint keys: touching either end
+	## is an edit inside the record's identity, so the closed interval decides.
 	var kept: Array = []
 	for record in segments_for(id, channel):
 		var start := float(record.get("start", 0.0))
 		var end := float(record.get("end", 0.0))
-		if end <= min_time + 0.000001 or start >= max_time - 0.000001:
+		if end < min_time - 0.000001 or start > max_time + 0.000001:
 			kept.append(record)
 	_replace_channel_records(id, channel, kept)
 
@@ -1992,6 +1994,150 @@ func bake_engine_ease(id: String, channel: String, key_index: int) -> Dictionary
 	return _bake_curve_range(id, channel, start, end, samples, "baked", "engine", restore, {})
 
 
+## Move one key and, when it is a recorded segment's endpoint, re-bake that
+## record in the same undo entry. `rebake.enabled = false` invalidates instead.
+func move_key(id: String, channel: String, key_index: int, new_time: float,
+		new_value: Variant, rebake := {}) -> Dictionary:
+	if not (channel in CHANNELS):
+		return _move_key_result(false, -1, false, false, "Unknown channel.")
+	var keys := get_channel_keys(id, channel)
+	if key_index < 0 or key_index >= keys.size():
+		return _move_key_result(false, -1, false, false, "Key index out of range.")
+	var old_time := float(keys[key_index]["time"])
+	var target_time := clampf(new_time, 0.0, duration)
+	if key_index > 0:
+		target_time = maxf(target_time, float(keys[key_index - 1]["time"]))
+	if key_index < keys.size() - 1:
+		target_time = minf(target_time, float(keys[key_index + 1]["time"]))
+	if snap and fps > 0:
+		target_time = roundf(target_time * float(fps)) / float(fps)
+		if key_index > 0:
+			target_time = maxf(target_time, float(keys[key_index - 1]["time"]))
+		if key_index < keys.size() - 1:
+			target_time = minf(target_time, float(keys[key_index + 1]["time"]))
+		target_time = clampf(target_time, 0.0, duration)
+	var edit: Array = [{"index": key_index, "time": target_time, "value": new_value}]
+
+	var record: Dictionary = {}
+	var is_start := false
+	for candidate in segments_for(id, channel):
+		var rstart := float(candidate.get("start", 0.0))
+		var rend := float(candidate.get("end", 0.0))
+		if absf(rstart - old_time) <= 0.001:
+			record = candidate.duplicate(true)
+			is_start = true
+			break
+		if absf(rend - old_time) <= 0.001:
+			record = candidate.duplicate(true)
+			is_start = false
+			break
+
+	var allow_rebake := true
+	if rebake is Dictionary:
+		allow_rebake = bool(rebake.get("enabled", true))
+
+	# A sampled engine-ease record has no authored curve to rebuild, and an
+	# explicit opt-out does the same: invalidate rather than fake a curve.
+	if not record.is_empty() and (str(record.get("family", "")) == "baked" or not allow_rebake):
+		var plain := apply_key_edits(id, channel, edit, "Move key")
+		if not bool(plain.get("ok", false)):
+			return _move_key_result(false, -1, false, false, str(plain.get("error", "")))
+		return _move_key_result(true, _first_index(plain), true, false)
+
+	if not record.is_empty():
+		var span_start := float(record.get("start", old_time))
+		var span_end := float(record.get("end", old_time))
+		if is_start:
+			span_start = target_time
+		else:
+			span_end = target_time
+		if span_start > span_end:
+			var swap := span_start
+			span_start = span_end
+			span_end = swap
+		var family := str(record.get("family", "cubic"))
+		var preset := str(record.get("preset", "custom"))
+		var handles := {
+			"x1": float(record.get("x1", 1.0 / 3.0)),
+			"y1": float(record.get("y1", 1.0 / 3.0)),
+			"x2": float(record.get("x2", 2.0 / 3.0)),
+			"y2": float(record.get("y2", 2.0 / 3.0)),
+		}
+		var restore := clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
+		begin_edit("Move key")
+		var moved := _apply_key_edits_raw(id, channel, edit, "Move key", true)
+		if not bool(moved.get("ok", false)):
+			cancel_edit()
+			return _move_key_result(false, -1, false, false, str(moved.get("error", "")))
+		var plan := _bake_curve_plan(id, channel, span_start, span_end)
+		var baked := {"ok": false}
+		if bool(plan.get("ok", false)):
+			var fractions: Array
+			if family == "preset":
+				fractions = _plan_fractions(plan, span_start, span_end,
+					func(fraction: float) -> float:
+						return SpeedCurve.evaluate(preset, fraction)
+				)
+			else:
+				fractions = _plan_fractions(plan, span_start, span_end,
+					func(fraction: float) -> float:
+						return SpeedCurve.cubic_ease(fraction, float(handles["x1"]),
+							float(handles["y1"]), float(handles["x2"]), float(handles["y2"]))
+				)
+			baked = _bake_curve_range_raw(id, channel, span_start, span_end,
+				fractions, family, preset, restore, handles if family == "cubic" else {})
+		if not bool(baked.get("ok", false)):
+			# The new span is too short (or its endpoints vanished): drop the
+			# record, keep the moved key, and stay in the same undo entry.
+			var kept: Array = []
+			for candidate in segments_for(id, channel):
+				if absf(float(candidate.get("start", 0.0)) - float(record.get("start", 0.0))) <= 0.001 \
+						and absf(float(candidate.get("end", 0.0)) - float(record.get("end", 0.0))) <= 0.001:
+					continue
+				kept.append(candidate)
+			_replace_channel_records(id, channel, kept)
+			end_edit()
+			return _move_key_result(true, _key_index_at_time(id, channel, target_time),
+				true, false)
+		end_edit()
+		return _move_key_result(true, _key_index_at_time(id, channel, target_time),
+			false, true)
+
+	var interior_record := false
+	for candidate in segments_for(id, channel):
+		var rstart := float(candidate.get("start", 0.0))
+		var rend := float(candidate.get("end", 0.0))
+		if old_time > rstart + 0.001 and old_time < rend - 0.001:
+			interior_record = true
+			break
+	var written := apply_key_edits(id, channel, edit, "Move key")
+	if not bool(written.get("ok", false)):
+		return _move_key_result(false, -1, false, false, str(written.get("error", "")))
+	return _move_key_result(true, _first_index(written), interior_record, false)
+
+
+func _move_key_result(ok: bool, index: int, invalidated: bool, rebaked: bool,
+		error := "") -> Dictionary:
+	return {"ok": ok, "index": index, "invalidated": invalidated,
+		"rebaked": rebaked, "error": error}
+
+
+func _first_index(result: Dictionary) -> int:
+	var indices: Array = result.get("indices", [])
+	return int(indices[0]) if not indices.is_empty() else -1
+
+
+func _key_index_at_time(id: String, channel: String, time: float) -> int:
+	var best := -1
+	var best_dist := 0.001
+	for key in get_channel_keys(id, channel):
+		var dist := absf(float(key["time"]) - time)
+		if dist <= best_dist:
+			best_dist = dist
+			best = int(key["index"])
+	return best
+
+
 func clear_curve_segment(id: String, channel: String, start: float, end: float) -> Dictionary:
 	var record: Dictionary = {}
 	for candidate in segments_for(id, channel):
@@ -2124,10 +2270,21 @@ func delete_key(id: String, channel: String, key_index: int) -> void:
 		return
 	begin_edit("Delete key")
 	var track := get_track(id, channel)
-	if track < 0:
+	if track < 0 or key_index >= animation.track_get_key_count(track):
 		end_edit()
 		return
+	# Deleting any key that belongs to a recorded span removes that record in
+	# the same undo entry; the remaining keys stay.
+	var key_time := float(animation.track_get_key_time(track, key_index))
 	animation.track_remove_key(track, key_index)
+	var touches_record := false
+	for candidate in segments_for(id, channel):
+		if key_time >= float(candidate.get("start", 0.0)) - 0.000001 \
+				and key_time <= float(candidate.get("end", 0.0)) + 0.000001:
+			touches_record = true
+			break
+	if touches_record:
+		_drop_overlapping_records(id, channel, key_time, key_time)
 	if animation.track_get_key_count(track) == 0:
 		animation.track_remove_track(track)
 	end_edit()

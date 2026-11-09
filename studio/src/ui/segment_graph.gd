@@ -10,6 +10,8 @@ signal notice(text: String)
 signal span_selected(span: Dictionary)
 signal span_changed
 signal tab_changed(tab: String)
+signal key_selected(index: int)
+signal key_info_requested(index: int)
 
 const DocumentScript = preload("res://src/core/document.gd")
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
@@ -63,6 +65,9 @@ var _edit_ease_button: Button
 
 var _dragging_handle := ""
 var _drag_handle_start := Vector2.ZERO
+var _selected_key := -1
+var _press_key := -1
+var _press_position := Vector2.ZERO
 var _connected := false
 
 
@@ -101,6 +106,7 @@ func set_context(object_id: String, channel: String) -> void:
 	_channel = channel if channel in DocumentScript.CHANNELS else "position"
 	_span = {}
 	_preview_handles = {}
+	_selected_key = -1
 	refresh()
 
 
@@ -125,6 +131,7 @@ func selection() -> Dictionary:
 func clear_selection() -> void:
 	_span = {}
 	_preview_handles = {}
+	_selected_key = -1
 	refresh()
 
 
@@ -166,17 +173,19 @@ func component() -> String:
 
 
 func value_editable() -> bool:
-	## Value editing lands with the key-drag tools; until then the tab must not
-	## claim it can write values.
-	return false
+	## A single component of a vector channel can be dragged in the Value tab.
+	## `All` is a read-only overview and quaternions belong to the rig gizmo.
+	return doc != null and _object_id != "" \
+		and _channel in ["position", "scale"] \
+		and _component in ["x", "y", "z"]
 
 
 func value_hint() -> String:
 	if _channel == "rotation":
-		return "Edit rotation values with the rig or transform gizmo."
+		return "Rotation values are quaternion components; edit them with the rig gizmo."
 	if _component == "all":
 		return "Choose X, Y or Z to edit values."
-	return "Select a key to edit its value."
+	return "Drag a key to edit its time and value."
 
 
 func plot_rect() -> Rect2:
@@ -245,6 +254,7 @@ func key_points() -> Array:
 			"position": time_to_point(time),
 			"time": time,
 			"value": key["value"],
+			"component": _scalar(key["value"]),
 		})
 	return out
 
@@ -338,19 +348,101 @@ func speed_summary() -> Dictionary:
 
 
 func add_key_at_playhead() -> bool:
-	return false
+	if doc == null or _object_id == "" or not (_channel in DocumentScript.CHANNELS):
+		_notify("Select an object and channel first.")
+		return false
+	var sampled: Variant = doc.sample_channel(_object_id, _channel, doc.current_time)
+	if sampled == null:
+		_notify("No keys on this channel. Insert a key at the playhead.")
+		return false
+	var result: Dictionary = doc.apply_key_edits(_object_id, _channel, [
+		{"index": -1, "time": doc.current_time, "value": sampled},
+	], "Add key")
+	if not bool(result.get("ok", false)):
+		_notify(str(result.get("error", "Could not insert the key.")))
+		return false
+	var indices: Array = result.get("indices", [])
+	_selected_key = int(indices[0]) if not indices.is_empty() else -1
+	refresh()
+	if _selected_key >= 0:
+		key_selected.emit(_selected_key)
+	span_changed.emit()
+	return true
 
 
 func delete_selected_key() -> void:
-	pass
+	if doc == null or _object_id == "" or _selected_key < 0:
+		return
+	var keys: Array = doc.get_channel_keys(_object_id, _channel)
+	if _selected_key >= keys.size():
+		_selected_key = -1
+		return
+	var result: Dictionary = doc.apply_key_edits(_object_id, _channel, [
+		{"index": _selected_key, "delete": true},
+	], "Delete key")
+	if bool(result.get("ok", false)):
+		_selected_key = -1
+		refresh()
+		span_changed.emit()
 
 
 func selected_key_info() -> Dictionary:
-	return {}
+	if doc == null or _object_id == "" or _selected_key < 0:
+		return {}
+	var keys: Array = doc.get_channel_keys(_object_id, _channel)
+	if _selected_key >= keys.size():
+		return {}
+	var key: Dictionary = keys[_selected_key]
+	return {
+		"index": _selected_key,
+		"time": float(key["time"]),
+		"value": key["value"],
+		"component": _component,
+		"editable": value_editable(),
+	}
 
 
-func drag_key(_index: int, _point: Vector2) -> bool:
-	return false
+func request_key_info() -> void:
+	if _selected_key < 0:
+		_notify("Select a key first.")
+		return
+	key_info_requested.emit(_selected_key)
+
+
+## Direct manipulation used by the test harness and by the real touch path.
+## One call is one document transaction; the caller never has to wrap it.
+func drag_key(index: int, point: Vector2) -> bool:
+	if doc == null or _object_id == "":
+		return false
+	var keys: Array = doc.get_channel_keys(_object_id, _channel)
+	if index < 0 or index >= keys.size():
+		return false
+	if not value_editable():
+		_notify(value_hint())
+		return false
+	var time := point_to_time(point)
+	if doc.snap and doc.fps > 0:
+		time = roundf(time * float(doc.fps)) / float(doc.fps)
+	var value: Vector3 = keys[index]["value"]
+	var scalar := _y_to_value(point.y)
+	match _component:
+		"x":
+			value.x = scalar
+		"y":
+			value.y = scalar
+		"z":
+			value.z = scalar
+	var result: Dictionary = doc.move_key(_object_id, _channel, index, time, value)
+	if not bool(result.get("ok", false)):
+		_notify(str(result.get("error", "Curve data no longer matches these keys.")))
+		return false
+	_selected_key = int(result.get("index", -1))
+	_span = doc.segment_span_at(_object_id, _channel, time) if doc != null else {}
+	refresh()
+	if _selected_key >= 0:
+		key_selected.emit(_selected_key)
+	span_changed.emit()
+	return true
 
 
 ## Private control binding used by the timeline header. The graph owns the real
@@ -786,15 +878,61 @@ func _draw() -> void:
 		return
 	_draw_grid()
 	_draw_selection_band()
-	_draw_curve(keys)
+	if _tab == TAB_VALUE:
+		_draw_value_tab(keys)
+	else:
+		_draw_curve(keys)
 	_draw_keys(keys)
 	_draw_handles()
 	_draw_playhead()
-	if _tab != TAB_EASE:
-		var hint := "Choose X, Y or Z to edit values." if _tab == TAB_VALUE else "Speed is read-only."
-		draw_string(Kit.font_for(400), Vector2(plot_rect().position.x + 8.0, plot_rect().position.y + 18.0),
-			hint, HORIZONTAL_ALIGNMENT_LEFT, maxf(0.0, plot_rect().size.x - 16.0),
-			Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+	if _tab == TAB_VALUE:
+		_draw_hint(value_hint())
+	elif _tab == TAB_SPEED:
+		_draw_hint("Speed is read-only.")
+
+
+func _draw_hint(text_value: String) -> void:
+	var plot := plot_rect()
+	draw_string(Kit.font_for(400), Vector2(plot.position.x + 8.0, plot.position.y + 18.0),
+		text_value, HORIZONTAL_ALIGNMENT_LEFT, maxf(0.0, plot.size.x - 16.0),
+		Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+
+
+func _draw_value_tab(keys: Array) -> void:
+	if _channel == "rotation":
+		_draw_curve(keys)
+		return
+	if _component == "all":
+		# Three thin achromatic curves: a real overview, not an editable plot.
+		for component in ["x", "y", "z"]:
+			_draw_component_curve(component)
+		return
+	_draw_curve(keys)
+
+
+func _draw_component_curve(component: String) -> void:
+	var plot := plot_rect()
+	var curve := _curve_rect()
+	if plot.size.x <= 1.0 or curve.size.y <= 1.0 or doc == null:
+		return
+	var columns := clampi(int(plot.size.x), 2, 900)
+	var sampled := PackedVector2Array()
+	for i in range(columns):
+		var t := point_to_time(Vector2(plot.position.x + float(i), plot.position.y))
+		var value: Variant = _sample(t)
+		if value == null:
+			continue
+		var scalar := _value_scalar(value, component)
+		sampled.append(Vector2(plot.position.x + float(i), _value_to_y(scalar)))
+	if sampled.size() < 2:
+		return
+	var tint := Kit.TIME_BRIGHT * Color(1, 1, 1, 0.82)
+	match component:
+		"y":
+			tint = Kit.TEXT_MUTED * Color(1, 1, 1, 0.82)
+		"z":
+			tint = Kit.TEXT_DIM * Color(1, 1, 1, 0.82)
+	draw_polyline(sampled, tint, 1.0, true)
 
 
 func _draw_empty(text: String) -> void:
@@ -918,6 +1056,10 @@ func _draw_key_polyline(keys: Array) -> void:
 
 
 func _draw_keys(keys: Array) -> void:
+	if _tab == TAB_SPEED:
+		return
+	if _tab == TAB_VALUE and (_component == "all" or _channel == "rotation"):
+		return
 	var plot := plot_rect()
 	var curve := _curve_rect()
 	for key in keys:
@@ -1007,27 +1149,31 @@ func _value_range() -> Vector2:
 	var curve := _curve_rect()
 	if doc == null or _object_id == "":
 		return Vector2(0.0, 1.0)
+	var components: Array = ["x", "y", "z"] \
+		if _tab == TAB_VALUE and _component == "all" and _channel != "rotation" \
+		else [_component]
 	var low := INF
 	var high := -INF
 	var count := maxi(2, int(curve.size.x))
-	for i in range(count):
-		var t := point_to_time(Vector2(curve.position.x + float(i), curve.position.y))
-		var value: Variant = _sample(t)
-		if value == null:
-			continue
-		var scalar := _scalar(value)
-		low = minf(low, scalar)
-		high = maxf(high, scalar)
 	var keys: Array = doc.get_channel_keys(_object_id, _channel)
-	for key in keys:
-		var scalar := _scalar(key["value"])
-		low = minf(low, scalar)
-		high = maxf(high, scalar)
+	for component in components:
+		for i in range(count):
+			var t := point_to_time(Vector2(curve.position.x + float(i), curve.position.y))
+			var value: Variant = _sample(t)
+			if value == null:
+				continue
+			var scalar := _value_scalar(value, str(component))
+			low = minf(low, scalar)
+			high = maxf(high, scalar)
+		for key in keys:
+			var scalar := _value_scalar(key["value"], str(component))
+			low = minf(low, scalar)
+			high = maxf(high, scalar)
 	if not is_finite(low) or not is_finite(high):
 		return Vector2(0.0, 1.0)
 	if high - low < 0.000001:
 		return Vector2(low - 0.5, high + 0.5)
-	var pad := (high - low) * 0.12
+	var pad := (high - low) * (0.10 if _tab == TAB_VALUE else 0.12)
 	return Vector2(low - pad, high + pad)
 
 
@@ -1053,9 +1199,13 @@ func _sample(time: float) -> Variant:
 
 
 func _scalar(value: Variant) -> float:
+	return _value_scalar(value, _component)
+
+
+func _value_scalar(value: Variant, component: String) -> float:
 	if value is Vector3:
 		var v := value as Vector3
-		match _component:
+		match component:
 			"x":
 				return v.x
 			"y":
@@ -1132,6 +1282,8 @@ func _press(position: Vector2) -> void:
 	var plot := plot_rect()
 	if not plot.has_point(position):
 		return
+	_press_key = -1
+	_press_position = position
 	if _tab == TAB_EASE:
 		var positions := handle_positions()
 		if not positions.is_empty():
@@ -1143,28 +1295,56 @@ func _press(position: Vector2) -> void:
 					_preview_handles = positions.duplicate(true)
 					_preview_handles[side] = position
 					return
+	# Resolve the tapped key against the view that is on screen before the
+	# span selection may zoom the plot to a different interval.
+	var hit := -1
+	if _tab == TAB_VALUE and value_editable():
+		hit = _key_at(position)
 	var time := point_to_time(position)
 	var span: Dictionary = doc.segment_span_at(_object_id, _channel, time)
 	_span = span.duplicate(true)
 	_preview_handles = {}
+	if hit >= 0:
+		_selected_key = hit
+		_press_key = hit
 	refresh()
+	if hit >= 0:
+		key_selected.emit(hit)
 	span_selected.emit(_span.duplicate(true))
 
 
 func _release(position: Vector2) -> void:
-	if _dragging_handle == "":
+	if _dragging_handle != "":
+		var span := _active_span()
+		var preview := _preview_for_drag(position)
+		_dragging_handle = ""
+		if span.is_empty():
+			_preview_handles = {}
+			return
+		var out_handle := _point_to_handle(span, preview.get("out", _drag_handle_start))
+		var in_handle := _point_to_handle(span, preview.get("in", _drag_handle_start))
+		_bake_handles(span,
+			clampf(out_handle.x, 0.0, 1.0), clampf(out_handle.y, -2.0, 3.0),
+			clampf(in_handle.x, 0.0, 1.0), clampf(in_handle.y, -2.0, 3.0))
 		return
-	var span := _active_span()
-	var preview := _preview_for_drag(position)
-	_dragging_handle = ""
-	if span.is_empty():
-		_preview_handles = {}
+	if _press_key < 0:
 		return
-	var out_handle := _point_to_handle(span, preview.get("out", _drag_handle_start))
-	var in_handle := _point_to_handle(span, preview.get("in", _drag_handle_start))
-	_bake_handles(span,
-		clampf(out_handle.x, 0.0, 1.0), clampf(out_handle.y, -2.0, 3.0),
-		clampf(in_handle.x, 0.0, 1.0), clampf(in_handle.y, -2.0, 3.0))
+	var index := _press_key
+	_press_key = -1
+	# A tap selects; only a deliberate 6 px drag edits the document.
+	if position.distance_to(_press_position) >= 6.0:
+		drag_key(index, position)
+
+
+func _key_at(position: Vector2) -> int:
+	var best := -1
+	var best_dist := HIT_RADIUS
+	for point in key_points():
+		var dist := position.distance_to(point["position"] as Vector2)
+		if dist <= best_dist:
+			best_dist = dist
+			best = int(point["index"])
+	return best
 
 
 func _preview_for_drag(position: Vector2) -> Dictionary:

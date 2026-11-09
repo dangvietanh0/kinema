@@ -644,6 +644,11 @@ func _sync_component_chips() -> void:
 
 
 func _request_key_info() -> void:
+	if _segment_graph != null:
+		var info: Dictionary = _segment_graph.selected_key_info()
+		if not info.is_empty():
+			key_info_requested.emit(int(info.get("index", -1)))
+			return
 	if doc == null or doc.selected_id == "" or _selected_index < 0 \
 			or _selected_data_id != doc.selected_id:
 		notice.emit("Select a key first.")
@@ -912,6 +917,10 @@ func _build_segment_graph() -> void:
 	add_child(_segment_graph)
 	_segment_graph.span_selected.connect(_on_graph_span_selected)
 	_segment_graph.span_changed.connect(_on_graph_span_changed)
+	_segment_graph.key_selected.connect(_on_graph_key_selected)
+	_segment_graph.key_info_requested.connect(func(index: int) -> void:
+		key_info_requested.emit(index)
+	)
 	_segment_graph.notice.connect(func(text: String) -> void: notice.emit(text))
 
 
@@ -947,6 +956,15 @@ func _on_graph_span_selected(span: Dictionary) -> void:
 
 func _on_graph_span_changed() -> void:
 	_sync_header_state()
+	if _sheet != null:
+		_sheet.queue_redraw()
+
+
+func _on_graph_key_selected(index: int) -> void:
+	_selected_index = index
+	_selected_data_id = doc.selected_id if doc != null else ""
+	if doc != null:
+		_refresh_transport(doc.current_time, doc.is_playing)
 	if _sheet != null:
 		_sheet.queue_redraw()
 

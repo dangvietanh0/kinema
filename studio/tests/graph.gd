@@ -31,6 +31,8 @@ func _ready() -> void:
 	await _test_segment_selection()
 	await _test_ease_tab()
 	await _test_preset_rail()
+	await _test_value_tab()
+	await _test_endpoint_rebake_and_invalidation()
 	await _test_timeline_transport_and_headers()
 	await _test_animate_sizes()
 	_finish()
@@ -503,3 +505,98 @@ func _test_animate_sizes() -> void:
 		"a fresh boot restores the persisted stage choice")
 	restored.queue_free()
 	Prefs.clear_value("editor.animate_stage")
+
+
+# -------------------------------------------------------------------------
+# Task 19 — Value tab and key info
+# -------------------------------------------------------------------------
+
+func _test_value_tab() -> void:
+	print("GRAPH STEP: value tab")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var timeline = ctx["timeline"]
+	var id: String = ctx["id"]
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("value")
+	_check(graph.tab() == "value", "the Value tab can be selected")
+	graph.set_component("x")
+	_check(graph.component() == "x", "the X component can be selected")
+	_check(graph.value_editable(), "a single position component is editable")
+	var undo_before: int = (doc._undo_stack as Array).size()
+	var keys_before: Array = doc.get_channel_keys(id, "position")
+	var target: Vector2 = graph.time_to_point(0.8) + Vector2(0, -30)
+	graph.drag_key(1, target)
+	var keys_after: Array = doc.get_channel_keys(id, "position")
+	_check(absf(float(keys_after[1]["time"]) - 0.8) < 0.05,
+		"horizontal drag retimes the key on the frame grid")
+	_check((keys_after[1]["value"] as Vector3).x > (keys_before[1]["value"] as Vector3).x,
+		"vertical drag raises the X value")
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"one key drag is one undo entry")
+
+	graph.set_component("all")
+	_check(not graph.value_editable(), "All is read-only")
+	_check(graph.value_hint() == "Choose X, Y or Z to edit values.",
+		"All states the exact read-only hint")
+
+	graph.set_context(id, "rotation")
+	graph.set_tab("value")
+	_check(not graph.value_editable(), "rotation values are not directly editable")
+	_check(graph.value_hint().to_lower().contains("rotation") and graph.value_hint().contains("gizmo"),
+		"rotation states the quaternion/gizmo warning")
+
+	# Add key at the playhead samples the real channel value.
+	doc.seek(0.25)
+	graph.set_context(id, "position")
+	graph.set_component("x")
+	var count_before: int = doc.get_channel_keys(id, "position").size()
+	var sampled_before: Vector3 = doc.sample_channel(id, "position", 0.25)
+	_check(graph.add_key_at_playhead(), "Add key inserts at the playhead")
+	_check(doc.get_channel_keys(id, "position").size() == count_before + 1,
+		"Add key writes a real key")
+	var added_index: int = doc.get_key_index_at(id, "position", 0.25)
+	_check(added_index >= 0, "the inserted key sits at the playhead")
+	var added: Dictionary = doc.get_channel_keys(id, "position")[added_index]
+	_check((added["value"] as Vector3).distance_to(sampled_before) < 0.01,
+		"Add key samples the real channel value")
+	graph.delete_selected_key()
+	_check(doc.get_channel_keys(id, "position").size() == count_before,
+		"Delete key removes the selected key")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
+
+
+func _test_endpoint_rebake_and_invalidation() -> void:
+	print("GRAPH STEP: value endpoint rebake")
+	var ctx = await _host_graph(600, 324)
+	var doc = ctx["doc"]
+	var graph = ctx["graph"]
+	var id: String = ctx["id"]
+	doc.bake_cubic_segment(id, "position", 0.0, 1.0, 0.2, 0.8, 0.8, 0.2)
+	graph.set_selection(doc.segment_span_at(id, "position", 0.5))
+	graph.set_tab("value")
+	graph.set_component("x")
+	var undo_before: int = (doc._undo_stack as Array).size()
+	var end_key: int = doc.get_channel_keys(id, "position").size() - 1
+	graph.drag_key(end_key, graph.time_to_point(1.5))
+	_check((doc._undo_stack as Array).size() == undo_before + 1,
+		"an endpoint drag and its re-bake are one undo entry")
+	var record: Dictionary = doc.curve_segments()[0]
+	_check(absf(float(record.get("end", 0.0)) - 1.5) < 0.05,
+		"the record span follows the moved endpoint")
+	_check(doc.get_channel_keys(id, "position").size() > 31,
+		"the new span is re-baked with real interior keys")
+
+	# Dragging an interior key invalidates the record and keeps the edit.
+	# Move it in value, not time: baked interior keys sit one frame apart, so
+	# a horizontal drag would clamp against its neighbour and prove nothing.
+	var interior := 5
+	var interior_time: float = doc.get_channel_keys(id, "position")[interior]["time"]
+	graph.drag_key(interior, graph.time_to_point(interior_time) + Vector2(0, -30))
+	_check(doc.curve_segments().is_empty(), "an interior key edit invalidates the record")
+	_check(doc.get_channel_keys(id, "position").size() > 2,
+		"the edited key is kept as a normal key")
+	ctx["timeline"].queue_free()
+	doc.queue_free()
