@@ -7,18 +7,29 @@ extends VBoxContainer
 
 signal add_requested
 signal color_requested(property: String)
+## Material targeting: the payload is {object_id, part_path, surface}.
+signal choose_material_requested(target: Dictionary)
+signal edit_material_requested(target: Dictionary)
+signal collapse_toggled(collapsed: bool)
+## The Camera section asks the editor to enter look-through for this object.
+signal look_through_requested(camera_id: String)
 
 const NumberFieldScript = preload("res://src/ui/num_field.gd")
 const ScrubBarScript = preload("res://src/ui/scrub_bar.gd")
-const AXIS_COLORS := [Color(0.851, 0.412, 0.384), Color(0.514, 0.710, 0.427), Color(0.365, 0.553, 0.847)]
 
 const DocumentScript = preload("res://src/core/document.gd")
 var doc: DocumentScript = null
 
 var _scroll: ScrollContainer
 var _content: VBoxContainer
+var _footer: MarginContainer
+var _footer_rule: ColorRect
+var _actions_row: HBoxContainer
 var _badge: Label
 var _name_edit: LineEdit
+var _header_margin: MarginContainer
+var _rule: ColorRect
+var _collapse_button: Button
 var _built_for := ""
 var _updating := false
 var _fields: Dictionary = {"position": [], "rotation": [], "scale": []}
@@ -28,23 +39,48 @@ var _color_button: Button
 var _key_buttons: Dictionary = {}
 var _swatch_value := Color(0.6, 0.6, 0.6)
 var _field_drag := false
+## Material section state. Surface -1 is the part-level slot ("All").
+var _object_material_label: Label
+var _object_edit: Button
+var _part_material_label: Label
+var _part_choose: Button
+var _part_edit: Button
+var _surface_chips: Array[Button] = []
+var _active_surface := -1
+var _legacy_visible := false
+## The header stays; the fields fold away so the scene list can use the dock.
+var collapsed := false
+## Section build counter for diagnostics and the smoke suite.
+var section_build_count := 0
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation", 0)
 	_build_shell()
+	# setup() runs while the panel is still unmounted, so its first _rebuild()
+	# has no content tree yet. Build the current selection once the panel
+	# actually enters the shell instead of waiting for the next document event.
+	if doc != null:
+		_rebuild()
 
 func setup(document: Node3D) -> void:
 	doc = document
 	doc.selection_changed.connect(_on_selection_changed)
 	doc.object_changed.connect(_on_object_changed)
+	# Value-only refreshes: a transform edit never rebuilds the sections.
+	doc.transform_changed.connect(_on_transform_changed)
+	doc.keyframes_changed.connect(_on_keyframes_changed)
 	doc.scene_changed.connect(_on_scene_changed)
+	doc.part_selection_changed.connect(_on_part_selection_changed)
+	if doc.material_system != null:
+		doc.material_system.materials_changed.connect(_on_materials_changed)
 	_rebuild()
 
 func _build_shell() -> void:
 	if _content != null:
 		return
 	var header_margin := MarginContainer.new()
+	_header_margin = header_margin
 	header_margin.add_theme_constant_override("margin_left", 12)
 	header_margin.add_theme_constant_override("margin_right", 12)
 	header_margin.add_theme_constant_override("margin_top", 10)
@@ -53,7 +89,7 @@ func _build_shell() -> void:
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation", 6)
 	header_margin.add_child(header)
-	var title := Kit.section_label("Object")
+	var title := Kit.section_label("Properties")
 	title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header.add_child(title)
 	var spacer := Control.new()
@@ -62,13 +98,19 @@ func _build_shell() -> void:
 	_badge = Kit.mono_label("", 9, Kit.TEXT_DIM)
 	_badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header.add_child(_badge)
+	_collapse_button = Kit.icon_button("chevron-up", "Collapse object properties", 44, 18)
+	_collapse_button.pressed.connect(func() -> void: set_collapsed(not collapsed, true))
+	header.add_child(_collapse_button)
 
-	add_child(Kit.vsep())
+	var rule := Kit.vsep()
+	_rule = rule
+	add_child(rule)
 
 	_scroll = ScrollContainer.new()
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	Kit.style_scroll_container(_scroll)
 	add_child(_scroll)
 
 	var margin := MarginContainer.new()
@@ -85,7 +127,59 @@ func _build_shell() -> void:
 	_content.add_theme_constant_override("separation", 10)
 	margin.add_child(_content)
 
+	# Destructive actions stay on screen. Inside the scroll body they could end
+	# a few pixels below the viewport on a 900 dp desktop and look clipped.
+	_footer_rule = Kit.vsep()
+	_footer_rule.visible = false
+	add_child(_footer_rule)
+	_footer = MarginContainer.new()
+	_footer.visible = false
+	_footer.add_theme_constant_override("margin_left", 12)
+	_footer.add_theme_constant_override("margin_right", 12)
+	_footer.add_theme_constant_override("margin_top", 8)
+	_footer.add_theme_constant_override("margin_bottom", 10)
+	add_child(_footer)
+	_actions_row = HBoxContainer.new()
+	_actions_row.add_theme_constant_override("separation", 6)
+	_footer.add_child(_actions_row)
+
+func set_collapsed(value: bool, emit_signal: bool = false) -> void:
+	collapsed = value
+	if _rule != null:
+		_rule.visible = not value
+	if _scroll != null:
+		_scroll.visible = not value
+	_sync_footer_visibility()
+	if _header_margin != null:
+		_header_margin.add_theme_constant_override("margin_top", 0 if value else 10)
+		_header_margin.add_theme_constant_override("margin_bottom", 0 if value else 6)
+	if _collapse_button != null:
+		Kit.set_icon(_collapse_button, "chevron-down" if value else "chevron-up")
+		_collapse_button.tooltip_text = "Expand object properties" if value else "Collapse object properties"
+	if emit_signal:
+		collapse_toggled.emit(collapsed)
+
+
+func _sync_footer_visibility() -> void:
+	if _footer == null or _actions_row == null:
+		return
+	var present := not collapsed and _actions_row.get_child_count() > 0
+	_footer.visible = present
+	if _footer_rule != null:
+		_footer_rule.visible = present
+
+
 func _on_selection_changed(_id: String) -> void:
+	_active_surface = -1
+	_rebuild()
+
+
+func _on_part_selection_changed(_object_id: String, _part_path: String) -> void:
+	_active_surface = -1
+	_rebuild()
+
+
+func _on_materials_changed() -> void:
 	_rebuild()
 
 func _on_scene_changed() -> void:
@@ -103,20 +197,45 @@ func _on_object_changed(id: String) -> void:
 	_refresh_values()
 	_refresh_keys()
 
+func _on_transform_changed(id: String) -> void:
+	if id != _built_for:
+		return
+	_refresh_values()
+
+func _on_keyframes_changed(id: String) -> void:
+	if _built_for == "":
+		return
+	if id != "" and id != _built_for:
+		return
+	_refresh_keys()
+
 func _rebuild() -> void:
 	if _content == null:
 		return
+	section_build_count += 1
 	if _field_drag:
 		_field_drag = false
 	for child in _content.get_children():
 		_content.remove_child(child)
 		child.queue_free()
+	if _actions_row != null:
+		for child in _actions_row.get_children():
+			_actions_row.remove_child(child)
+			child.queue_free()
+	_sync_footer_visibility()
 	_fields = {"position": [], "rotation": [], "scale": []}
 	_scrubs.clear()
 	_scrub_values.clear()
 	_key_buttons.clear()
 	_color_button = null
 	_name_edit = null
+	_object_material_label = null
+	_object_edit = null
+	_part_material_label = null
+	_part_choose = null
+	_part_edit = null
+	_surface_chips.clear()
+	_legacy_visible = false
 	_built_for = ""
 	_badge.text = ""
 	_scroll.scroll_vertical = 0
@@ -184,7 +303,7 @@ func _build_transform_section() -> void:
 		var head := HBoxContainer.new()
 		head.add_theme_constant_override("separation", 4)
 		section.add_child(head)
-		var channel_label := Kit.label(str(doc.CHANNEL_LABELS.get(channel, channel)).to_upper(), 9, Kit.TEXT_MUTED, 600)
+		var channel_label := Kit.label(str(doc.CHANNEL_LABELS.get(channel, channel)).to_upper(), Kit.TYPE_CAPTION, Kit.TEXT_MUTED, 600)
 		channel_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		head.add_child(channel_label)
 		var head_spacer := Control.new()
@@ -195,13 +314,22 @@ func _build_transform_section() -> void:
 		head.add_child(key_button)
 		_key_buttons[channel] = key_button
 
+		# One frame around X/Y/Z reads as a vector row. Three separately framed
+		# fields with 4 dp gaps looked like unrelated controls.
+		var fields_frame := PanelContainer.new()
+		fields_frame.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
+		section.add_child(fields_frame)
 		var fields := HBoxContainer.new()
-		fields.add_theme_constant_override("separation", 4)
-		section.add_child(fields)
+		fields.add_theme_constant_override("separation", 0)
+		fields_frame.add_child(fields)
 		for i in range(3):
+			if i > 0:
+				fields.add_child(Kit.hsep())
 			var field = NumberFieldScript.new()
 			field.axis = ["X", "Y", "Z"][i]
-			field.axis_color = AXIS_COLORS[i]
+			# The axis tint is reserved for the viewport gizmo/compass; the
+			# inspector badge is a label on a field, so it stays achromatic.
+			field.axis_color = Kit.TEXT_MUTED
 			field.suffix = ""
 			if channel == "position":
 				field.step = 0.02
@@ -216,6 +344,8 @@ func _build_transform_section() -> void:
 				field.min_value = 0.01
 				field.max_value = 1000.0
 			field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			# The frame owns the visible outline; the field is a bare segment.
+			field.grouped = true
 			fields.add_child(field)
 			_fields[channel].append(field)
 			field.drag_started.connect(_on_field_drag_started.bind(channel))
@@ -223,7 +353,8 @@ func _build_transform_section() -> void:
 			field.value_changed.connect(_on_field_value_changed.bind(channel, i))
 			field.text_committed.connect(_on_field_text_committed.bind(channel, i))
 
-	var key_all := Kit.text_button("Insert all transform keys", "diamond-plus", false, true)
+	var key_all := Kit.text_button("Key all transforms", "diamond-plus", false, false)
+	key_all.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	key_all.pressed.connect(_on_key_all)
 	_content.add_child(key_all)
 	_content.add_child(Kit.vsep())
@@ -231,24 +362,174 @@ func _build_transform_section() -> void:
 func _build_specifics(obj: Dictionary) -> void:
 	var kind := str(obj.get("kind", "mesh"))
 	if kind == "mesh":
-		_build_material(obj)
+		_build_object_material(obj)
+		_build_legacy_material(obj)
+		_build_part_material(obj)
+	elif kind == "import":
+		_build_object_material(obj)
+		_build_part_material(obj)
+		_build_import(obj)
 	elif kind == "light":
 		_build_light(obj)
 	elif kind == "camera":
 		_build_camera(obj)
-	elif kind == "import":
-		_build_import(obj)
 	else:
 		var hint := Kit.label("An empty transform. Use it as a motion anchor for other objects.", 11, Kit.TEXT_DIM)
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_content.add_child(hint)
 	_content.add_child(Kit.vsep())
 
-func _build_material(obj: Dictionary) -> void:
-	_content.add_child(Kit.section_label("Material"))
+func _build_object_material(obj: Dictionary) -> void:
+	_content.add_child(Kit.section_label("Object material"))
+	var id := str(obj.get("material_id", ""))
+	var record: Dictionary = doc.material_system.get_material(id) if doc.material_system != null and id != "" else {}
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	_content.add_child(row)
+	var swatch := PanelContainer.new()
+	swatch.custom_minimum_size = Vector2(22, 22)
+	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var color := Color.from_string(str(record.get("albedo_color", "#3A3A3A")), Kit.SURFACE_3) if not record.is_empty() else Color(0, 0, 0, 0)
+	swatch.add_theme_stylebox_override("panel", Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
+	row.add_child(swatch)
+	_object_material_label = Kit.label(str(record.get("name", "")) if not record.is_empty() else "Legacy colour",
+		12, Kit.TEXT_MUTED)
+	_object_material_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_object_material_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_object_material_label)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 6)
+	_content.add_child(actions)
+	# One handoff, never a modal: the Shading workspace owns choosing,
+	# creating and editing library materials.
+	_object_edit = Kit.text_button(
+		"Edit in Shading" if not record.is_empty() else "Choose in Shading", "", false, false)
+	_object_edit.custom_minimum_size = Vector2(96.0, 44.0)
+	_object_edit.tooltip_text = "Open this material in the Shading workspace." if not record.is_empty() \
+		else "Choose or create a material in the Shading workspace."
+	_object_edit.pressed.connect(func() -> void: _request_material(true, "", -1))
+	actions.add_child(_object_edit)
+	if not record.is_empty():
+		var object_clear := Kit.icon_button("x", "Clear object material", 44, 14)
+		object_clear.pressed.connect(func() -> void: _clear_material("", -1))
+		actions.add_child(object_clear)
+
+func _build_legacy_material(obj: Dictionary) -> void:
+	# Legacy primitive controls only stand in when no library material reaches
+	# the object root. Assigning a material replaces the legacy look.
+	var resolved := ""
+	if doc.material_system != null:
+		resolved = doc.material_system.resolve_assignment(str(obj.get("id", "")), "", -1)
+	if resolved != "":
+		return
+	_legacy_visible = true
+	_content.add_child(Kit.section_label("Legacy look"))
 	_build_color_row("Base color", "color", str(obj.get("color", "#AAB2BF")))
 	_add_scrub("Roughness", "roughness", 0.0, 1.0)
 	_add_scrub("Metallic", "metallic", 0.0, 1.0)
+
+func _build_part_material(obj: Dictionary) -> void:
+	var object_id := str(obj.get("id", ""))
+	if doc.selected_part_object_id != object_id or doc.selected_part_path == "":
+		return
+	var part_path := doc.selected_part_path
+	var part_name := part_path.get_file()
+	_content.add_child(Kit.vsep())
+	_content.add_child(Kit.section_label("Part material"))
+	var root: Node3D = doc.nodes.get(object_id)
+	var node: Node3D = root.get_node_or_null(NodePath(part_path)) if root != null else null
+	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null \
+			and doc.material_system != null and doc.material_system.can_assign_part(object_id, part_path):
+		var mesh_instance := node as MeshInstance3D
+		_part_material_label = Kit.label("Part · " + part_name, 12, Kit.TEXT_MUTED)
+		_content.add_child(_part_material_label)
+		var actions := HBoxContainer.new()
+		actions.add_theme_constant_override("separation", 6)
+		_content.add_child(actions)
+		_part_choose = Kit.text_button("Choose", "", false, false)
+		_part_choose.custom_minimum_size = Vector2(96.0, 44.0)
+		_part_choose.pressed.connect(func() -> void: _request_material(false, part_path, _active_surface))
+		actions.add_child(_part_choose)
+		_part_edit = Kit.text_button("Edit", "", false, false)
+		_part_edit.custom_minimum_size = Vector2(96.0, 44.0)
+		var current: String = doc.material_system.resolve_assignment(object_id, part_path, _active_surface) \
+			if doc.material_system != null else ""
+		_part_edit.disabled = current == ""
+		_part_edit.pressed.connect(func() -> void: _request_material(true, part_path, _active_surface))
+		actions.add_child(_part_edit)
+		if current != "":
+			var part_clear := Kit.icon_button("x", "Clear part material", 44, 14)
+			part_clear.pressed.connect(func() -> void: _clear_material(part_path, _active_surface))
+			actions.add_child(part_clear)
+		if mesh_instance.mesh.get_surface_count() > 1:
+			var chips := HBoxContainer.new()
+			chips.add_theme_constant_override("separation", 6)
+			_content.add_child(chips)
+			_add_surface_chip(chips, "All", -1)
+			for surface in range(mesh_instance.mesh.get_surface_count()):
+				_add_surface_chip(chips, str(surface), surface)
+	else:
+		_part_material_label = Kit.label(
+			"Part · %s · No mesh. Materials apply at the object level." % part_name,
+			11, Kit.TEXT_DIM)
+		_part_material_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_content.add_child(_part_material_label)
+
+func _add_surface_chip(parent: HBoxContainer, text_value: String, surface: int) -> void:
+	var chip := Kit.text_button(text_value, "", false, true)
+	chip.custom_minimum_size = Vector2(44.0, 44.0)
+	chip.toggle_mode = true
+	chip.button_pressed = surface == _active_surface
+	chip.pressed.connect(func() -> void:
+		_active_surface = surface
+		_rebuild()
+	)
+	parent.add_child(chip)
+	_surface_chips.append(chip)
+
+func _request_material(edit: bool, part_path: String, surface: int) -> void:
+	var target := {
+		"object_id": _built_for,
+		"part_path": part_path,
+		"surface": surface,
+	}
+	if edit:
+		edit_material_requested.emit(target)
+	else:
+		choose_material_requested.emit(target)
+
+
+func _clear_material(part_path: String, surface: int) -> void:
+	if doc == null or doc.material_system == null:
+		return
+	doc.begin_edit("Clear material")
+	doc.material_system.clear_material(_built_for, part_path, surface)
+	doc.end_edit()
+	_rebuild()
+
+func part_material_text() -> String:
+	return _part_material_label.text if _part_material_label != null else ""
+
+
+func object_material_text() -> String:
+	return _object_material_label.text if _object_material_label != null else ""
+
+
+## The single 44 dp Shading handoff for the selected object's material.
+func edit_material_button() -> Button:
+	return _object_edit
+
+
+func surface_chips() -> Array[Button]:
+	return _surface_chips.duplicate()
+
+
+func active_surface() -> int:
+	return _active_surface
+
+
+func legacy_visible() -> bool:
+	return _legacy_visible
 
 func _build_light(obj: Dictionary) -> void:
 	_content.add_child(Kit.section_label("Light"))
@@ -260,7 +541,7 @@ func _build_light(obj: Dictionary) -> void:
 	type_row.add_child(type_label)
 	var omni := str(obj.get("light_type", "directional")) == "omni"
 	type_row.add_child(Kit.mono_label("OMNI" if omni else "DIRECTIONAL", 9, Kit.TEXT_DIM))
-	_build_color_row("Light color", "light_color", str(obj.get("light_color", "#FFE8CA")))
+	_build_color_row("Light color", "light_color", str(obj.get("light_color", "#E8E8E8")))
 	_add_scrub("Energy", "light_energy", 0.0, 6.0)
 	if omni:
 		_add_scrub("Range", "light_range", 0.5, 40.0)
@@ -268,9 +549,13 @@ func _build_light(obj: Dictionary) -> void:
 func _build_camera(obj: Dictionary) -> void:
 	_content.add_child(Kit.section_label("Camera"))
 	_add_scrub("Field of view", "camera_fov", 12.0, 100.0)
-	var hint := Kit.label("The viewport uses its own editor camera. This camera object is a scene element for layout reference.", 10, Kit.TEXT_DIM)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_content.add_child(hint)
+	# A real view action replaces the old "layout reference only" hint. The
+	# viewport header and editor connect this through one signal.
+	var look: Button = Kit.text_button("Look through", "camera", true)
+	look.custom_minimum_size = Vector2(96.0, 44.0)
+	look.tooltip_text = "Look through this camera without making it the scene camera"
+	look.pressed.connect(func() -> void: look_through_requested.emit(str(obj.get("id", ""))))
+	_content.add_child(look)
 
 func _build_import(obj: Dictionary) -> void:
 	_content.add_child(Kit.section_label("Model"))
@@ -296,7 +581,7 @@ func _build_color_row(label_text: String, property: String, hex: String) -> void
 	hex_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(hex_label)
 	_color_button = Button.new()
-	_color_button.custom_minimum_size = Vector2(30, 24)
+	_color_button.custom_minimum_size = Vector2(Kit.FIELD, Kit.FIELD)
 	_color_button.focus_mode = Control.FOCUS_NONE
 	_color_button.tooltip_text = "Choose %s" % label_text.to_lower()
 	_color_button.set_meta("property", property)
@@ -332,7 +617,7 @@ func _add_scrub(label_text: String, property: String, min_value: float, max_valu
 func _build_actions() -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
-	_content.add_child(row)
+	_actions_row.add_child(row)
 	var duplicate := Kit.text_button("Duplicate", "copy", false, true)
 	duplicate.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	duplicate.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -345,6 +630,7 @@ func _build_actions() -> void:
 	delete.add_theme_color_override("icon_normal_color", Kit.DANGER)
 	delete.pressed.connect(_on_delete)
 	row.add_child(delete)
+	_sync_footer_visibility()
 
 # -------------------------------------------------------------------------
 # Editing
@@ -448,16 +734,16 @@ func _set_swatch(color: Color) -> void:
 	_swatch_value = color
 	if _color_button == null:
 		return
-	var normal := Kit.flat_style(color, 4, Kit.BORDER, 1)
-	var hover := Kit.flat_style(color.lightened(0.08), 4, Kit.TEXT_MUTED, 1)
-	var pressed := Kit.flat_style(color.darkened(0.08), 4, Kit.FOCUS, 1)
+	var normal := Kit.flat_style(color, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1)
+	var hover := Kit.flat_style(color.lightened(0.08), Kit.R_CONTROL, Kit.TEXT_MUTED, 1)
+	var pressed := Kit.flat_style(color.darkened(0.08), Kit.R_CONTROL, Kit.FOCUS, 1)
 	_color_button.add_theme_stylebox_override("normal", normal)
 	_color_button.add_theme_stylebox_override("hover", hover)
 	_color_button.add_theme_stylebox_override("pressed", pressed)
-	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), 4, Kit.FOCUS, 1))
+	_color_button.add_theme_stylebox_override("focus", Kit.flat_style(Color(0, 0, 0, 0), Kit.R_CONTROL, Kit.FOCUS, 1))
 
 func str_to_var_hex(hex: String) -> Color:
-	return Color.from_string(hex, Color(0.667, 0.698, 0.749))
+	return Color.from_string(hex, Color(0.66, 0.66, 0.66))
 
 func _refresh_keys() -> void:
 	if doc == null or _built_for == "":
@@ -540,7 +826,7 @@ func _kind_badge(obj: Dictionary) -> String:
 func _icon_for(obj: Dictionary) -> String:
 	match str(obj.get("kind", "mesh")):
 		"camera": return "camera"
-		"light": return "lightbulb"
+		"light": return "circle-dot" if str(obj.get("light_type", "")) == "omni" else "sun"
 		"empty": return "circle-dot-dashed"
 		"import": return "package-open"
 		_:

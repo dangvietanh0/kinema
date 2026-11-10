@@ -9,9 +9,26 @@ extends Node3D
 signal scene_changed
 signal selection_changed(id: String)
 signal object_changed(id: String)
+## Emitted when only the transform of an object changed. Listeners that need
+## live values (preview, inspector values, gizmo) use this; listeners that
+## rebuild structure (outliner rows, panel sections) ignore it.
+signal transform_changed(id: String)
+## Emitted after any track, key or interpolation edit.
+signal keyframes_changed(id: String)
 signal playback_changed(time: float, is_playing: bool)
 signal history_changed
 signal dirty_changed(is_dirty: bool)
+signal clips_changed
+signal active_clip_changed(id: String)
+signal media_changed
+signal rigs_changed
+signal rig_selection_changed(rig_id: String, bone: String)
+signal imported_scene_ready(object_id: String, node: Node)
+signal rig_adopted(object_id: String, bone_count: int)
+signal object_spawned(object_id: String, node: Node)
+## Emitted when the selected import part changes. An empty id/path pair means
+## the part highlight was cleared; the import root stays selected either way.
+signal part_selection_changed(object_id: String, part_path: String)
 
 const CHANNELS := ["position", "rotation", "scale"]
 const CHANNEL_LABELS := {
@@ -25,13 +42,18 @@ const CHANNEL_ICONS := {
 	"scale": "tool-scale",
 }
 const ObjImporter = preload("res://src/core/obj_importer.gd")
+const SpeedCurve = preload("res://src/core/speed_curve.gd")
+const AnimationSystemScript = preload("res://src/core/animation_system.gd")
+const MediaSystemScript = preload("res://src/core/media_system.gd")
+const RigSystemScript = preload("res://src/core/rig_system.gd")
+const MaterialSystemScript = preload("res://src/core/material_system.gd")
 const TRACK_TYPES := {
 	"position": Animation.TYPE_POSITION_3D,
 	"rotation": Animation.TYPE_ROTATION_3D,
 	"scale": Animation.TYPE_SCALE_3D,
 }
 const ANIMATION_NAME := "Take 01"
-const FORMAT_VERSION := 1
+const FORMAT_VERSION := 4
 
 var project_id := ""
 var project_dir := ""
@@ -43,6 +65,10 @@ var interpolation := "linear"
 var autokey := false
 var snap := true
 var selected_id := ""
+## The selected part belongs to the selected import root; the inspector still
+## edits the root transform.
+var selected_part_object_id := ""
+var selected_part_path := ""
 var objects: Array[Dictionary] = []
 
 var nodes: Dictionary = {}
@@ -51,6 +77,10 @@ var animation: Animation
 var current_time := 0.0
 var is_playing := false
 var markers_hidden := false
+var animation_system
+var media_system
+var rig_system
+var material_system
 
 var _dirty := false
 var _edit_snapshot: Dictionary = {}
@@ -60,13 +90,42 @@ var _redo_stack: Array[Dictionary] = []
 var _loading := false
 var _next_id := 1
 var _last_emitted_time := -1.0
+var _sequence_playing := false
+
+func _init() -> void:
+	animation_system = AnimationSystemScript.new()
+	animation_system.setup(self)
+	media_system = MediaSystemScript.new()
+	media_system.setup(self)
+	rig_system = RigSystemScript.new()
+	rig_system.setup(self)
+	material_system = MaterialSystemScript.new()
+	material_system.setup(self)
+	imported_scene_ready.connect(animation_system.on_imported_scene)
+	imported_scene_ready.connect(rig_system.adopt_imported_skeleton)
+	imported_scene_ready.connect(_on_imported_scene_materials)
 
 func _ready() -> void:
+	process_priority = 100
 	_ensure_player()
 	set_process(true)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if _loading or anim_player == null:
+		return
+	# Exactly one clock runs at a time. Sequence mode owns the time update and
+	# leaves the AnimationPlayer alone; clip mode keeps the player fast path.
+	if _sequence_playing:
+		animation_system.advance(delta)
+		current_time = animation_system.active_local_time()
+		if not animation_system.is_sequence_playing():
+			_sequence_playing = false
+			playback_changed.emit(current_time, false)
+		elif absf(current_time - _last_emitted_time) > 0.0005:
+			_last_emitted_time = current_time
+			playback_changed.emit(current_time, true)
+		rig_system.advance(delta)
+		media_system.advance(delta)
 		return
 	if is_playing:
 		if anim_player.is_playing():
@@ -78,6 +137,9 @@ func _process(_delta: float) -> void:
 			is_playing = false
 			current_time = clampf(anim_player.current_animation_position, 0.0, duration)
 			playback_changed.emit(current_time, false)
+	animation_system.advance(delta)
+	rig_system.advance(delta)
+	media_system.advance(delta)
 
 func _ensure_player() -> void:
 	if anim_player != null and is_instance_valid(anim_player):
@@ -114,9 +176,15 @@ func new_project(p_title: String = "Untitled", template: String = "blank") -> vo
 	_next_id = 1
 	objects.clear()
 	selected_id = ""
+	selected_part_object_id = ""
+	selected_part_path = ""
 	_clear_runtime()
 	_ensure_player()
 	_create_animation()
+	animation_system.ensure_default_clip()
+	var active: Animation = animation_system.active_animation()
+	if active != null:
+		animation = active
 	_dirty = false
 	if template == "study":
 		_build_study()
@@ -170,7 +238,12 @@ func to_data() -> Dictionary:
 	var json_objects: Array = []
 	for obj in objects:
 		json_objects.append(_object_to_json(obj))
-	return {
+	var anim_data: Dictionary = animation_system.to_data() if animation_system != null else {}
+	var rig_data: Dictionary = rig_system.to_data() if rig_system != null else {}
+	var media_data: Dictionary = media_system.to_data() if media_system != null else {}
+	var material_data: Dictionary = material_system.to_data() if material_system != null else {}
+	var clips: Array = anim_data.get("clips", [])
+	var data := {
 		"format": FORMAT_VERSION,
 		"title": title,
 		"fps": fps,
@@ -179,16 +252,31 @@ func to_data() -> Dictionary:
 		"interpolation": interpolation,
 		"current_time": current_time,
 		"selected_id": selected_id,
+		"selected_part_object_id": selected_part_object_id,
+		"selected_part_path": selected_part_path,
 		"autokey": autokey,
 		"snap": snap,
 		"objects": json_objects,
-		"animation": {
+		"clips": clips,
+		"layers": anim_data.get("layers", []),
+		"rigs": rig_data.get("rigs", []),
+		"media": media_data.get("media", {}),
+		"materials": material_data.get("materials", []),
+	}
+	if anim_data.has("active_clip"):
+		data["active_clip"] = anim_data["active_clip"]
+	if anim_data.has("active_layer"):
+		data["active_layer"] = anim_data["active_layer"]
+	if clips.is_empty():
+		# v1 bridge: single-clip projects keep the legacy mirror readable until
+		# WS-A returns real clips. It disappears as soon as a clip exists.
+		data["animation"] = {
 			"name": ANIMATION_NAME,
 			"length": duration,
 			"loop": loop,
 			"tracks": tracks,
-		},
-	}
+		}
+	return data
 
 func _apply_data(data: Dictionary) -> void:
 	title = str(data.get("title", "Untitled"))
@@ -200,7 +288,13 @@ func _apply_data(data: Dictionary) -> void:
 	snap = bool(data.get("snap", true))
 	current_time = clampf(float(data.get("current_time", 0.0)), 0.0, duration)
 	selected_id = str(data.get("selected_id", ""))
+	selected_part_object_id = str(data.get("selected_part_object_id", ""))
+	selected_part_path = str(data.get("selected_part_path", ""))
 	_next_id = 1
+	# Materials must exist before objects spawn so the first frame resolves
+	# every assignment instead of flashing legacy colours.
+	if material_system != null:
+		material_system.load_data(data)
 
 	objects.clear()
 	var raw_objects: Array = data.get("objects", [])
@@ -217,8 +311,20 @@ func _apply_data(data: Dictionary) -> void:
 	var anim_data: Dictionary = data.get("animation", {})
 	if not anim_data.is_empty():
 		_load_animation_tracks(anim_data)
+	animation_system.load_data(data, nodes)
+	rig_system.load_data(data, nodes)
+	media_system.load_data(data, project_dir)
+	var active: Animation = animation_system.active_animation()
+	if active != null:
+		animation = active
 	_refresh_animation()
 	_ensure_valid_selection()
+	# A saved part path can outlive the model it pointed at. Drop it silently
+	# instead of selecting the import root's stale highlight.
+	if selected_part_object_id == "" or selected_part_path == "" \
+			or get_import_part_node(selected_part_object_id, selected_part_path) == null:
+		selected_part_object_id = ""
+		selected_part_path = ""
 	_queue_all_object_ui_updates()
 
 func _object_to_json(obj: Dictionary) -> Dictionary:
@@ -236,16 +342,50 @@ func _normalize_object(raw: Dictionary) -> Dictionary:
 	obj["position"] = _json_to_vec3(raw.get("position", [0, 0, 0]))
 	obj["rotation"] = _json_to_quat(raw.get("rotation", [0, 0, 0, 1]))
 	obj["scale"] = _json_to_vec3(raw.get("scale", [1, 1, 1]))
-	obj["color"] = str(raw.get("color", "#AAB2BF"))
+	obj["color"] = str(raw.get("color", "#A8A8A8"))
 	obj["roughness"] = clampf(float(raw.get("roughness", 0.48)), 0.0, 1.0)
 	obj["metallic"] = clampf(float(raw.get("metallic", 0.0)), 0.0, 1.0)
 	obj["light_type"] = str(raw.get("light_type", "directional"))
 	obj["light_energy"] = float(raw.get("light_energy", 1.2))
-	obj["light_color"] = str(raw.get("light_color", "#FFF0DB"))
+	obj["light_color"] = str(raw.get("light_color", "#F0F0F0"))
 	obj["light_range"] = float(raw.get("light_range", 8.0))
+	obj["light_shadow"] = bool(raw.get("light_shadow", true))
 	obj["camera_fov"] = float(raw.get("camera_fov", 45.0))
 	obj["model"] = str(raw.get("model", ""))
+	obj["part_visibility"] = _normalize_part_visibility(raw.get("part_visibility", {}))
+	obj["material_id"] = str(raw.get("material_id", "")) if raw.get("material_id", "") is String else ""
+	obj["part_materials"] = _normalize_assignment_map(raw.get("part_materials", {}))
+	obj["part_surface_materials"] = _normalize_assignment_map(raw.get("part_surface_materials", {}))
 	return obj
+
+
+func _normalize_assignment_map(raw: Variant) -> Dictionary:
+	var result := {}
+	if not (raw is Dictionary):
+		return result
+	for key in raw.keys():
+		if not (key is String):
+			continue
+		var value: Variant = raw[key]
+		if not (value is String) or str(value) == "":
+			continue
+		result[str(key)] = str(value)
+	return result
+
+
+func _normalize_part_visibility(raw: Variant) -> Dictionary:
+	var result := {}
+	if not (raw is Dictionary):
+		return result
+	for key in raw.keys():
+		var value: Variant = raw[key]
+		if not (key is String):
+			continue
+		if not (value is bool):
+			continue
+		result[key] = value
+	return result
+
 
 func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 	return {
@@ -257,54 +397,71 @@ func _base_object(id: String, p_name: String, kind: String) -> Dictionary:
 		"position": Vector3.ZERO,
 		"rotation": Quaternion.IDENTITY,
 		"scale": Vector3.ONE,
-		"color": "#AAB2BF",
+		"color": "#A8A8A8",
 		"roughness": 0.48,
 		"metallic": 0.0,
 		"light_type": "directional",
 		"light_energy": 1.2,
-		"light_color": "#FFF0DB",
+		"light_color": "#F0F0F0",
 		"light_range": 8.0,
+		"light_shadow": true,
 		"camera_fov": 45.0,
 		"model": "",
+		"part_visibility": {},
+		"material_id": "",
+		"part_materials": {},
+		"part_surface_materials": {},
 	}
 
 func _build_blank() -> void:
 	_add_camera_data("Main Camera", Vector3(4.0, 3.15, 5.2), Vector3(0.0, 0.65, 0.0), false)
 	_add_light_data("Key Light", "directional", Vector3(0.0, 5.0, 0.0), Vector3(-38, -28, 0), false)
+	# A real selectable fill so the shadow side is readable out of the box.
+	# It is an honest document object, not an editor-only cheat: it appears in
+	# the outliner, the inspector and the render with shadows deliberately off.
+	var fill := _add_light_data("Fill Light", "omni", Vector3(2.6, 2.2, 3.0), Vector3.ZERO, false)
+	fill["light_energy"] = 0.35
+	fill["light_range"] = 7.0
+	fill["light_shadow"] = false
+	_spawn_refresh(str(fill["id"]))
 	var cube := _add_primitive_data("Cube", "box", Vector3(0.0, 0.5, 0.0), false)
 	selected_id = str(cube["id"])
 	_add_default_keys_for_cube(str(cube["id"]))
+	_sync_sun_sky_mode()
 
 func _build_study() -> void:
 	_add_camera_data("Main Camera", Vector3(5.2, 3.5, 6.4), Vector3(0.0, 0.8, 0.0), false)
-	# Three-point studio lighting: a warm key with real soft shadows, a cool
-	# fill to keep the shadow side readable, and a warm rim for separation.
+	# Three-point studio lighting with neutral white lights: a key with real
+	# soft shadows, a fill to keep the shadow side readable, and a rim for
+	# separation. The starter scene is a graphite sculpture, not a colour demo.
 	var key := _add_light_data("Key Light", "directional", Vector3(0.0, 5.0, 0.0), Vector3(-42, -34, 0), false)
-	key["light_energy"] = 1.75
-	key["light_color"] = "#FFF0D8"
+	key["light_energy"] = 1.8
+	key["light_color"] = "#F2F2F2"
 	_spawn_refresh(str(key["id"]))
 	var fill := _add_light_data("Fill Light", "omni", Vector3(3.1, 2.1, 2.7), Vector3.ZERO, false)
-	fill["light_energy"] = 0.55
-	fill["light_color"] = "#C9DCFF"
+	fill["light_energy"] = 0.5
+	fill["light_color"] = "#D0D0D0"
 	fill["light_range"] = 9.0
+	fill["light_shadow"] = false
 	_spawn_refresh(str(fill["id"]))
 	var rim := _add_light_data("Rim Light", "omni", Vector3(-2.4, 2.7, -2.2), Vector3.ZERO, false)
-	rim["light_energy"] = 1.35
-	rim["light_color"] = "#FFD8AA"
+	rim["light_energy"] = 1.2
+	rim["light_color"] = "#E6E6E6"
+	rim["light_shadow"] = false
 	_spawn_refresh(str(rim["id"]))
 	var sphere := _add_primitive_data("Form", "sphere", Vector3(0.0, 1.0, 0.0), false)
-	sphere["color"] = "#C0A27E"
-	sphere["roughness"] = 0.34
+	sphere["color"] = "#B8B8B8"
+	sphere["roughness"] = 0.38
 	_spawn_refresh(str(sphere["id"]))
 	var ring := _add_primitive_data("Orbit", "torus", Vector3(0.0, 1.15, 0.0), false)
-	ring["color"] = "#8C9AAE"
+	ring["color"] = "#D8D8D8"
 	ring["rotation"] = Quaternion(Vector3.RIGHT, deg_to_rad(62.0))
 	ring["scale"] = Vector3(1.5, 1.5, 1.5)
 	_spawn_refresh(str(ring["id"]))
 	var base := _add_primitive_data("Base", "cylinder", Vector3(0.0, 0.14, 0.0), false)
-	base["color"] = "#3D4654"
+	base["color"] = "#2E2E2E"
 	base["scale"] = Vector3(2.05, 0.28, 2.05)
-	base["roughness"] = 0.62
+	base["roughness"] = 0.68
 	_spawn_refresh(str(base["id"]))
 	selected_id = str(ring["id"])
 	_animate_study(str(ring["id"]), str(sphere["id"]))
@@ -355,6 +512,16 @@ func _ensure_valid_selection() -> void:
 # -------------------------------------------------------------------------
 
 func _clear_runtime() -> void:
+	# Subsystems are RefCounted owners of data, not scene children. Reset them
+	# before the runtime nodes disappear; never free them here.
+	if animation_system != null:
+		animation_system.reset()
+	if media_system != null:
+		media_system.reset()
+	if rig_system != null:
+		rig_system.reset()
+	if material_system != null:
+		material_system.reset()
 	for child in get_children():
 		remove_child(child)
 		child.queue_free()
@@ -396,11 +563,22 @@ func _spawn_object(obj: Dictionary) -> void:
 		"light":
 			_build_light_visual(node, obj)
 		"empty":
-			pass
+			_build_empty_visual(node, obj)
 		"import":
 			_build_import_visual(node, obj)
 		_:
 			_build_mesh_visual(node, obj)
+	if kind == "import":
+		# Reapply the saved overrides after the model loads, on fresh imports and
+		# on project load / undo alike.
+		_apply_import_part_visibility(node, obj)
+	if kind == "light":
+		_sync_sun_sky_mode()
+	if rig_system != null:
+		rig_system.on_object_spawned(obj, node)
+	if material_system != null:
+		material_system.apply_object(id)
+	object_spawned.emit(id, node)
 
 func _spawn_refresh(id: String) -> void:
 	var obj := get_object(id)
@@ -434,7 +612,7 @@ func _build_camera_visual(node: Node3D, obj: Dictionary) -> void:
 	camera.near = 0.05
 	camera.far = 500.0
 	node.add_child(camera)
-	_add_marker(node, _make_camera_marker(), Color(0.62, 0.72, 0.86))
+	_add_marker(node, _make_camera_marker())
 
 func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 	var light_type := str(obj.get("light_type", "directional"))
@@ -450,30 +628,41 @@ func _build_light_visual(node: Node3D, obj: Dictionary) -> void:
 		light = directional
 	light.name = "Light"
 	light.light_energy = float(obj.get("light_energy", 1.2))
-	light.light_color = _hex_color(str(obj.get("light_color", "#FFF0DB")))
+	light.light_color = _hex_color(str(obj.get("light_color", "#F0F0F0")))
 	light.light_specular = 0.55
-	_configure_shadows(light)
+	_configure_shadows(light, obj)
 	node.add_child(light)
-	_add_marker(node, _make_light_marker(light_type == "omni"), Color(0.92, 0.78, 0.48))
+	_add_marker(node, _make_light_marker(light_type == "omni"))
 
-func _configure_shadows(light: Light3D) -> void:
+func _build_empty_visual(node: Node3D, _obj: Dictionary) -> void:
+	# An empty is a real axis triad at the object origin, not a flat dashed
+	# icon. It lives under the object node so moving or keying the object moves
+	# the triad with it.
+	_add_marker(node, _make_empty_marker())
+
+func _configure_shadows(light: Light3D, obj: Dictionary = {}, profile: Dictionary = {}) -> void:
 	## Shadow quality is driven by the graphics preferences. Directional lights
 	## get cascaded splits, a filtered soft edge and a physical angular size so
-	## the PCSS path produces real penumbrae instead of a hard cutout.
+	## the PCSS path produces real penumbrae instead of a hard cutout. The
+	## document's `light_shadow` flag is honoured here so a fill light can stay
+	## honest about not casting. `profile` is the effective, platform-clamped
+	## profile; when omitted it is resolved for the running backend.
 	if light == null:
 		return
-	light.shadow_enabled = true
+	var effective: Dictionary = profile if not profile.is_empty() else Gfx.safe_forward_plus_profile()
+	light.shadow_enabled = bool(obj.get("light_shadow", true))
+	light.shadow_opacity = 0.55
 	light.shadow_bias = 0.022
 	light.shadow_normal_bias = 0.9
 	light.shadow_blur = 1.05
 	if light is DirectionalLight3D:
 		var sun := light as DirectionalLight3D
 		sun.light_angular_distance = 0.55
-		sun.directional_shadow_max_distance = Gfx.shadow_distance
+		sun.directional_shadow_max_distance = float(effective.get("shadow_distance", Gfx.shadow_distance))
 		sun.directional_shadow_blend_splits = true
 		sun.directional_shadow_fade_start = 0.82
 		sun.directional_shadow_pancake_size = 18.0
-		match int(Gfx.shadow_splits):
+		match int(effective.get("shadow_splits", Gfx.shadow_splits)):
 			1:
 				sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 			3, 4:
@@ -483,14 +672,43 @@ func _configure_shadows(light: Light3D) -> void:
 	elif light is OmniLight3D:
 		pass
 
-func apply_graphics() -> void:
+func apply_graphics(platform: String = "", actual_method: String = "") -> void:
+	var profile: Dictionary = Gfx.safe_forward_plus_profile()
+	if platform != "":
+		profile = Gfx.safe_forward_plus_profile(platform, actual_method)
 	for id in nodes.keys():
 		var node: Node3D = nodes[id]
 		if node == null:
 			continue
 		var light := node.get_node_or_null("Light") as Light3D
 		if light != null:
-			_configure_shadows(light)
+			_configure_shadows(light, get_object(str(id)), profile)
+	_sync_sun_sky_mode()
+
+## Exactly one visible directional light feeds the procedural sky. The first
+## in document order with positive energy owns SKY_MODE_LIGHT_AND_SKY; every
+## other directional light is scene-only, so no second disc can appear and the
+## disc disappears when no directional light contributes.
+func _sync_sun_sky_mode() -> void:
+	var assigned := false
+	for obj in objects:
+		if str(obj.get("kind", "")) != "light":
+			continue
+		if str(obj.get("light_type", "")) != "directional":
+			continue
+		var node: Node3D = nodes.get(str(obj.get("id", "")))
+		if node == null:
+			continue
+		var light := node.get_node_or_null("Light") as DirectionalLight3D
+		if light == null:
+			continue
+		var visible := bool(obj.get("visible", true))
+		var energy := float(obj.get("light_energy", 1.2))
+		if not assigned and visible and energy > 0.0:
+			light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_AND_SKY
+			assigned = true
+		else:
+			light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 
 func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 	var rel := str(obj.get("model", ""))
@@ -512,7 +730,7 @@ func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 		mesh.size = Vector3(0.6, 0.6, 0.6)
 		board.mesh = mesh
 		var material := StandardMaterial3D.new()
-		material.albedo_color = Color(0.36, 0.13, 0.13)
+		material.albedo_color = Color(0.22, 0.22, 0.22)
 		board.material_override = material
 		node.add_child(board)
 		push_warning("Kinema: could not load imported model '%s'." % rel)
@@ -520,54 +738,139 @@ func _build_import_visual(node: Node3D, obj: Dictionary) -> void:
 	generated.name = "Model"
 	node.add_child(generated)
 
-func _add_marker(node: Node3D, mesh: Mesh, color: Color) -> void:
+func _add_marker(node: Node3D, parts: Array) -> MeshInstance3D:
+	# A marker is one shaded MeshInstance3D named "Marker" so it keeps the
+	# document's existing bounds contract (marker geometry never inflates the
+	# object AABB) while still reading as a solid camera, light or empty.
+	var mesh := ArrayMesh.new()
+	var colors: Array = []
+	for part in parts:
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		st.append_from(part["mesh"] as Mesh, 0, part["transform"] as Transform3D)
+		st.generate_normals()
+		st.set_material(_marker_material(part["color"] as Color))
+		st.commit(mesh)
+		colors.append(part["color"])
 	var marker := MeshInstance3D.new()
 	marker.name = "Marker"
+	marker.add_to_group("kinema_editor_only")
 	marker.mesh = mesh
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.albedo_color = color
-	material.no_depth_test = false
-	marker.material_override = material
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for surface in range(mesh.get_surface_count()):
+		var material := _marker_material(colors[surface] as Color)
+		marker.set_surface_override_material(surface, material)
+	marker.set_meta("kinema_marker_colors", colors)
 	node.add_child(marker)
+	return marker
 
-func _make_camera_marker() -> ArrayMesh:
-	var mesh := ArrayMesh.new()
-	var verts := PackedVector3Array([
-		Vector3(-0.34, -0.23, -0.4), Vector3(0.34, -0.23, -0.4), Vector3(0.0, 0.23, -0.4),
-		Vector3(-0.34, -0.23, -0.4), Vector3(0.0, 0.23, -0.4), Vector3(0.0, 0.0, 0.35),
-		Vector3(0.34, -0.23, -0.4), Vector3(0.0, 0.0, 0.35), Vector3(0.0, 0.23, -0.4),
-		Vector3(-0.34, -0.23, -0.4), Vector3(0.0, 0.0, 0.35), Vector3(0.34, -0.23, -0.4),
-		Vector3(0.0, 0.0, 0.35), Vector3(0.0, 0.23, -0.4), Vector3(-0.34, -0.23, -0.4),
-	])
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
+func _marker_part(mesh: Mesh, transform: Transform3D, color: Color) -> Dictionary:
+	return {"mesh": mesh, "transform": transform, "color": color}
 
-func _make_light_marker(omni: bool) -> ImmediateMesh:
-	var mesh := ImmediateMesh.new()
-	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	var r := 0.25
-	var segments := 24
-	for i in range(segments):
-		var a := TAU * float(i) / float(segments)
-		var b := TAU * float(i + 1) / float(segments)
-		mesh.surface_add_vertex(Vector3(cos(a) * r, sin(a) * r, 0))
-		mesh.surface_add_vertex(Vector3(cos(b) * r, sin(b) * r, 0))
-		mesh.surface_add_vertex(Vector3(cos(a) * r, 0, sin(a) * r))
-		mesh.surface_add_vertex(Vector3(cos(b) * r, 0, sin(b) * r))
-		mesh.surface_add_vertex(Vector3(0, cos(a) * r, sin(a) * r))
-		mesh.surface_add_vertex(Vector3(0, cos(b) * r, sin(b) * r))
-	if not omni:
-		for i in range(8):
-			var a := TAU * float(i) / 8.0
-			mesh.surface_add_vertex(Vector3.ZERO)
-			mesh.surface_add_vertex(Vector3(cos(a) * r, sin(a) * r, -1.1))
-	mesh.surface_end()
-	return mesh
+func _marker_material(color: Color) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	material.albedo_color = color
+	material.roughness = 0.52
+	material.metallic = 0.06
+	material.metallic_specular = 0.45
+	material.rim_enabled = false
+	return material
+
+func _make_camera_marker() -> Array:
+	# Local -Z is the view direction. The body block sits behind the lens
+	# barrel and the brighter ring closes the barrel, so the silhouette reads
+	# as a camera from any orbit angle instead of a generic cube.
+	var body := Color(0.48, 0.50, 0.53)
+	var body_dark := Color(0.34, 0.36, 0.39)
+	var lens := Color(0.66, 0.68, 0.71)
+	var glass := Color(0.12, 0.14, 0.17)
+	var block := BoxMesh.new()
+	block.size = Vector3(0.52, 0.38, 0.40)
+	var hump := BoxMesh.new()
+	hump.size = Vector3(0.24, 0.11, 0.20)
+	var barrel := CylinderMesh.new()
+	barrel.top_radius = 0.15
+	barrel.bottom_radius = 0.17
+	barrel.height = 0.26
+	barrel.radial_segments = 28
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.145
+	ring.outer_radius = 0.21
+	ring.rings = 32
+	ring.ring_segments = 12
+	var glass_mesh := CylinderMesh.new()
+	glass_mesh.top_radius = 0.12
+	glass_mesh.bottom_radius = 0.12
+	glass_mesh.height = 0.02
+	glass_mesh.radial_segments = 24
+	var along_z := Basis(Vector3.RIGHT, PI * 0.5)
+	return [
+		_marker_part(block, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, 0.16)), body),
+		_marker_part(hump, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.24, 0.13)), body_dark),
+		_marker_part(barrel, Transform3D(along_z, Vector3(0.0, 0.0, -0.06)), body_dark),
+		_marker_part(ring, Transform3D(along_z, Vector3(0.0, 0.0, -0.215)), lens),
+		_marker_part(glass_mesh, Transform3D(along_z, Vector3(0.0, 0.0, -0.225)), glass),
+	]
+
+func _make_light_marker(omni: bool) -> Array:
+	var housing := Color(0.46, 0.48, 0.51)
+	var nose := Color(0.34, 0.36, 0.39)
+	var bulb := Color(0.74, 0.74, 0.70)
+	if omni:
+		var globe := SphereMesh.new()
+		globe.radius = 0.20
+		globe.height = 0.42
+		globe.radial_segments = 28
+		globe.rings = 14
+		var neck := CylinderMesh.new()
+		neck.top_radius = 0.09
+		neck.bottom_radius = 0.10
+		neck.height = 0.15
+		neck.radial_segments = 20
+		var base := CylinderMesh.new()
+		base.top_radius = 0.13
+		base.bottom_radius = 0.14
+		base.height = 0.06
+		base.radial_segments = 20
+		return [
+			_marker_part(globe, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.05, 0.0)), bulb),
+			_marker_part(neck, Transform3D(Basis.IDENTITY, Vector3(0.0, -0.20, 0.0)), housing),
+			_marker_part(base, Transform3D(Basis.IDENTITY, Vector3(0.0, -0.30, 0.0)), nose),
+		]
+	var box := BoxMesh.new()
+	box.size = Vector3(0.36, 0.24, 0.34)
+	var collar := CylinderMesh.new()
+	collar.top_radius = 0.17
+	collar.bottom_radius = 0.19
+	collar.height = 0.10
+	collar.radial_segments = 24
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 0.16
+	cone.height = 0.30
+	cone.radial_segments = 24
+	var forward := Basis(Vector3.RIGHT, -PI * 0.5)
+	return [
+		_marker_part(box, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, 0.06)), housing),
+		_marker_part(collar, Transform3D(forward, Vector3(0.0, 0.0, -0.03)), nose),
+		_marker_part(cone, Transform3D(forward, Vector3(0.0, 0.0, -0.22)), nose),
+	]
+
+func _make_empty_marker() -> Array:
+	# A three-axis triad, one surface per axis so the body can brighten with
+	# the selection while keeping the X/Y/Z colour reading.
+	var x_axis := BoxMesh.new()
+	x_axis.size = Vector3(0.36, 0.03, 0.03)
+	var y_axis := BoxMesh.new()
+	y_axis.size = Vector3(0.03, 0.36, 0.03)
+	var z_axis := BoxMesh.new()
+	z_axis.size = Vector3(0.03, 0.03, 0.36)
+	return [
+		_marker_part(x_axis, Transform3D(Basis.IDENTITY, Vector3(0.18, 0.0, 0.0)), Color(0.86, 0.38, 0.36)),
+		_marker_part(y_axis, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.18, 0.0)), Color(0.42, 0.84, 0.52)),
+		_marker_part(z_axis, Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, 0.18)), Color(0.40, 0.64, 0.94)),
+	]
 
 func _make_primitive(kind: String) -> Mesh:
 	match kind:
@@ -623,13 +926,18 @@ func _apply_visual_properties(node: Node3D, obj: Dictionary) -> void:
 		var light := node.get_node_or_null("Light") as Light3D
 		if light != null:
 			light.light_energy = float(obj.get("light_energy", 1.2))
-			light.light_color = _hex_color(str(obj.get("light_color", "#FFF0DB")))
+			light.light_color = _hex_color(str(obj.get("light_color", "#F0F0F0")))
 			if light is OmniLight3D:
 				(light as OmniLight3D).omni_range = float(obj.get("light_range", 8.0))
+			_configure_shadows(light, obj)
 	elif kind == "camera":
 		var camera := node.get_node_or_null("Camera") as Camera3D
 		if camera != null:
 			camera.fov = clampf(float(obj.get("camera_fov", 45.0)), 12.0, 100.0)
+	if kind == "light":
+		_sync_sun_sky_mode()
+	if rig_system != null:
+		rig_system.on_object_properties(obj, node)
 
 # -------------------------------------------------------------------------
 # Objects
@@ -697,10 +1005,10 @@ func _default_scale_for(primitive: String) -> Vector3:
 
 func _default_color_for(primitive: String) -> String:
 	match primitive:
-		"sphere": return "#A9A39A"
-		"torus": return "#8B95A4"
-		"plane": return "#3B4450"
-		_: return "#B3A28B"
+		"sphere": return "#B0B0B0"
+		"torus": return "#C8C8C8"
+		"plane": return "#3A3A3A"
+		_: return "#A8A8A8"
 
 func add_empty(at: Vector3 = Vector3.ZERO) -> String:
 	begin_edit("Add Empty")
@@ -741,7 +1049,7 @@ func add_light(kind: String = "directional", at: Vector3 = Vector3(0, 4, 0)) -> 
 	var obj := _new_object_data("light", light_name, at)
 	obj["light_type"] = "omni" if kind == "omni" else "directional"
 	obj["rotation"] = Quaternion(Vector3.RIGHT, deg_to_rad(-40.0)) * Quaternion(Vector3.UP, deg_to_rad(-30.0))
-	obj["light_color"] = "#FFE7C4"
+	obj["light_color"] = "#F0F0F0"
 	obj["light_energy"] = 1.0 if kind == "omni" else 1.25
 	objects.append(obj)
 	_spawn_object(obj)
@@ -757,7 +1065,7 @@ func _add_light_data(p_name: String, kind: String, at: Vector3, rotation_euler: 
 	obj["light_type"] = kind
 	obj["rotation"] = Quaternion.from_euler(rotation_euler * (PI / 180.0))
 	obj["light_energy"] = 1.1 if kind == "omni" else 1.35
-	obj["light_color"] = "#FFE8CA" if kind == "omni" else "#FFF2DF"
+	obj["light_color"] = "#E8E8E8" if kind == "omni" else "#F0F0F0"
 	if kind == "omni":
 		obj["light_range"] = 10.0
 	objects.append(obj)
@@ -766,12 +1074,27 @@ func _add_light_data(p_name: String, kind: String, at: Vector3, rotation_euler: 
 		scene_changed.emit()
 	return obj
 
+func _on_imported_scene_materials(object_id: String, node: Node) -> void:
+	# Import-only. Load and undo spawn objects without emitting this signal, so
+	# adoption can never duplicate the library on a project open.
+	if material_system == null or node == null:
+		return
+	var obj := get_object(object_id)
+	var model_name := str(obj.get("name", "Model"))
+	material_system.adopt_import(object_id, node, model_name)
+
+
 func add_imported(model_rel_path: String, p_name: String, at: Vector3 = Vector3.ZERO) -> String:
 	begin_edit("Import model")
 	var obj := _new_object_data("import", p_name, at)
 	obj["model"] = model_rel_path
 	objects.append(obj)
 	_spawn_object(obj)
+	# Import-only signal: load and undo use `object_spawned` and never re-scan
+	# the model, so clips cannot be duplicated on every restore.
+	var id := str(obj["id"])
+	if nodes.has(id):
+		imported_scene_ready.emit(id, nodes[id])
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
@@ -806,7 +1129,7 @@ func delete_object(id: String) -> void:
 	if animation != null:
 		for i in range(animation.get_track_count() - 1, -1, -1):
 			if str(animation.track_get_path(i)).begins_with(prefix):
-				animation.track_remove_track(i)
+				animation.remove_track(i)
 	objects.erase(obj)
 	nodes.erase(id)
 	remove_child(node)
@@ -814,6 +1137,9 @@ func delete_object(id: String) -> void:
 	if selected_id == id:
 		selected_id = ""
 		_ensure_valid_selection()
+	if selected_part_object_id == id:
+		selected_part_object_id = ""
+		selected_part_path = ""
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
@@ -848,6 +1174,8 @@ func set_object_visible(id: String, visible: bool) -> void:
 	var node: Node3D = nodes.get(id)
 	if node != null:
 		node.visible = visible
+	if str(obj.get("kind", "")) == "light":
+		_sync_sun_sky_mode()
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
@@ -869,6 +1197,10 @@ func get_selected_node() -> Node3D:
 func set_selection(id: String) -> void:
 	if id != "" and not nodes.has(id):
 		return
+	if selected_part_object_id != "" and selected_part_object_id != id:
+		selected_part_object_id = ""
+		selected_part_path = ""
+		part_selection_changed.emit("", "")
 	if selected_id == id:
 		return
 	selected_id = id
@@ -888,19 +1220,76 @@ func set_object_transform(id: String, position: Vector3, rotation: Quaternion, p
 	var node: Node3D = nodes.get(id)
 	if node == null:
 		return
+	var next_rotation := rotation.normalized()
+	var changed := PackedStringArray()
+	if not _vec3_close(node.position, position, 0.00001):
+		changed.append("position")
+	if node.quaternion.angle_to(next_rotation) > deg_to_rad(0.01):
+		changed.append("rotation")
+	if not _vec3_close(node.scale, p_scale, 0.00001):
+		changed.append("scale")
+	var values := {
+		"position": position,
+		"rotation": next_rotation,
+		"scale": p_scale,
+	}
+	_apply_pose_to_node(id, position, next_rotation, p_scale)
+	var wrote_key := false
+	if key and not _loading:
+		for channel in changed:
+			var existing := _key_index_at(id, channel, current_time)
+			if existing >= 0:
+				# Editing on a key updates that key even when autokey is off.
+				_write_key(id, channel, values[channel], "update_only")
+				wrote_key = true
+			elif autokey:
+				_write_key(id, channel, values[channel], "insert_only")
+				wrote_key = true
+		# A key write re-seeks the AnimationPlayer, which re-samples every
+		# track. Restore the intended pose so unkeyed channels are not lost.
+		_apply_pose_to_node(id, position, next_rotation, p_scale)
+	if not changed.is_empty():
+		_dirty = true
+		dirty_changed.emit(true)
+		transform_changed.emit(id)
+		if wrote_key:
+			keyframes_changed.emit(id)
+
+func _apply_pose_to_node(id: String, position: Vector3, rotation: Quaternion, p_scale: Vector3) -> void:
+	var node: Node3D = nodes.get(id)
+	if node == null:
+		return
 	node.position = position
-	node.quaternion = rotation.normalized()
+	node.quaternion = rotation
 	node.scale = p_scale
 	var obj := get_object(id)
 	if not obj.is_empty():
 		obj["position"] = node.position
 		obj["rotation"] = node.quaternion
 		obj["scale"] = node.scale
-	if key and autokey and not _loading:
-		_key_selected_transform(false)
-	_dirty = true
-	dirty_changed.emit(true)
-	object_changed.emit(id)
+
+func _vec3_close(a: Vector3, b: Vector3, epsilon: float) -> bool:
+	return absf(a.x - b.x) <= epsilon and absf(a.y - b.y) <= epsilon and absf(a.z - b.z) <= epsilon
+
+func _key_index_at(id: String, channel: String, time: float) -> int:
+	return get_key_index_at(id, channel, time, 0.5 / float(maxi(1, fps)))
+
+func _write_key(id: String, channel: String, value: Variant, mode: String) -> int:
+	if mode != "update_only" and mode != "insert_only" and mode != "update_or_insert":
+		push_error("Unknown key write mode: " + mode)
+		return -1
+	var existing := _key_index_at(id, channel, current_time)
+	if existing >= 0:
+		if mode != "insert_only":
+			set_key_value(id, channel, existing, value)
+		return existing
+	if mode == "update_only":
+		return -1
+	var track := _ensure_track(id, channel)
+	if track < 0:
+		return -1
+	animation.track_set_interpolation_type(track, _interpolation_value())
+	return _insert_track_value(track, channel, current_time, value)
 
 func set_transform_uniform(id: String, position: Vector3, rotation: Quaternion, p_scale: Vector3) -> void:
 	set_object_transform(id, position, rotation, p_scale, true)
@@ -1001,40 +1390,45 @@ func _insert_track_value(track: int, channel: String, time: float, value: Varian
 		_:
 			return animation.track_insert_key(track, time, value)
 
-func _key_selected_transform(record_history: bool = true) -> void:
+func _key_selected_transform() -> void:
 	if selected_id == "":
 		return
-	if record_history:
-		begin_edit("Insert keys")
+	begin_edit("Insert keys")
+	var values := {}
 	for channel in CHANNELS:
-		var node: Node3D = nodes.get(selected_id)
-		if node == null:
-			continue
-		var track := _ensure_track(selected_id, channel)
-		if track < 0:
-			continue
-		animation.track_set_interpolation_type(track, _interpolation_value())
-		_insert_track_value(track, channel, current_time, _channel_value(selected_id, channel))
-	if record_history:
-		end_edit()
+		var value: Variant = _channel_value(selected_id, channel)
+		if value != null:
+			values[channel] = value
+	for channel in CHANNELS:
+		if values.has(channel):
+			_write_key(selected_id, channel, values[channel], "update_or_insert")
+	if values.size() == 3:
+		_apply_pose_to_node(selected_id, values["position"], values["rotation"], values["scale"])
+	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(selected_id)
+	keyframes_changed.emit(selected_id)
 
 func insert_transform_keys() -> void:
-	_key_selected_transform(true)
+	_key_selected_transform()
 
 func insert_channel_key(channel: String) -> void:
 	if selected_id == "":
 		return
 	begin_edit("Insert " + channel + " key")
-	var track := _ensure_track(selected_id, channel)
-	if track >= 0:
-		_insert_track_value(track, channel, current_time, _channel_value(selected_id, channel))
+	var values := {}
+	for name in CHANNELS:
+		var value: Variant = _channel_value(selected_id, name)
+		if value != null:
+			values[name] = value
+	if values.has(channel):
+		_write_key(selected_id, channel, values[channel], "update_or_insert")
+	if values.size() == 3:
+		_apply_pose_to_node(selected_id, values["position"], values["rotation"], values["scale"])
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(selected_id)
+	keyframes_changed.emit(selected_id)
 
 func get_channel_keys(id: String, channel: String) -> Array:
 	var track := get_track(id, channel)
@@ -1064,9 +1458,852 @@ func set_key_transition(id: String, channel: String, key_index: int, value: floa
 	animation.track_set_key_transition(track, key_index, clampf(value, 0.0, 4.0))
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(id)
+	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
+
+func set_channel_transition(id: String, channel: String, value: float) -> void:
+	## Godot stores one transition scalar per key, so a channel-wide easing is
+	## the same clamped value written to every key in the track.
+	var track := get_track(id, channel)
+	if track < 0:
+		return
+	var clamped := clampf(value, 0.0, 4.0)
+	for key_index in range(animation.track_get_key_count(track)):
+		animation.track_set_key_transition(track, key_index, clamped)
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
+	if anim_player != null:
+		anim_player.seek(current_time, true)
+
+# -------------------------------------------------------------------------
+# Curve segments (project format 4)
+# -------------------------------------------------------------------------
+
+func curve_segments() -> Array:
+	if animation_system == null:
+		return []
+	return animation_system.curve_segments()
+
+
+func set_curve_segments(segments: Array) -> void:
+	if animation_system == null:
+		return
+	animation_system.set_curve_segments(segments)
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit("")
+
+
+func segments_for(id: String, channel: String) -> Array:
+	var out: Array = []
+	for raw in curve_segments():
+		if not raw is Dictionary:
+			continue
+		var record: Dictionary = raw
+		if str(record.get("object", "")) == id and str(record.get("channel", "")) == channel:
+			out.append(record)
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("start", 0.0)) < float(b.get("start", 0.0))
+	)
+	return out
+
+
+func curve_segment_at(id: String, channel: String, time: float) -> Dictionary:
+	for record in segments_for(id, channel):
+		var start := float(record.get("start", 0.0))
+		var end := float(record.get("end", 0.0))
+		if time >= start - 0.000001 and time <= end + 0.000001:
+			return record
+	return {}
+
+
+## Consecutive key intervals that no curve record covers. A record owns its
+## whole span, so interior baked keys never become their own plain segment.
+func _plain_segment_spans(id: String, channel: String) -> Array:
+	var out: Array = []
+	var keys := get_channel_keys(id, channel)
+	if keys.size() < 2:
+		return out
+	var records := segments_for(id, channel)
+	for i in range(keys.size() - 1):
+		var start := float(keys[i]["time"])
+		var end := float(keys[i + 1]["time"])
+		if end <= start + 0.000001:
+			continue
+		var mid := (start + end) * 0.5
+		var covered := false
+		for record in records:
+			var rstart := float(record.get("start", 0.0))
+			var rend := float(record.get("end", 0.0))
+			if mid >= rstart - 0.000001 and mid <= rend + 0.000001:
+				covered = true
+				break
+		if not covered:
+			out.append({
+				"object": id,
+				"channel": channel,
+				"start": start,
+				"end": end,
+				"kind": "plain",
+			})
+	return out
+
+
+func _merged_segment_spans(id: String, channel: String) -> Array:
+	var out: Array = []
+	for record in segments_for(id, channel):
+		out.append({
+			"object": id,
+			"channel": channel,
+			"start": float(record.get("start", 0.0)),
+			"end": float(record.get("end", 0.0)),
+			"kind": "record",
+			"record": record.duplicate(true),
+		})
+	out.append_array(_plain_segment_spans(id, channel))
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if is_equal_approx(float(a.get("start", 0.0)), float(b.get("start", 0.0))):
+			return str(a.get("kind", "")) == "record"
+		return float(a.get("start", 0.0)) < float(b.get("start", 0.0))
+	)
+	return out
+
+
+func segment_span_at(id: String, channel: String, time: float) -> Dictionary:
+	var record := curve_segment_at(id, channel, time)
+	if not record.is_empty():
+		return {
+			"object": id,
+			"channel": channel,
+			"start": float(record.get("start", 0.0)),
+			"end": float(record.get("end", 0.0)),
+			"kind": "record",
+			"record": record.duplicate(true),
+		}
+	for span in _plain_segment_spans(id, channel):
+		var start := float(span.get("start", 0.0))
+		var end := float(span.get("end", 0.0))
+		if time >= start - 0.000001 and time <= end + 0.000001:
+			return span
+	return {}
+
+
+func next_segment_span(id: String, channel: String, start: float, direction: int) -> Dictionary:
+	## Walk the merged list without wrapping. A record counts once and its
+	## interior baked keys are never a candidate.
+	var spans := _merged_segment_spans(id, channel)
+	if direction >= 0:
+		for span in spans:
+			if float(span.get("start", 0.0)) > start + 0.000001:
+				return span
+		return {}
+	var previous: Dictionary = {}
+	for span in spans:
+		if float(span.get("start", 0.0)) < start - 0.000001:
+			previous = span
+		else:
+			break
+	return previous
+
+
+## Replace every record for one object/channel inside the active clip while
+## leaving other objects and channels untouched. `set_curve_segments` sanitizes.
+func _replace_channel_records(id: String, channel: String, segments_after: Array) -> void:
+	var kept: Array = []
+	for raw in curve_segments():
+		if not raw is Dictionary:
+			continue
+		var record: Dictionary = raw
+		if str(record.get("object", "")) == id and str(record.get("channel", "")) == channel:
+			continue
+		kept.append(record)
+	for raw in segments_after:
+		if raw is Dictionary:
+			kept.append(raw)
+	set_curve_segments(kept)
+
+
+func _drop_overlapping_records(id: String, channel: String, min_time: float, max_time: float) -> void:
+	## A record owns its span including both endpoint keys: touching either end
+	## is an edit inside the record's identity, so the closed interval decides.
+	var kept: Array = []
+	for record in segments_for(id, channel):
+		var start := float(record.get("start", 0.0))
+		var end := float(record.get("end", 0.0))
+		if end < min_time - 0.000001 or start > max_time + 0.000001:
+			kept.append(record)
+	_replace_channel_records(id, channel, kept)
+
+
+func apply_key_edits(id: String, channel: String, edits: Array,
+		label := "Edit keys", preserve_curves := false,
+		curve_segments_after: Variant = null) -> Dictionary:
+	## Apply a batch of key edits against the pre-edit track in one undo entry.
+	## Each edit refers to an index in the current track or inserts with -1.
+	## Indices in the result point at the edited keys after the time sort.
+	## Metadata removal shares the same undo snapshot as the keys.
+	begin_edit(label)
+	var result := _apply_key_edits_raw(id, channel, edits, label, preserve_curves, curve_segments_after)
+	end_edit()
+	return result
+
+
+func _apply_key_edits_raw(id: String, channel: String, edits: Array, _label: String,
+		preserve_curves: bool, curve_segments_after: Variant = null) -> Dictionary:
+	if not (channel in CHANNELS):
+		return {"ok": false, "error": "Unknown channel.", "indices": []}
+	var track := get_track(id, channel)
+	var snapshot: Array = []
+	if track >= 0:
+		for ki in range(animation.track_get_key_count(track)):
+			snapshot.append({
+				"time": float(animation.track_get_key_time(track, ki)),
+				"value": animation.track_get_key_value(track, ki),
+				"transition": float(animation.track_get_key_transition(track, ki)),
+			})
+	var entries: Array = []
+	for si in range(snapshot.size()):
+		var raw: Dictionary = snapshot[si]
+		entries.append({
+			"time": float(raw["time"]),
+			"value": raw["value"],
+			"transition": float(raw["transition"]),
+			"deleted": false,
+			"token": si,
+		})
+	var inserts: Array = []
+	var edit_tokens: Array = []
+	var touched_times: Array = []
+	var next_token := snapshot.size()
+	for edit in edits:
+		if not (edit is Dictionary):
+			return {"ok": false, "error": "Key edits must be dictionaries.", "indices": []}
+		var change: Dictionary = edit
+		var index := int(change.get("index", -1))
+		if index < -1 or index >= entries.size():
+			return {"ok": false, "error": "Key index %d is out of range." % index, "indices": []}
+		if index < 0:
+			var insert_time := float(change.get("time", current_time))
+			var insert_value: Variant = change.get("value", null)
+			if insert_value == null:
+				insert_value = sample_channel(id, channel, insert_time)
+			inserts.append({
+				"time": insert_time,
+				"value": insert_value,
+				"transition": float(change.get("transition", 1.0)),
+				"deleted": false,
+				"token": next_token,
+			})
+			edit_tokens.append(next_token)
+			touched_times.append(insert_time)
+			next_token += 1
+			continue
+		var entry: Dictionary = entries[index]
+		touched_times.append(float(entry["time"]))
+		if bool(change.get("delete", false)):
+			entry["deleted"] = true
+			continue
+		if change.has("time"):
+			entry["time"] = float(change["time"])
+			touched_times.append(float(change["time"]))
+		if change.has("value"):
+			entry["value"] = change["value"]
+		if change.has("transition"):
+			entry["transition"] = float(change["transition"])
+		edit_tokens.append(int(entry["token"]))
+	if not preserve_curves and not touched_times.is_empty():
+		var min_time: float = touched_times[0]
+		var max_time: float = touched_times[0]
+		for value in touched_times:
+			min_time = minf(min_time, float(value))
+			max_time = maxf(max_time, float(value))
+		_drop_overlapping_records(id, channel, min_time, max_time)
+	var live: Array = []
+	for entry in entries:
+		if not bool(entry["deleted"]):
+			live.append(entry)
+	live.append_array(inserts)
+	live.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if is_equal_approx(float(a["time"]), float(b["time"])):
+			return int(a["token"]) < int(b["token"])
+		return float(a["time"]) < float(b["time"])
+	)
+	var final_indices_by_token := {}
+	for fi in range(live.size()):
+		final_indices_by_token[int(live[fi]["token"])] = fi
+	if track < 0 and not live.is_empty():
+		track = _ensure_track(id, channel)
+	if track >= 0:
+		for ki in range(animation.track_get_key_count(track) - 1, -1, -1):
+			animation.track_remove_key(track, ki)
+		if live.is_empty():
+			animation.remove_track(track)
+		else:
+			for entry in live:
+				var new_index := _insert_track_value(track, channel, float(entry["time"]), entry["value"])
+				if new_index >= 0:
+					animation.track_set_key_transition(track, new_index, clampf(float(entry["transition"]), 0.0, 4.0))
+	if curve_segments_after is Array:
+		_replace_channel_records(id, channel, curve_segments_after)
+	var result_indices: Array = []
+	for token in edit_tokens:
+		if final_indices_by_token.has(int(token)):
+			result_indices.append(int(final_indices_by_token[int(token)]))
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
+	scene_changed.emit()
+	if anim_player != null:
+		anim_player.seek(current_time, true)
+	return {"ok": true, "error": "", "indices": result_indices}
+
+
+# -------------------------------------------------------------------------
+# Cubic, family and engine-ease baking
+# -------------------------------------------------------------------------
+
+func _bake_curve_plan(id: String, channel: String, start: float, end: float) -> Dictionary:
+	## Read-only validation shared by the raw bake and the public wrappers. The
+	## public API may call it before `begin_edit` so a refusal writes nothing.
+	var keys := get_channel_keys(id, channel)
+	if keys.size() < 2:
+		return {"ok": false, "reason": "The channel has no keys."}
+	var start_index := -1
+	var end_index := -1
+	for i in range(keys.size()):
+		var time := float(keys[i]["time"])
+		# Duplicate times are resolved by position, never by iteration order:
+		# the first key owns the start and the last key owns the end.
+		if start_index < 0 and absf(time - start) <= 0.001:
+			start_index = i
+		if absf(time - end) <= 0.001:
+			end_index = i
+	if start_index < 0 or end_index < 0 or end_index <= start_index:
+		return {"ok": false, "reason": "Curve data no longer matches these keys."}
+	var start_frame := int(round(start * float(fps)))
+	var end_frame := int(round(end * float(fps)))
+	var span_frames := end_frame - start_frame
+	if span_frames < 3:
+		return {"ok": false, "reason": "Segment too short to bake (3 frames minimum)"}
+	var n := clampi(span_frames - 1, 1, 48)
+	var frames: Array = []
+	for i in range(1, n + 1):
+		var frame := start_frame + int(round(float(i) * float(span_frames) / float(n + 1)))
+		if frames.is_empty() or int(frames[frames.size() - 1]) != frame:
+			frames.append(frame)
+	return {
+		"ok": true,
+		"reason": "",
+		"keys": keys,
+		"start_index": start_index,
+		"end_index": end_index,
+		"start_frame": start_frame,
+		"span_frames": span_frames,
+		"frames": frames,
+		"v0": keys[start_index]["value"],
+		"v1": keys[end_index]["value"],
+	}
+
+
+## The one shared bake body. Runs inside a caller's transaction and never opens
+## one of its own, so `move_key` can compose a key move and a re-bake.
+## `fractions` are eased fractions for cubic/family bakes; for family `baked`
+## they are the real sampled values from the live track.
+func _bake_curve_range_raw(id: String, channel: String, start: float, end: float,
+		fractions: Array, family: String, preset: String,
+		restore_transition: float, handles: Dictionary) -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var edits: Array = []
+	var keys: Array = plan["keys"]
+	var start_index := int(plan["start_index"])
+	var end_index := int(plan["end_index"])
+	for i in range(start_index + 1, end_index):
+		var time := float(keys[i]["time"])
+		if time > start + 0.000001 and time < end - 0.000001:
+			edits.append({"index": i, "delete": true})
+	edits.append({"index": start_index, "transition": 1.0})
+	var frames: Array = plan["frames"]
+	var inserted := 0
+	for j in range(frames.size()):
+		var time := float(int(frames[j])) / float(fps)
+		if time <= start + 0.000001 or time >= end - 0.000001:
+			continue
+		var value: Variant
+		if family == "baked" and j < fractions.size():
+			value = fractions[j]
+		else:
+			var raw_fraction := (time - start) / maxf(0.000001, end - start)
+			var eased := float(fractions[j]) if j < fractions.size() else raw_fraction
+			value = _curve_value(channel, plan["v0"], plan["v1"], eased)
+		edits.append({
+			"index": -1,
+			"time": time,
+			"value": value,
+			"transition": 1.0,
+		})
+		inserted += 1
+	var channel_records: Array = []
+	for record in segments_for(id, channel):
+		var rstart := float(record.get("start", 0.0))
+		var rend := float(record.get("end", 0.0))
+		if rend <= start + 0.000001 or rstart >= end - 0.000001:
+			channel_records.append(record)
+	var new_record := {
+		"object": id,
+		"channel": channel,
+		"start": start,
+		"end": end,
+		"family": family,
+	}
+	if family == "cubic":
+		new_record["x1"] = clampf(float(handles.get("x1", 1.0 / 3.0)), 0.0, 1.0)
+		new_record["y1"] = clampf(float(handles.get("y1", 1.0 / 3.0)), -2.0, 3.0)
+		new_record["x2"] = clampf(float(handles.get("x2", 2.0 / 3.0)), 0.0, 1.0)
+		new_record["y2"] = clampf(float(handles.get("y2", 2.0 / 3.0)), -2.0, 3.0)
+	new_record["preset"] = preset
+	new_record["samples"] = inserted
+	new_record["restore_transition"] = clampf(restore_transition, 0.0, 4.0)
+	channel_records.append(new_record)
+	var result := _apply_key_edits_raw(id, channel, edits, "Bake curve", true, channel_records)
+	if not bool(result.get("ok", false)):
+		var error := str(result.get("error", ""))
+		return {"ok": false, "inserted": 0, "reason": error, "message": error}
+	var message := "%s baked · %d keys" % [_bake_label(family, preset), inserted]
+	return {"ok": true, "inserted": inserted, "reason": "", "message": message}
+
+
+func _bake_label(family: String, preset: String) -> String:
+	if family == "cubic":
+		return "Cubic"
+	if family == "baked":
+		return "Engine ease"
+	return "Preset " + preset
+
+
+func _bake_curve_range(id: String, channel: String, start: float, end: float,
+		fractions: Array, family: String, preset: String,
+		restore_transition: float, handles: Dictionary) -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	begin_edit("Bake curve")
+	var result := _bake_curve_range_raw(id, channel, start, end, fractions,
+		family, preset, restore_transition, handles)
+	if not bool(result.get("ok", false)):
+		cancel_edit()
+	else:
+		end_edit()
+	return result
+
+
+func _restore_transition_for(id: String, channel: String, start: float, end: float) -> float:
+	for record in segments_for(id, channel):
+		var rstart := float(record.get("start", 0.0))
+		var rend := float(record.get("end", 0.0))
+		if rstart <= start + 0.000001 and rend >= end - 0.000001:
+			return clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
+	var keys := get_channel_keys(id, channel)
+	for i in range(keys.size()):
+		if absf(float(keys[i]["time"]) - start) <= 0.001:
+			return get_key_transition(id, channel, i)
+	return 1.0
+
+
+func _plan_fractions(plan: Dictionary, start: float, end: float,
+		evaluator: Callable) -> Array:
+	var out: Array = []
+	var frames: Array = plan.get("frames", [])
+	for frame in frames:
+		var time := float(int(frame)) / float(fps)
+		var fraction := (time - start) / maxf(0.000001, end - start)
+		out.append(float(evaluator.call(fraction)))
+	return out
+
+
+func bake_cubic_segment(id: String, channel: String, start: float, end: float,
+		x1: float, y1: float, x2: float, y2: float, preset := "custom") -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var fractions := _plan_fractions(plan, start, end,
+		func(fraction: float) -> float:
+			return SpeedCurve.cubic_ease(fraction, x1, y1, x2, y2)
+	)
+	var restore := _restore_transition_for(id, channel, start, end)
+	var handles := {
+		"x1": clampf(x1, 0.0, 1.0),
+		"y1": clampf(y1, -2.0, 3.0),
+		"x2": clampf(x2, 0.0, 1.0),
+		"y2": clampf(y2, -2.0, 3.0),
+	}
+	return _bake_curve_range(id, channel, start, end, fractions, "cubic", preset, restore, handles)
+
+
+func bake_curve_family_segment(id: String, channel: String, start: float, end: float,
+		family_id: String) -> Dictionary:
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var fractions := _plan_fractions(plan, start, end,
+		func(fraction: float) -> float:
+			return SpeedCurve.evaluate(family_id, fraction)
+	)
+	var restore := _restore_transition_for(id, channel, start, end)
+	return _bake_curve_range(id, channel, start, end, fractions, "preset", family_id, restore, {})
+
+
+## Compatibility wrapper used by older timeline code and tests: bake the
+## segment that starts at `key_index` through the shared family path.
+func bake_curve_segment(id: String, channel: String, key_index: int, curve_id: String) -> Dictionary:
+	var keys := get_channel_keys(id, channel)
+	if keys.size() < 2 or key_index < 0 or key_index >= keys.size() - 1:
+		var reason := "The last key has no following segment." if key_index >= keys.size() - 1 \
+			else "The channel has no keys."
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var start := float(keys[key_index]["time"])
+	var end := float(keys[key_index + 1]["time"])
+	var result := bake_curve_family_segment(id, channel, start, end, curve_id)
+	if bool(result.get("ok", false)):
+		result["message"] = "%s baked · %d keys" % [
+			SpeedCurve.family_label(curve_id), int(result.get("inserted", 0))]
+	return result
+
+
+func bake_engine_ease(id: String, channel: String, key_index: int) -> Dictionary:
+	var keys := get_channel_keys(id, channel)
+	if key_index < 0 or key_index >= keys.size() - 1:
+		var reason := "The last key has no following segment." if key_index >= keys.size() - 1 \
+			else "The selected key is out of range."
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var start := float(keys[key_index]["time"])
+	var end := float(keys[key_index + 1]["time"])
+	var plan := _bake_curve_plan(id, channel, start, end)
+	if not bool(plan.get("ok", false)):
+		var reason := str(plan.get("reason", ""))
+		return {"ok": false, "inserted": 0, "reason": reason, "message": reason}
+	var samples: Array = []
+	for frame in plan["frames"]:
+		var time := float(int(frame)) / float(fps)
+		samples.append(sample_channel(id, channel, time))
+	var restore := get_key_transition(id, channel, key_index)
+	return _bake_curve_range(id, channel, start, end, samples, "baked", "engine", restore, {})
+
+
+## Move one key and, when it is a recorded segment's endpoint, re-bake that
+## record in the same undo entry. `rebake.enabled = false` invalidates instead.
+func move_key(id: String, channel: String, key_index: int, new_time: float,
+		new_value: Variant, rebake := {}) -> Dictionary:
+	if not (channel in CHANNELS):
+		return _move_key_result(false, -1, false, false, "Unknown channel.")
+	var keys := get_channel_keys(id, channel)
+	if key_index < 0 or key_index >= keys.size():
+		return _move_key_result(false, -1, false, false, "Key index out of range.")
+	var old_time := float(keys[key_index]["time"])
+	var record: Dictionary = {}
+	var is_start := false
+	for candidate in segments_for(id, channel):
+		var rstart := float(candidate.get("start", 0.0))
+		var rend := float(candidate.get("end", 0.0))
+		if absf(rstart - old_time) <= 0.001:
+			record = candidate.duplicate(true)
+			is_start = true
+			break
+		if absf(rend - old_time) <= 0.001:
+			record = candidate.duplicate(true)
+			is_start = false
+			break
+
+	# The clamp stops an endpoint crossing an authored neighbour. Baked
+	# interiors are machine-generated and must never constrain the drag, or a
+	# recorded segment could only shrink by about one frame.
+	var lower := 0.0
+	var upper: float = duration
+	if record.is_empty():
+		# A normal key keeps the original immediate-neighbour clamp.
+		if key_index > 0:
+			lower = float(keys[key_index - 1]["time"])
+		if key_index < keys.size() - 1:
+			upper = float(keys[key_index + 1]["time"])
+	elif is_start:
+		lower = _authored_neighbour(id, channel, keys, key_index, -1)
+		upper = float(record.get("end", old_time))
+	else:
+		lower = float(record.get("start", old_time))
+		upper = _authored_neighbour(id, channel, keys, key_index, 1)
+	var target_time := clampf(new_time, 0.0, duration)
+	target_time = clampf(target_time, lower, upper)
+	if snap and fps > 0:
+		target_time = roundf(target_time * float(fps)) / float(fps)
+		target_time = clampf(target_time, lower, upper)
+		target_time = clampf(target_time, 0.0, duration)
+	var edit: Array = [{"index": key_index, "time": target_time, "value": new_value}]
+
+	var span_start := old_time
+	var span_end := old_time
+	if not record.is_empty():
+		span_start = float(record.get("start", old_time))
+		span_end = float(record.get("end", old_time))
+		if is_start:
+			span_start = target_time
+		else:
+			span_end = target_time
+		if span_start > span_end:
+			var swap := span_start
+			span_start = span_end
+			span_end = swap
+
+	var allow_rebake := true
+	if rebake is Dictionary:
+		allow_rebake = bool(rebake.get("enabled", true))
+
+	# A sampled engine-ease record has no authored curve to rebuild, and an
+	# explicit opt-out does the same: invalidate rather than fake a curve.
+	if not record.is_empty() and (str(record.get("family", "")) == "baked" or not allow_rebake):
+		var invalidating: Array = edit.duplicate(true)
+		_append_shrink_deletes(invalidating, keys, key_index, record, span_start, span_end)
+		var plain := apply_key_edits(id, channel, invalidating, "Move key")
+		if not bool(plain.get("ok", false)):
+			return _move_key_result(false, -1, false, false, str(plain.get("error", "")))
+		return _move_key_result(true,
+			_key_index_at_value(id, channel, target_time, new_value), true, false)
+
+	if not record.is_empty():
+		var family := str(record.get("family", "cubic"))
+		var preset := str(record.get("preset", "custom"))
+		var handles := {
+			"x1": float(record.get("x1", 1.0 / 3.0)),
+			"y1": float(record.get("y1", 1.0 / 3.0)),
+			"x2": float(record.get("x2", 2.0 / 3.0)),
+			"y2": float(record.get("y2", 2.0 / 3.0)),
+		}
+		var restore := clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
+		begin_edit("Move key")
+		var rebaking: Array = edit.duplicate(true)
+		_append_shrink_deletes(rebaking, keys, key_index, record, span_start, span_end)
+		var moved := _apply_key_edits_raw(id, channel, rebaking, "Move key", true)
+		if not bool(moved.get("ok", false)):
+			cancel_edit()
+			return _move_key_result(false, -1, false, false, str(moved.get("error", "")))
+		var plan := _bake_curve_plan(id, channel, span_start, span_end)
+		var baked := {"ok": false}
+		if bool(plan.get("ok", false)):
+			var fractions: Array
+			if family == "preset":
+				fractions = _plan_fractions(plan, span_start, span_end,
+					func(fraction: float) -> float:
+						return SpeedCurve.evaluate(preset, fraction)
+				)
+			else:
+				fractions = _plan_fractions(plan, span_start, span_end,
+					func(fraction: float) -> float:
+						return SpeedCurve.cubic_ease(fraction, float(handles["x1"]),
+							float(handles["y1"]), float(handles["x2"]), float(handles["y2"]))
+				)
+			baked = _bake_curve_range_raw(id, channel, span_start, span_end,
+				fractions, family, preset, restore, handles if family == "cubic" else {})
+		if not bool(baked.get("ok", false)):
+			# The new span is too short (or its endpoints vanished): drop the
+			# record, keep the moved key, and stay in the same undo entry.
+			var kept: Array = []
+			for candidate in segments_for(id, channel):
+				if absf(float(candidate.get("start", 0.0)) - float(record.get("start", 0.0))) <= 0.001 \
+						and absf(float(candidate.get("end", 0.0)) - float(record.get("end", 0.0))) <= 0.001:
+					continue
+				kept.append(candidate)
+			_replace_channel_records(id, channel, kept)
+			end_edit()
+			return _move_key_result(true,
+				_key_index_at_value(id, channel, target_time, new_value), true, false)
+		end_edit()
+		return _move_key_result(true,
+			_key_index_at_value(id, channel, target_time, new_value), false, true)
+
+	var interior_record := false
+	for candidate in segments_for(id, channel):
+		var rstart := float(candidate.get("start", 0.0))
+		var rend := float(candidate.get("end", 0.0))
+		if old_time > rstart + 0.001 and old_time < rend - 0.001:
+			interior_record = true
+			break
+	var written := apply_key_edits(id, channel, edit, "Move key")
+	if not bool(written.get("ok", false)):
+		return _move_key_result(false, -1, false, false, str(written.get("error", "")))
+	return _move_key_result(true,
+		_key_index_at_value(id, channel, target_time, new_value), interior_record, false)
+
+
+## Walk past machine-generated baked keys to the next authored key in one
+## direction. The clamp may stop on that key but never on a baked interior.
+func _authored_neighbour(id: String, channel: String, keys: Array, key_index: int,
+		direction: int) -> float:
+	var i := key_index + direction
+	while i >= 0 and i < keys.size():
+		var time := float(keys[i]["time"])
+		if not _is_baked_interior_key(id, channel, time):
+			return time
+		i += direction
+	return 0.0 if direction < 0 else duration
+
+
+func _is_baked_interior_key(id: String, channel: String, time: float) -> bool:
+	for record in segments_for(id, channel):
+		var start := float(record.get("start", 0.0))
+		var end := float(record.get("end", 0.0))
+		if time > start + 0.001 and time < end - 0.001:
+			return true
+	return false
+
+
+## A shrinking endpoint owns the keys it leaves behind: delete the old baked
+## interiors that now sit outside the new record span so the graph cannot draw
+## stale samples between the new endpoint and the old one.
+func _append_shrink_deletes(edits: Array, keys: Array, key_index: int,
+		record: Dictionary, span_start: float, span_end: float) -> void:
+	var old_start := float(record.get("start", span_start))
+	var old_end := float(record.get("end", span_end))
+	for i in range(keys.size()):
+		if i == key_index:
+			continue
+		var time := float(keys[i]["time"])
+		if time > old_start + 0.001 and time < old_end - 0.001 \
+				and (time < span_start - 0.001 or time > span_end + 0.001):
+			edits.append({"index": i, "delete": true})
+
+
+## Duplicate times are possible when an endpoint lands exactly on a neighbour.
+## Prefer the moved value, then the last matching key, so selection is stable.
+func _key_index_at_value(id: String, channel: String, time: float, value: Variant) -> int:
+	var fallback := -1
+	for key in get_channel_keys(id, channel):
+		if absf(float(key["time"]) - time) > 0.001:
+			continue
+		if key["value"] == value:
+			return int(key["index"])
+		fallback = int(key["index"])
+	return fallback if fallback >= 0 else _key_index_at_time(id, channel, time)
+
+
+func _move_key_result(ok: bool, index: int, invalidated: bool, rebaked: bool,
+		error := "") -> Dictionary:
+	return {"ok": ok, "index": index, "invalidated": invalidated,
+		"rebaked": rebaked, "error": error}
+
+
+func _key_index_at_time(id: String, channel: String, time: float) -> int:
+	var best := -1
+	var best_dist := 0.001
+	for key in get_channel_keys(id, channel):
+		var dist := absf(float(key["time"]) - time)
+		if dist <= best_dist:
+			best_dist = dist
+			best = int(key["index"])
+	return best
+
+
+func clear_curve_segment(id: String, channel: String, start: float, end: float) -> Dictionary:
+	var record: Dictionary = {}
+	for candidate in segments_for(id, channel):
+		if absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001:
+			record = candidate
+			break
+	var matching_reason := "Curve data no longer matches these keys."
+	if record.is_empty():
+		return {"ok": false, "reason": matching_reason, "message": matching_reason}
+	begin_edit("Clear curve")
+	var kept: Array = []
+	for candidate in segments_for(id, channel):
+		if not (absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001):
+			kept.append(candidate)
+	var keys := get_channel_keys(id, channel)
+	var start_index := -1
+	var end_index := -1
+	for i in range(keys.size()):
+		if absf(float(keys[i]["time"]) - start) <= 0.001:
+			start_index = i
+		if absf(float(keys[i]["time"]) - end) <= 0.001:
+			end_index = i
+	if start_index < 0 or end_index < 0 or end_index <= start_index:
+		_replace_channel_records(id, channel, kept)
+		end_edit()
+		return {"ok": false, "reason": matching_reason, "message": matching_reason}
+	var edits: Array = []
+	for i in range(start_index + 1, end_index):
+		var time := float(keys[i]["time"])
+		if time > start + 0.000001 and time < end - 0.000001:
+			edits.append({"index": i, "delete": true})
+	var restore := clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0)
+	edits.append({"index": start_index, "transition": restore})
+	_apply_key_edits_raw(id, channel, edits, "Clear curve", true, kept)
+	end_edit()
+	return {"ok": true, "reason": "", "message": "Curve cleared."}
+
+
+func convert_segment_to_cubic(id: String, channel: String, start: float, end: float) -> Dictionary:
+	var record: Dictionary = {}
+	for candidate in segments_for(id, channel):
+		if absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001:
+			record = candidate
+			break
+	var matching_reason := "Curve data no longer matches these keys."
+	if record.is_empty():
+		return {"ok": false, "reason": matching_reason, "message": matching_reason}
+	begin_edit("Convert to cubic")
+	var kept: Array = []
+	for candidate in segments_for(id, channel):
+		if not (absf(float(candidate.get("start", 0.0)) - start) <= 0.001 \
+				and absf(float(candidate.get("end", 0.0)) - end) <= 0.001):
+			kept.append(candidate)
+	kept.append({
+		"object": id,
+		"channel": channel,
+		"start": float(record.get("start", start)),
+		"end": float(record.get("end", end)),
+		"family": "cubic",
+		"x1": 1.0 / 3.0,
+		"y1": 1.0 / 3.0,
+		"x2": 2.0 / 3.0,
+		"y2": 2.0 / 3.0,
+		"preset": "custom",
+		"samples": int(record.get("samples", 0)),
+		"restore_transition": clampf(float(record.get("restore_transition", 1.0)), 0.0, 4.0),
+	})
+	_replace_channel_records(id, channel, kept)
+	end_edit()
+	return {"ok": true, "reason": "", "message": "Converted to cubic."}
+
+
+func _curve_value(channel: String, v0: Variant, v1: Variant, fraction: float) -> Variant:
+	if channel == "rotation":
+		var q0: Quaternion = _as_quat(v0).normalized()
+		var q1: Quaternion = _as_quat(v1).normalized()
+		var delta := q1 * q0.inverse()
+		delta = delta.normalized()
+		var angle := 2.0 * acos(clampf(delta.w, -1.0, 1.0))
+		if angle > PI:
+			angle -= TAU
+		var axis := Vector3(delta.x, delta.y, delta.z)
+		if axis.length_squared() < 0.0000001:
+			return q0
+		return (Quaternion(axis.normalized(), angle * fraction) * q0).normalized()
+	if channel == "position" or channel == "scale":
+		var a: Vector3 = _as_vec3(v0)
+		var b: Vector3 = _as_vec3(v1)
+		return a.lerp(b, fraction)
+	if v0 is float or v0 is int:
+		return lerpf(float(v0), float(v1), fraction)
+	return v0
+
 
 func sample_channel(id: String, channel: String, time: float) -> Variant:
 	## Interpolated value at an arbitrary time, straight from the animation
@@ -1103,16 +2340,27 @@ func delete_key(id: String, channel: String, key_index: int) -> void:
 		return
 	begin_edit("Delete key")
 	var track := get_track(id, channel)
-	if track < 0:
+	if track < 0 or key_index >= animation.track_get_key_count(track):
 		end_edit()
 		return
+	# Deleting any key that belongs to a recorded span removes that record in
+	# the same undo entry; the remaining keys stay.
+	var key_time := float(animation.track_get_key_time(track, key_index))
 	animation.track_remove_key(track, key_index)
+	var touches_record := false
+	for candidate in segments_for(id, channel):
+		if key_time >= float(candidate.get("start", 0.0)) - 0.000001 \
+				and key_time <= float(candidate.get("end", 0.0)) + 0.000001:
+			touches_record = true
+			break
+	if touches_record:
+		_drop_overlapping_records(id, channel, key_time, key_time)
 	if animation.track_get_key_count(track) == 0:
-		animation.track_remove_track(track)
+		animation.remove_track(track)
 	end_edit()
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(id)
+	keyframes_changed.emit(id)
 	scene_changed.emit()
 	if anim_player != null:
 		anim_player.seek(current_time, true)
@@ -1131,6 +2379,7 @@ func set_key_time(id: String, channel: String, key_index: int, new_time: float) 
 	animation.length = duration
 	_dirty = true
 	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 	return new_index
@@ -1142,6 +2391,7 @@ func set_key_value(id: String, channel: String, key_index: int, value: Variant) 
 	animation.track_set_key_value(track, key_index, value)
 	_dirty = true
 	dirty_changed.emit(true)
+	keyframes_changed.emit(id)
 	if anim_player != null:
 		anim_player.seek(current_time, true)
 
@@ -1155,6 +2405,7 @@ func _remove_keys_outside_duration() -> void:
 
 func seek(time: float, silent: bool = false) -> void:
 	_ensure_player()
+	_stop_sequence_playback()
 	current_time = clampf(time, 0.0, duration)
 	is_playing = false
 	if anim_player != null:
@@ -1166,6 +2417,7 @@ func seek(time: float, silent: bool = false) -> void:
 		playback_changed.emit(current_time, false)
 
 func play() -> void:
+	_stop_sequence_playback()
 	if anim_player == null or duration <= 0.001:
 		return
 	if current_time >= duration - 0.0001:
@@ -1181,6 +2433,7 @@ func play() -> void:
 	playback_changed.emit(current_time, true)
 
 func pause() -> void:
+	_stop_sequence_playback()
 	if anim_player != null:
 		current_time = anim_player.current_animation_position
 		anim_player.pause()
@@ -1195,6 +2448,114 @@ func toggle_play() -> void:
 
 func stop() -> void:
 	seek(0.0)
+
+# -------------------------------------------------------------------------
+# Sequence transport (clip lane). Clip time and sequence time are two clocks;
+# only one of them may run at a time.
+# -------------------------------------------------------------------------
+
+## Stop the sequence clock (and its audio/video) before the clip transport
+## takes over. The playhead itself is left where the sequence was.
+func _stop_sequence_playback() -> void:
+	_sequence_playing = false
+	if animation_system != null:
+		animation_system.pause_sequence()
+	if media_system != null:
+		media_system.pause_sequence()
+
+## Keep `doc.animation` and `doc.duration` tied to the active clip when the
+## animation system switches clips during a sequence seek.
+func _adopt_active_animation() -> void:
+	if animation_system == null:
+		return
+	var active: Animation = animation_system.active_animation()
+	if active == null or active == animation:
+		return
+	animation = active
+	duration = maxf(0.04, animation.length)
+	current_time = clampf(current_time, 0.0, duration)
+	_refresh_animation()
+
+func sequence_duration() -> float:
+	if animation_system == null:
+		return duration
+	return animation_system.sequence_duration()
+
+func sequence_time() -> float:
+	if animation_system == null:
+		return current_time
+	return animation_system.sequence_time()
+
+func seek_sequence(time: float, silent: bool = false) -> void:
+	if animation_system == null:
+		return
+	is_playing = false
+	if anim_player != null:
+		anim_player.pause()
+	animation_system.seek_sequence(time)
+	_adopt_active_animation()
+	current_time = animation_system.active_local_time()
+	if media_system != null:
+		media_system.seek_sequence(animation_system.sequence_time(), _sequence_playing)
+	if not silent:
+		playback_changed.emit(current_time, _sequence_playing)
+
+func play_sequence() -> void:
+	if animation_system == null or sequence_duration() <= 0.001:
+		return
+	is_playing = false
+	if anim_player != null:
+		anim_player.pause()
+	_sequence_playing = true
+	animation_system.play_sequence()
+	if media_system != null:
+		media_system.play_sequence(animation_system.sequence_time())
+	current_time = animation_system.active_local_time()
+	_last_emitted_time = current_time
+	playback_changed.emit(current_time, true)
+
+func pause_sequence() -> void:
+	if animation_system == null:
+		return
+	_sequence_playing = false
+	animation_system.pause_sequence()
+	if media_system != null:
+		media_system.pause_sequence()
+	current_time = animation_system.active_local_time()
+	playback_changed.emit(current_time, false)
+
+func stop_sequence() -> void:
+	if animation_system == null:
+		return
+	_sequence_playing = false
+	animation_system.stop_sequence()
+	if media_system != null:
+		media_system.stop_sequence()
+	_adopt_active_animation()
+	current_time = animation_system.active_local_time()
+	playback_changed.emit(current_time, false)
+
+func is_sequence_playing() -> bool:
+	return _sequence_playing
+
+## The clip lane and sheets must call this document method, never the animation
+## system directly, so `doc.animation` can never point at a stale clip.
+func set_active_clip(id: String) -> void:
+	if animation_system == null:
+		return
+	animation_system.set_active_clip(id)
+	var active: Animation = animation_system.active_animation()
+	if active != null:
+		animation = active
+		duration = maxf(0.04, animation.length)
+		current_time = clampf(current_time, 0.0, duration)
+	_refresh_animation()
+	active_clip_changed.emit(id)
+
+func active_clip_id() -> String:
+	if animation_system == null:
+		return ""
+	return animation_system.active_clip_id()
 
 func set_loop(enabled: bool) -> void:
 	loop = enabled
@@ -1229,7 +2590,7 @@ func set_interpolation(mode: String) -> void:
 			animation.track_set_interpolation_type(ti, _interpolation_value())
 	_dirty = true
 	dirty_changed.emit(true)
-	object_changed.emit(selected_id)
+	keyframes_changed.emit("")
 
 func frame_to_time(frame: int) -> float:
 	return clampf(float(frame) / float(fps), 0.0, duration)
@@ -1310,6 +2671,12 @@ func cancel_edit() -> void:
 	_edit_snapshot = {}
 	_edit_label = ""
 	_apply_snapshot(snapshot)
+
+
+## True while a begin_edit()/end_edit() transaction is open. The timeline uses
+## this to decide whether a two-finger gesture must cancel an edit it started.
+func has_open_edit() -> bool:
+	return not _edit_snapshot.is_empty()
 
 func can_undo() -> bool:
 	return not _undo_stack.is_empty()
@@ -1406,7 +2773,7 @@ func _as_quat(value: Variant) -> Quaternion:
 	return value if value is Quaternion else _json_to_quat(value)
 
 func _hex_color(value: String) -> Color:
-	return Color.from_string(value, Color(0.667, 0.698, 0.749))
+	return Color.from_string(value, Color(0.66, 0.66, 0.66))
 
 func _load_animation_tracks(anim_data: Dictionary) -> void:
 	animation.length = maxf(0.04, float(anim_data.get("length", duration)))
@@ -1442,9 +2809,134 @@ func _refresh_animation() -> void:
 		return
 	animation.length = duration
 	animation.loop_mode = Animation.LOOP_LINEAR if loop else Animation.LOOP_NONE
+	# The player always plays the active clip under ANIMATION_NAME. Re-binding
+	# here keeps the fast path valid after the animation system swaps clips.
+	var library: AnimationLibrary
+	if anim_player.has_animation_library(""):
+		library = anim_player.get_animation_library("")
+	else:
+		library = AnimationLibrary.new()
+		anim_player.add_animation_library("", library)
+	if library.has_animation(ANIMATION_NAME):
+		library.remove_animation(ANIMATION_NAME)
+	library.add_animation(ANIMATION_NAME, animation)
 	anim_player.play(ANIMATION_NAME)
 	anim_player.pause()
 	anim_player.seek(current_time, true)
+
+# -------------------------------------------------------------------------
+# Bone keys (shared contract with the rig workstream)
+# -------------------------------------------------------------------------
+
+func _bone_track_path(rig_object_id: String, bone: String) -> NodePath:
+	return NodePath(rig_system._bone_track_prefix(rig_object_id) + bone)
+
+func _bone_track_typed(rig_object_id: String, bone: String, type: int, create: bool) -> int:
+	if animation == null:
+		return -1
+	var path := _bone_track_path(rig_object_id, bone)
+	for ti in range(animation.get_track_count()):
+		if animation.track_get_type(ti) == type \
+				and animation.track_get_path(ti) == path:
+			return ti
+	if not create:
+		return -1
+	var track := animation.add_track(type)
+	animation.track_set_path(track, path)
+	animation.track_set_interpolation_type(track, _interpolation_value())
+	return track
+
+func _bone_track(rig_object_id: String, bone: String, create: bool) -> int:
+	return _bone_track_typed(rig_object_id, bone, Animation.TYPE_ROTATION_3D, create)
+
+func insert_pose_channel(rig_object_id: String, bone: String, channel: String, value: Variant) -> int:
+	var type := -1
+	match channel:
+		"position":
+			type = Animation.TYPE_POSITION_3D
+		"rotation":
+			type = Animation.TYPE_ROTATION_3D
+		"scale":
+			type = Animation.TYPE_SCALE_3D
+		_:
+			return -1
+	var track := _bone_track_typed(rig_object_id, bone, type, true)
+	if track < 0:
+		return -1
+	var stored: Variant = value
+	if channel == "rotation":
+		var q: Quaternion = value if value is Quaternion else _json_to_quat(value)
+		stored = q.normalized() if (q as Quaternion).length_squared() > 0.000001 else Quaternion.IDENTITY
+	else:
+		stored = _json_to_vec3(value)
+	# An existing key at the same time is updated in place; otherwise the
+	# channel gets a new key.
+	var index := animation.track_find_key(track, current_time, Animation.FIND_MODE_EXACT)
+	if index >= 0:
+		animation.track_set_key_value(track, index, stored)
+	else:
+		match channel:
+			"position":
+				index = animation.position_track_insert_key(track, current_time, stored)
+			"rotation":
+				index = animation.rotation_track_insert_key(track, current_time, stored)
+			"scale":
+				index = animation.scale_track_insert_key(track, current_time, stored)
+	if index >= 0:
+		_dirty = true
+		dirty_changed.emit(true)
+		keyframes_changed.emit(rig_object_id)
+	return index
+
+func insert_bone_key(rig_object_id: String, bone: String, rotation: Quaternion) -> int:
+	return insert_pose_channel(rig_object_id, bone, "rotation", rotation)
+
+func get_bone_keys(rig_object_id: String, bone: String) -> Array:
+	var result: Array = []
+	var track := _bone_track(rig_object_id, bone, false)
+	if track < 0:
+		return result
+	for ki in range(animation.track_get_key_count(track)):
+		result.append({
+			"time": float(animation.track_get_key_time(track, ki)),
+			"value": animation.track_get_key_value(track, ki),
+			"index": ki,
+		})
+	return result
+
+func delete_bone_key(rig_object_id: String, bone: String, index: int) -> void:
+	var track := _bone_track(rig_object_id, bone, false)
+	if track < 0 or index < 0 or index >= animation.track_get_key_count(track):
+		return
+	animation.track_remove_key(track, index)
+	_dirty = true
+	dirty_changed.emit(true)
+	keyframes_changed.emit(rig_object_id)
+
+func sample_bone(rig_object_id: String, bone: String, time: float) -> Quaternion:
+	var track := _bone_track(rig_object_id, bone, false)
+	if track < 0 or animation.track_get_key_count(track) == 0:
+		return Quaternion.IDENTITY
+	var value: Quaternion = animation.rotation_track_interpolate(track, time)
+	return value.normalized()
+
+func insert_pose_keys(rig_object_id: String, pose: Dictionary) -> void:
+	var bones: Dictionary = pose
+	if pose.get("bones", null) is Dictionary:
+		bones = pose["bones"]
+	for bone in bones.keys():
+		var value: Variant = bones[bone]
+		if value is Dictionary and ((value as Dictionary).has("p") or (value as Dictionary).has("r") or (value as Dictionary).has("s")):
+			var channels: Dictionary = value
+			if channels.has("p"):
+				insert_pose_channel(rig_object_id, str(bone), "position", channels["p"])
+			if channels.has("r"):
+				insert_pose_channel(rig_object_id, str(bone), "rotation", channels["r"])
+			if channels.has("s"):
+				insert_pose_channel(rig_object_id, str(bone), "scale", channels["s"])
+		elif value is Quaternion or value is Array:
+			# Legacy pose: a bare quaternion per bone writes rotation only.
+			insert_bone_key(rig_object_id, str(bone), _json_to_quat(value))
 
 func set_autokey(enabled: bool) -> void:
 	autokey = enabled
@@ -1479,8 +2971,41 @@ func update_marker_scales(view: Camera3D) -> void:
 			marker.visible = false
 			continue
 		var dist := cam_pos.distance_to(node.global_position)
-		marker.scale = Vector3.ONE * clampf(dist * 0.045, 0.04, 3.0)
+		# A gizmo is a locator, not a miniature object: keep it large enough to
+		# read as a camera or light instead of a speck, and let the selection
+		# brighten it so the outliner and the viewport agree.
+		marker.scale = Vector3.ONE * clampf(dist * 0.072, 0.05, 3.0)
+		_tint_marker(marker, str(id) == selected_id)
 		marker.visible = dist > 0.6 and not view.is_position_behind(node.global_position)
+
+## Brighten every body surface together. The marker is normally one
+## MeshInstance3D with one surface per body part, so a single material walk
+## keeps the block, barrel and ring in step. A future group-of-meshes marker
+## still works because the walk visits every MeshInstance3D underneath.
+func _tint_marker(marker: Node3D, bright: bool) -> void:
+	var colors: Array = marker.get_meta("kinema_marker_colors", [])
+	var color_index := 0
+	var stack: Array[Node] = [marker]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		if not node is MeshInstance3D:
+			continue
+		var mesh_instance := node as MeshInstance3D
+		var mesh := mesh_instance.mesh
+		if mesh == null:
+			continue
+		for surface in range(mesh.get_surface_count()):
+			var material := mesh_instance.get_surface_override_material(surface)
+			if material == null:
+				material = mesh_instance.get_active_material(surface)
+			if material is StandardMaterial3D:
+				var base := Color(0.5, 0.5, 0.5)
+				if color_index < colors.size():
+					base = colors[color_index] as Color
+				var tint := base.lerp(Color(0.94, 0.94, 0.94), 0.38) if bright else base
+				(material as StandardMaterial3D).albedo_color = tint
+			color_index += 1
 
 func get_scene_bounds() -> AABB:
 	var result := AABB()
@@ -1505,7 +3030,203 @@ func get_object_aabb(id: String) -> AABB:
 		return AABB()
 	return _node_world_aabb(node)
 
-func _node_world_aabb(root: Node3D) -> AABB:
+# -------------------------------------------------------------------------
+# Import hierarchy
+# -------------------------------------------------------------------------
+#
+# Imported glTF/GLB objects keep their generated node tree live. The document
+# stores only the UI state (visibility overrides and the selected part path);
+# the part list itself is derived from the loaded model on every call.
+
+## One entry per listed Node3D descendant of the import's generated model, in
+## deterministic tree order. Returns [] for a non-import, a missing object or a
+## model that failed to load.
+func import_parts(id: String) -> Array:
+	var model := _import_model_node(id)
+	if model == null:
+		return []
+	var root: Node3D = nodes.get(id) as Node3D
+	if root == null:
+		return []
+	var obj := get_object(id)
+	if not _exposes_import_parts(str(obj.get("model", ""))):
+		# Spec §8 keeps Wavefront OBJ a single mesh row. Its runtime parser
+		# still builds a wrapper tree, so the format gate lives here rather
+		# than in every caller.
+		return []
+	var parts: Array = []
+	var index := {}
+	_collect_import_parts(model, "Model", 1, "", root, parts, index)
+	return parts
+
+
+## Only glTF/GLB imports carry a meaningful scene hierarchy. OBJ is imported as
+## one flat mesh by design.
+func _exposes_import_parts(model_rel_path: String) -> bool:
+	var extension := model_rel_path.get_extension().to_lower()
+	return extension == "gltf" or extension == "glb"
+
+
+func get_import_part_node(id: String, part_path: String) -> Node3D:
+	if part_path == "":
+		return null
+	var node: Node3D = _resolve_import_part_node(id, part_path)
+	if node == null:
+		return null
+	# Only listed parts are selectable: the Model wrapper and arbitrary children
+	# of the model are not part rows.
+	for part in import_parts(id):
+		if str(part.get("path", "")) == part_path:
+			return node
+	return null
+
+
+func set_import_part_visible(id: String, part_path: String, visible: bool) -> void:
+	var node := get_import_part_node(id, part_path)
+	if node == null:
+		return
+	var obj := get_object(id)
+	if obj.is_empty():
+		return
+	begin_edit("Toggle part visibility")
+	node.visible = visible
+	var overrides: Dictionary = obj.get("part_visibility", {})
+	var copy := overrides.duplicate()
+	copy[part_path] = visible
+	obj["part_visibility"] = copy
+	end_edit()
+	object_changed.emit(id)
+	scene_changed.emit()
+
+
+func get_import_part_aabb(id: String, part_path: String) -> AABB:
+	var node := get_import_part_node(id, part_path)
+	if node == null:
+		return AABB()
+	# AABB() is reserved for invalid input. Hidden parts still answer their
+	# world bounds here; the stage applies the visibility gate through
+	# get_selected_part_aabb().
+	return _node_world_aabb(node, true)
+
+
+func set_selected_part(id: String, part_path: String) -> void:
+	if get_import_part_node(id, part_path) == null:
+		return
+	# Store the part first: set_selection() clears a part that belongs to a
+	# different root, but never the part of the root we are selecting.
+	selected_part_object_id = id
+	selected_part_path = part_path
+	set_selection(id)
+	part_selection_changed.emit(id, part_path)
+
+
+func clear_selected_part() -> void:
+	if selected_part_object_id == "" and selected_part_path == "":
+		return
+	selected_part_object_id = ""
+	selected_part_path = ""
+	part_selection_changed.emit("", "")
+
+
+func get_selected_part_aabb() -> AABB:
+	if selected_part_object_id == "" or selected_part_path == "":
+		return AABB()
+	# One derived list per query: resolve validity and effective visibility
+	# from the same snapshot instead of calling import_parts() twice.
+	var entry: Dictionary = {}
+	for part in import_parts(selected_part_object_id):
+		if str(part.get("path", "")) == selected_part_path:
+			entry = part
+			break
+	if entry.is_empty() or not bool(entry.get("effective_visible", false)):
+		return AABB()
+	var node := _resolve_import_part_node(selected_part_object_id, selected_part_path)
+	if node == null:
+		return AABB()
+	return _node_world_aabb(node)
+
+
+func _import_model_node(id: String) -> Node3D:
+	var obj := get_object(id)
+	if obj.is_empty() or str(obj.get("kind", "")) != "import":
+		return null
+	var root: Node3D = nodes.get(id) as Node3D
+	if root == null:
+		return null
+	return root.get_node_or_null("Model") as Node3D
+
+
+func _resolve_import_part_node(id: String, part_path: String) -> Node3D:
+	var root: Node3D = nodes.get(id) as Node3D
+	if root == null or not part_path.begins_with("Model/"):
+		return null
+	return root.get_node_or_null(NodePath(part_path)) as Node3D
+
+
+func _collect_import_parts(container: Node3D, prefix: String, depth: int,
+		listed_parent: String, root: Node3D, out: Array, index: Dictionary) -> void:
+	for child in container.get_children():
+		if not (child is Node3D):
+			continue
+		var part := child as Node3D
+		var path := prefix + "/" + str(part.name)
+		# The parent entry is appended before its children recurse, so the
+		# whole subtree relation is derived in one pass without a nested scan.
+		if listed_parent != "" and index.has(listed_parent):
+			out[int(index[listed_parent])]["has_children"] = true
+		index[path] = out.size()
+		out.append({
+			"path": path,
+			"name": str(part.name),
+			"kind": _import_part_kind(part),
+			"depth": depth,
+			"parent": listed_parent,
+			"has_children": false,
+			"visible": part.visible,
+			"effective_visible": _visible_through(part, root),
+		})
+		_collect_import_parts(part, path, depth + 1, path, root, out, index)
+
+
+func _import_part_kind(node: Node3D) -> String:
+	if node is Skeleton3D:
+		return "skeleton"
+	if node is Light3D:
+		return "light"
+	if node is Camera3D:
+		return "camera"
+	if node is MeshInstance3D:
+		return "mesh"
+	return "empty"
+
+
+func _visible_through(node: Node3D, root: Node3D) -> bool:
+	var current: Node = node
+	while current != null:
+		if current is Node3D and not (current as Node3D).visible:
+			return false
+		if current == root:
+			break
+		current = current.get_parent()
+	return true
+
+
+func _apply_import_part_visibility(node: Node3D, obj: Dictionary) -> void:
+	var overrides: Variant = obj.get("part_visibility", {})
+	if not (overrides is Dictionary):
+		return
+	var id := str(obj.get("id", ""))
+	for path in overrides.keys():
+		var part := _resolve_import_part_node(id, str(path))
+		if part == null:
+			# The runtime node may not be registered in `nodes` yet during
+			# spawn; resolve directly from the fresh import object then.
+			part = node.get_node_or_null(NodePath(str(path))) as Node3D
+		if part != null:
+			part.visible = bool(overrides[path])
+
+
+func _node_world_aabb(root: Node3D, include_hidden: bool = false) -> AABB:
 	var result := AABB()
 	var first := true
 	var stack: Array[Node] = [root]
@@ -1519,6 +3240,11 @@ func _node_world_aabb(root: Node3D) -> AABB:
 			continue
 		if node is VisualInstance3D:
 			var vi := node as VisualInstance3D
+			# Hidden marker meshes must not contribute bounds. A camera marker
+			# a metre from the editor camera would otherwise project across the
+			# whole viewport and swallow taps meant for nearby lights.
+			if (not include_hidden and not vi.visible) or vi.name == "Marker":
+				continue
 			var local := vi.get_aabb()
 			var xf := vi.global_transform
 			var world := xf * local

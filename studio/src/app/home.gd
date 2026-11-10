@@ -1,6 +1,9 @@
 extends Control
-## Project browser. Restrained technical illustration on one side, projects and
-## creation on the other. Everything is local; there is no account surface.
+## Project browser. A calm, local project list with one primary action.
+##
+## This is a tool screen, not a landing page: a page title, the projects that
+## exist on this device, and a single obvious way to make another one. No
+## marketing hero, no decorative illustration, no badges.
 
 signal new_project_requested(title: String, template: String)
 signal open_project_requested(id: String)
@@ -8,139 +11,20 @@ signal request_quit
 
 const OverlayScript = preload("res://src/ui/overlay.gd")
 
-class TechnicalIllustration:
-	extends Control
-
-	var angle := 0.7
-	var _time := 0.0
-
-	func _ready() -> void:
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
-		set_process(true)
-
-	func _process(delta: float) -> void:
-		_time += delta
-		angle += delta * 0.45
-		queue_redraw()
-
-	func _project(x: float, y: float, z: float) -> Vector2:
-		var scale := minf(size.x / 420.0, size.y / 310.0)
-		scale = maxf(0.6, scale)
-		var iso := Vector2((x - z) * 0.86, (x + z) * 0.5 - y)
-		var center := Vector2(size.x * 0.5, size.y * 0.60)
-		return center + iso * scale * 60.0
-
-	func _draw_axis_label(text: String, position: Vector2, color: Color) -> void:
-		# Keep the axis tags out of the illustration's compact timeline strip.
-		var p := Vector2(
-			clampf(position.x, 10.0, size.x - 18.0),
-			clampf(position.y, 16.0, size.y - 38.0)
-		)
-		draw_string(Kit.font_mono, p, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, color)
-
-	func _draw() -> void:
-		var center := Vector2(size.x * 0.5, size.y * 0.5)
-		draw_line(Vector2(12, size.y - 26), Vector2(size.x - 12, size.y - 26), Kit.BORDER_SOFT, 1.0)
-		draw_string(Kit.font_mono, Vector2(14, size.y - 10), "TAKE 01", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT_DIM)
-		draw_string(Kit.font_mono, Vector2(size.x - 62, size.y - 10), "03.20 SEC", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT_DIM)
-		var timeline_left := 74.0
-		var timeline_right := size.x - 74.0
-		var timeline_y := size.y - 18.0
-		if timeline_right > timeline_left:
-			draw_line(Vector2(timeline_left, timeline_y), Vector2(timeline_right, timeline_y), Kit.BORDER, 1.0)
-			for i in range(9):
-				var t := float(i) / 8.0
-				var x := lerpf(timeline_left, timeline_right, t)
-				draw_line(Vector2(x, timeline_y - 3), Vector2(x, timeline_y + 3), Kit.BORDER, 1.0)
-			var play_x := lerpf(timeline_left, timeline_right, 0.54)
-			draw_line(Vector2(play_x, timeline_y - 7), Vector2(play_x, timeline_y + 5), Kit.ACCENT, 1.2)
-			draw_colored_polygon(PackedVector2Array([Vector2(play_x - 3, timeline_y - 9), Vector2(play_x + 3, timeline_y - 9), Vector2(play_x, timeline_y - 5)]), Kit.ACCENT)
-
-		# Floor grid and construction axes.
-		var grid_color := Color(Kit.BORDER_SOFT, 0.75)
-		for i in range(-3, 4):
-			var f := float(i)
-			draw_line(_project(f, 0, -3), _project(f, 0, 3), grid_color, 1.0)
-			draw_line(_project(-3, 0, f), _project(3, 0, f), grid_color, 1.0)
-		draw_line(_project(-3.4, 0, 0), _project(3.4, 0, 0), Color(0.38, 0.22, 0.20), 1.0)
-		draw_line(_project(0, 0, -3.4), _project(0, 0, 3.4), Color(0.20, 0.27, 0.42), 1.0)
-		draw_line(_project(0, 0, 0), _project(0, 2.6, 0), Color(0.30, 0.38, 0.28), 1.0)
-		_draw_axis_label("X", _project(3.6, 0, 0), Kit.AXIS_X)
-		_draw_axis_label("Y", _project(0, 2.8, 0), Kit.AXIS_Y)
-		_draw_axis_label("Z", _project(0, 0, 3.6), Kit.AXIS_Z)
-
-		# Pedestal.
-		var base_center := _project(0, 0.08, 0)
-		var base_scale := maxf(0.6, minf(size.x / 420.0, size.y / 310.0)) * 60.0
-		draw_set_transform(base_center, 0.0, Vector2(1.0, 0.38))
-		draw_circle(Vector2.ZERO, 1.7 * base_scale, Color(0.10, 0.125, 0.16, 1.0))
-		draw_arc(Vector2.ZERO, 1.7 * base_scale, 0.0, TAU, 72, Kit.BORDER, 1.0, true)
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-
-		# A restrained primitive study: sphere, orbit and three keys.
-		var sphere_center := _project(0, 1.1, 0)
-		var sphere_r := maxf(12.0, base_scale * 0.55)
-		draw_circle(sphere_center, sphere_r, Color(0.14, 0.16, 0.18, 1.0))
-		draw_arc(sphere_center, sphere_r, 0.0, TAU, 72, Kit.TEXT_MUTED, 1.2, true)
-		draw_set_transform(sphere_center, 0.0, Vector2(1.0, 0.35))
-		draw_arc(Vector2.ZERO, sphere_r, 0.0, TAU, 72, Color(Kit.TEXT_DIM, 0.8), 1.0, true)
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-
-		var orbit_center := _project(0, 1.15, 0)
-		var orbit_scale := maxf(0.6, minf(size.x / 420.0, size.y / 310.0)) * 60.0
-		var orbit_pts := PackedVector2Array()
-		for i in range(65):
-			var a := TAU * float(i) / 64.0
-			var p := _project(cos(a) * 1.55, 1.15 + sin(a) * 0.22, sin(a) * 1.55)
-			orbit_pts.append(p)
-		draw_polyline(orbit_pts, Kit.ACCENT * Color(1, 1, 1, 0.65), 1.2, true)
-		var dot := _project(cos(angle) * 1.55, 1.15 + sin(angle) * 0.22, sin(angle) * 1.55)
-		draw_circle(dot, 3.0, Kit.ACCENT_BRIGHT)
-		draw_circle(dot, 6.5, Color(Kit.ACCENT, 0.16))
-
-		# A small wireframe cube and dimension marks to explain the layout.
-		var cube_origin := _project(-2.25, 0.45, -0.9)
-		var cs := orbit_scale * 0.30
-		var cube_pts := [
-			Vector2(cube_origin.x - cs, cube_origin.y),
-			Vector2(cube_origin.x, cube_origin.y - cs * 0.45),
-			Vector2(cube_origin.x + cs, cube_origin.y),
-			Vector2(cube_origin.x, cube_origin.y + cs * 0.45),
-			Vector2(cube_origin.x - cs, cube_origin.y - cs),
-			Vector2(cube_origin.x, cube_origin.y - cs * 1.45),
-			Vector2(cube_origin.x + cs, cube_origin.y - cs),
-			Vector2(cube_origin.x, cube_origin.y - cs * 0.55),
-		]
-		var edges := [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]
-		for edge in edges:
-			draw_line(cube_pts[edge[0]], cube_pts[edge[1]], Kit.ACCENT * Color(1, 1, 1, 0.55), 1.0, true)
-
-		var top := _project(0, 1.66, 0)
-		var bottom := _project(0, 0.08, 0)
-		draw_dashed_line(top + Vector2(20, 0), bottom + Vector2(20, 0), Kit.BORDER, 1.0, 3.0, true)
-		draw_line(top + Vector2(16, 0), top + Vector2(24, 0), Kit.TEXT_DIM, 1.0)
-		draw_line(bottom + Vector2(16, 0), bottom + Vector2(24, 0), Kit.TEXT_DIM, 1.0)
-		draw_string(Kit.font_mono, Vector2(top.x + 28, (top.y + bottom.y) * 0.5), "1.52", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT_DIM)
-
-		# Corner marks, deliberately quiet.
-		var c := 10.0
-		draw_line(Vector2(12, 12), Vector2(12 + c, 12), Kit.BORDER, 1.0)
-		draw_line(Vector2(12, 12), Vector2(12, 12 + c), Kit.BORDER, 1.0)
-		draw_line(Vector2(size.x - 12, 12), Vector2(size.x - 12 - c, 12), Kit.BORDER, 1.0)
-		draw_line(Vector2(size.x - 12, 12), Vector2(size.x - 12, 12 + c), Kit.BORDER, 1.0)
-		draw_string(Kit.font_mono, Vector2(16, 28), "PRIMITIVE STUDY / FORM + ORBIT", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT_DIM)
-		var frame_text := "FRAME %03d" % (int(_time * 24.0) % 240)
-		draw_string(Kit.font_mono, Vector2(size.x - 86, 28), frame_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Kit.TEXT_DIM)
-		draw_circle(Vector2(center.x, 12), 2.0, Kit.SUCCESS)
+const PAGE_MAX_WIDTH := 980.0
+const ROW_HEIGHT := 44.0
+const WIDE_MIN_WIDTH := 720.0
 
 var _overlay: Control
 var _top: PanelContainer
 var _scroll: ScrollContainer
+var _outer: MarginContainer
 var _layout: Control
 var _wide := true
 var _template_choice := "blank"
 var _template_cards: Dictionary = {}
 var _name_field: LineEdit
+var _pending_scroll := 0
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -152,27 +36,29 @@ func _ready() -> void:
 	_build_top()
 	_scroll = ScrollContainer.new()
 	_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_scroll.offset_top = 52
+	_scroll.offset_top = 48
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	Kit.style_scroll_container(_scroll)
 	add_child(_scroll)
 	_overlay = OverlayScript.new()
 	add_child(_overlay)
 	Store.recents_changed.connect(_rebuild_content)
 	resized.connect(_on_resized)
-	_rebuild_content()
+	# Resolve the breakpoint from the real size before the first build so the
+	# wide table never flashes on a phone.
+	_on_resized()
 
 func _build_top() -> void:
 	_top = PanelContainer.new()
-	var style := Kit.flat_style(Kit.BG, 0, Kit.BORDER_SOFT, 0)
-	style.border_width_bottom = 1
-	style.content_margin_left = 18
+	var style := Kit.flat_style(Kit.SURFACE_2, Kit.R_PANEL, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 20
 	style.content_margin_right = 12
-	style.content_margin_top = 8
-	style.content_margin_bottom = 8
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
 	_top.add_theme_stylebox_override("panel", style)
 	_top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_top.custom_minimum_size.y = 52
+	_top.custom_minimum_size.y = 48
 	add_child(_top)
 
 	var row := HBoxContainer.new()
@@ -181,251 +67,282 @@ func _build_top() -> void:
 
 	var mark := PanelContainer.new()
 	mark.custom_minimum_size = Vector2(30, 30)
-	mark.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 6, Kit.ACCENT * Color(1, 1, 1, 0.42), 1))
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mark.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	row.add_child(mark)
-	var mark_label := Kit.mono_label("K", 15, Kit.ACCENT)
+	var mark_label := Kit.mono_label("K", Kit.TYPE_EMPHASIS, Kit.TEXT)
 	mark_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	mark_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	mark.add_child(mark_label)
 
-	var brand := VBoxContainer.new()
-	brand.add_theme_constant_override("separation", 0)
+	var brand := HBoxContainer.new()
+	brand.add_theme_constant_override("separation", 5)
 	brand.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(brand)
-	var name_row := HBoxContainer.new()
-	name_row.add_theme_constant_override("separation", 5)
-	brand.add_child(name_row)
-	name_row.add_child(Kit.label("KINEMA", 13, Kit.TEXT, 600))
-	name_row.add_child(Kit.label("STUDIO", 13, Kit.TEXT_DIM, 500))
-	brand.add_child(Kit.label("Touch-first 3D animation", 9, Kit.TEXT_DIM))
+	brand.add_child(Kit.label("KINEMA", Kit.TYPE_EMPHASIS, Kit.TEXT, 600))
+	brand.add_child(Kit.label("STUDIO", Kit.TYPE_EMPHASIS, Kit.TEXT_DIM, 500))
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(spacer)
 
-	var local_chip := PanelContainer.new()
-	local_chip.add_theme_stylebox_override("panel", Kit.flat_style(Color(0, 0, 0, 0), 4, Kit.BORDER_SOFT, 1))
-	local_chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(local_chip)
-	var chip_margin := MarginContainer.new()
-	chip_margin.add_theme_constant_override("margin_left", 7)
-	chip_margin.add_theme_constant_override("margin_right", 7)
-	chip_margin.add_theme_constant_override("margin_top", 3)
-	chip_margin.add_theme_constant_override("margin_bottom", 3)
-	local_chip.add_child(chip_margin)
-	chip_margin.add_child(Kit.mono_label("LOCAL", 8, Kit.TEXT_DIM))
-
-	var about := Kit.icon_button("info", "About Kinema", 30, 15)
+	var about := Kit.icon_button("info", "About Kinema", 44, 18)
 	about.pressed.connect(_show_about)
 	row.add_child(about)
 
 func _on_resized() -> void:
-	var wide := size.x >= 860.0
+	var wide := size.x >= WIDE_MIN_WIDTH
 	if wide != _wide or _layout == null:
 		_wide = wide
 		_rebuild_content()
+	else:
+		_apply_page_margins()
+
+## The browser is a list on phones and a table with metadata columns once the
+## width can afford them. Public so the layout matrix can assert the breakpoint
+## without depending on the live window.
+func layout_for_width(width: float) -> String:
+	return "table" if width >= WIDE_MIN_WIDTH else "list"
+
+func _apply_page_margins() -> void:
+	if _outer == null:
+		return
+	var side := _page_side_inset()
+	_outer.add_theme_constant_override("margin_left", side)
+	_outer.add_theme_constant_override("margin_right", side)
+
+func _page_side_inset() -> int:
+	var base := 20 if _wide else 16
+	if not _wide:
+		return base
+	return int(round(maxf(float(base), (size.x - PAGE_MAX_WIDTH) * 0.5)))
 
 func _rebuild_content() -> void:
 	if _scroll == null or not is_inside_tree():
 		return
-	var scroll_pos := _scroll.scroll_vertical if _scroll != null else 0
+	var scroll_pos := _scroll.scroll_vertical
 	for child in _scroll.get_children():
 		_scroll.remove_child(child)
 		child.queue_free()
 	_layout = null
-	var margin := MarginContainer.new()
-	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	margin.add_theme_constant_override("margin_left", 24 if _wide else 16)
-	margin.add_theme_constant_override("margin_right", 24 if _wide else 16)
-	margin.add_theme_constant_override("margin_top", 26)
-	margin.add_theme_constant_override("margin_bottom", 30)
-	_scroll.add_child(margin)
+	_outer = null
 
-	if _wide:
-		var cols := HBoxContainer.new()
-		cols.add_theme_constant_override("separation", 34)
-		cols.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		margin.add_child(cols)
-		var left := VBoxContainer.new()
-		left.add_theme_constant_override("separation", 18)
-		left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		left.size_flags_stretch_ratio = 1.08
-		cols.add_child(left)
-		_build_hero(left, 40)
-		_build_recent(left)
-		var right := VBoxContainer.new()
-		right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		right.size_flags_stretch_ratio = 0.92
-		cols.add_child(right)
-		_build_illustration(right, 480)
-		_build_footer(right)
-		_layout = cols
-	else:
-		var column := VBoxContainer.new()
-		column.add_theme_constant_override("separation", 18)
-		margin.add_child(column)
-		_build_hero(column, 32)
-		_build_illustration(column, 220)
-		_build_recent(column)
-		_build_footer(column)
-		_layout = column
-	await get_tree().process_frame
-	_scroll.scroll_vertical = scroll_pos
+	var outer := MarginContainer.new()
+	_outer = outer
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var side := _page_side_inset()
+	outer.add_theme_constant_override("margin_left", side)
+	outer.add_theme_constant_override("margin_right", side)
+	outer.add_theme_constant_override("margin_top", 24)
+	outer.add_theme_constant_override("margin_bottom", 24)
+	_scroll.add_child(outer)
 
-func _build_hero(parent: Control, title_size: int) -> void:
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 12)
-	parent.add_child(box)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 20)
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.add_child(column)
 
-	var tag := HBoxContainer.new()
-	tag.add_theme_constant_override("separation", 6)
-	box.add_child(tag)
-	var pill := PanelContainer.new()
-	pill.add_theme_stylebox_override("panel", Kit.flat_style(Color(0, 0, 0, 0), 4, Kit.BORDER, 1))
-	tag.add_child(pill)
-	var pill_margin := MarginContainer.new()
-	pill_margin.add_theme_constant_override("margin_left", 7)
-	pill_margin.add_theme_constant_override("margin_right", 7)
-	pill_margin.add_theme_constant_override("margin_top", 2)
-	pill_margin.add_theme_constant_override("margin_bottom", 2)
-	pill.add_child(pill_margin)
-	pill_margin.add_child(Kit.mono_label("3D ANIMATION", 8, Kit.ACCENT))
-	tag.add_child(Kit.mono_label("BUILD 0.1", 8, Kit.TEXT_DIM))
+	_build_page_header(column)
+	_build_projects(column)
+	_build_footer(column)
+	_layout = column
+	# Restore the scroll after layout, but never hold a coroutine on this
+	# screen: the home can be freed while a frame is pending (editor launch,
+	# test teardown). A one-shot signal connection is dropped with the object.
+	_pending_scroll = scroll_pos
+	var tree := get_tree()
+	if tree != null and not tree.process_frame.is_connected(_restore_scroll):
+		tree.process_frame.connect(_restore_scroll, CONNECT_ONE_SHOT)
 
-	var title := Kit.label("Motion,\nwithout the noise.", title_size, Kit.TEXT, 600)
-	title.add_theme_constant_override("line_spacing", -2)
-	box.add_child(title)
-	var sub := Kit.label("A focused place to block, pose and preview animation with your hands. Built on the Godot renderer and made for touch first.", 12, Kit.TEXT_MUTED)
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sub.custom_minimum_size.x = 300
-	box.add_child(sub)
 
-	var actions := HBoxContainer.new()
-	actions.add_theme_constant_override("separation", 8)
-	box.add_child(actions)
-	var new_button := Kit.text_button("New project", "plus", true)
-	new_button.custom_minimum_size = Vector2(150, 40)
-	new_button.pressed.connect(_open_new_project_sheet)
-	actions.add_child(new_button)
-	var manual := Kit.text_button("Quick start", "clapperboard", false)
-	manual.custom_minimum_size = Vector2(132, 40)
-	manual.pressed.connect(func() -> void: new_project_requested.emit("Primitive Study", "study"))
-	actions.add_child(manual)
-
-	var note := Kit.label("No account. Project files stay inside the app.", 9, Kit.TEXT_DIM)
-	box.add_child(note)
-
-func _build_recent(parent: Control) -> void:
-	var section := VBoxContainer.new()
-	section.add_theme_constant_override("separation", 8)
-	parent.add_child(section)
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation", 6)
-	section.add_child(header)
-	header.add_child(Kit.section_label("Recent projects"))
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(spacer)
-	var recents := Store.recent_projects()
-	header.add_child(Kit.mono_label(str(recents.size()), 9, Kit.TEXT_DIM))
-
-	if recents.is_empty():
-		var empty := PanelContainer.new()
-		var empty_style := Kit.flat_style(Kit.SURFACE, 7, Kit.BORDER_SOFT, 1)
-		empty_style.content_margin_left = 16
-		empty_style.content_margin_right = 16
-		empty_style.content_margin_top = 18
-		empty_style.content_margin_bottom = 18
-		empty.add_theme_stylebox_override("panel", empty_style)
-		section.add_child(empty)
-		var inner := VBoxContainer.new()
-		inner.add_theme_constant_override("separation", 5)
-		empty.add_child(inner)
-		inner.add_child(Kit.label("No projects yet", 13, Kit.TEXT, 600))
-		var hint := Kit.label("Start with a blank stage, or press Quick start to load the primitive study.", 10, Kit.TEXT_MUTED)
-		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		inner.add_child(hint)
-		var create := Kit.text_button("Create a project", "plus", false, true)
-		create.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-		create.pressed.connect(_open_new_project_sheet)
-		inner.add_child(create)
+func _restore_scroll() -> void:
+	if _scroll == null or not is_instance_valid(_scroll):
 		return
+	_scroll.scroll_vertical = _pending_scroll
+
+func _build_page_header(parent: Control) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	parent.add_child(row)
+
+	var titles := VBoxContainer.new()
+	titles.add_theme_constant_override("separation", 2)
+	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	titles.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(titles)
+	var title := Kit.label("Projects", Kit.TYPE_PAGE, Kit.TEXT, 600)
+	titles.add_child(title)
+	titles.add_child(Kit.label("Local projects on this device", Kit.TYPE_BODY, Kit.TEXT_MUTED))
+
+	var new_button := Kit.text_button("New project", "plus", true)
+	new_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	new_button.pressed.connect(_open_new_project_sheet)
+	row.add_child(new_button)
+
+func _build_projects(parent: Control) -> void:
+	var recents := Store.recent_projects()
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE, 0, Color(0, 0, 0, 0), 0))
+	parent.add_child(panel)
 
 	var list := VBoxContainer.new()
-	list.add_theme_constant_override("separation", 4)
-	section.add_child(list)
-	for entry in recents:
-		list.add_child(_recent_row(entry))
+	list.add_theme_constant_override("separation", 0)
+	panel.add_child(list)
 
-func _recent_row(entry: Dictionary) -> Control:
+	if recents.is_empty():
+		_build_empty_state(list)
+		return
+
+	if _wide:
+		list.add_child(_column_header())
+	for i in range(recents.size()):
+		list.add_child(_recent_row(recents[i], i == recents.size() - 1))
+
+func _column_header() -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.y = 54
+	var style := Kit.flat_style(Kit.SURFACE_2, 0, Kit.BORDER_SOFT, 0)
+	style.border_width_bottom = 1
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	panel.add_theme_stylebox_override("panel", style)
+	panel.custom_minimum_size.y = 36
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	panel.add_child(row)
+	row.add_child(Kit.gap(32))
+	var name := Kit.section_label("Name")
+	name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(name)
+	row.add_child(_column_label("Objects", 84))
+	row.add_child(_column_label("Duration", 84))
+	row.add_child(_column_label("Modified", 132))
+	row.add_child(Kit.gap(44))
+	return panel
+
+func _column_label(text_value: String, width: float) -> Label:
+	var label := Kit.section_label(text_value)
+	label.custom_minimum_size.x = width
+	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return label
+
+func _build_empty_state(parent: Control) -> void:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 20)
+	margin.add_theme_constant_override("margin_right", 20)
+	margin.add_theme_constant_override("margin_top", 24)
+	margin.add_theme_constant_override("margin_bottom", 24)
+	parent.add_child(margin)
+
+	var inner := VBoxContainer.new()
+	inner.add_theme_constant_override("separation", 8)
+	margin.add_child(inner)
+	inner.add_child(Kit.label("No projects yet", Kit.TYPE_TITLE, Kit.TEXT, 500))
+	var hint := Kit.label("Start a blank stage, or load the primitive study to see keys and playback in place.", Kit.TYPE_BODY, Kit.TEXT_MUTED)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	inner.add_child(hint)
+	var create := Kit.text_button("New project", "plus", false)
+	create.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	create.custom_minimum_size.y = 44
+	create.pressed.connect(_open_new_project_sheet)
+	inner.add_child(create)
+
+func _recent_row(entry: Dictionary, last: bool) -> Control:
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size.y = ROW_HEIGHT
 	panel.mouse_filter = Control.MOUSE_FILTER_PASS
-	panel.add_theme_stylebox_override("panel", _recent_style(false))
-	panel.mouse_entered.connect(func() -> void: panel.add_theme_stylebox_override("panel", _recent_style(true)))
-	panel.mouse_exited.connect(func() -> void: panel.add_theme_stylebox_override("panel", _recent_style(false)))
+	panel.add_theme_stylebox_override("panel", _recent_style(false, last))
+	panel.mouse_entered.connect(func() -> void: panel.add_theme_stylebox_override("panel", _recent_style(true, last)))
+	panel.mouse_exited.connect(func() -> void: panel.add_theme_stylebox_override("panel", _recent_style(false, last)))
 	var id := str(entry.get("id", ""))
 	Kit.bind_tap(panel, _on_recent_tapped.bind(id))
 
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	panel.add_child(row)
+
 	var icon_box := PanelContainer.new()
-	icon_box.custom_minimum_size = Vector2(34, 34)
+	icon_box.custom_minimum_size = Vector2(32, 32)
 	icon_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	icon_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	icon_box.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, 5, Kit.BORDER_SOFT, 1))
+	icon_box.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0))
 	row.add_child(icon_box)
 	var icon_center := CenterContainer.new()
 	icon_box.add_child(icon_center)
-	icon_center.add_child(Kit.icon("clapperboard", Kit.ACCENT, 15))
+	# A cube reads as a 3D scene; a clapperboard reads as a video file.
+	icon_center.add_child(Kit.icon("box", Kit.TEXT_MUTED, 15))
+
 	var info := VBoxContainer.new()
-	info.add_theme_constant_override("separation", 1)
+	info.add_theme_constant_override("separation", 0)
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(info)
-	info.add_child(Kit.label(str(entry.get("title", "Untitled")), 12, Kit.TEXT, 500))
+	var name_label := Kit.label(str(entry.get("title", "Untitled")), Kit.TYPE_EMPHASIS, Kit.TEXT, 500)
+	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_label.clip_text = true
+	info.add_child(name_label)
+
 	var objects := int(entry.get("objects", 0))
 	var dur := float(entry.get("duration", 0.0))
-	var meta := "%d object%s · %.1fs · %s" % [objects, "" if objects == 1 else "s", dur, _relative_time(float(entry.get("modified", 0.0)))]
-	info.add_child(Kit.label(meta, 9, Kit.TEXT_DIM))
-	var menu := Kit.icon_button("ellipsis-vertical", "Project actions", 28, 14)
+	var modified := _relative_time(float(entry.get("modified", 0.0)))
+	if _wide:
+		row.add_child(_value_label("%d" % objects, 84))
+		row.add_child(_value_label("%.1fs" % dur, 84))
+		row.add_child(_value_label(modified, 132))
+	else:
+		var meta := "%d object%s · %.1fs · %s" % [objects, "" if objects == 1 else "s", dur, modified]
+		var meta_label := Kit.label(meta, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
+		meta_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		meta_label.clip_text = true
+		info.add_child(meta_label)
+
+	var menu := Kit.icon_button("ellipsis-vertical", "Project actions", 44, 16)
 	menu.pressed.connect(_open_project_menu.bind(entry))
 	row.add_child(menu)
 	return panel
 
-func _recent_style(hover: bool) -> StyleBoxFlat:
-	var style := Kit.flat_style(Kit.SURFACE_2 if hover else Kit.SURFACE, 6, Kit.BORDER_SOFT if hover else Color(0, 0, 0, 0), 1)
-	style.content_margin_left = 10
-	style.content_margin_right = 8
-	style.content_margin_top = 7
-	style.content_margin_bottom = 7
+func _value_label(text_value: String, width: float) -> Label:
+	var label := Kit.mono_label(text_value, Kit.TYPE_MONO, Kit.TEXT_MUTED)
+	label.custom_minimum_size.x = width
+	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	label.clip_text = true
+	return label
+
+func _recent_style(hover: bool, _last: bool) -> StyleBoxFlat:
+	# Project rows are separated by spacing and hover fill, not by a rule per
+	# row. The only rule in the list is under the column header.
+	var style := Kit.flat_style(Kit.SURFACE_2 if hover else Color(0, 0, 0, 0), Kit.R_PANEL, Color(0, 0, 0, 0), 0)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
 	return style
 
-func _build_illustration(parent: Control, min_height: float) -> void:
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size.y = min_height
-	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, 8, Kit.BORDER_SOFT, 1))
-	parent.add_child(panel)
-
-	var art := TechnicalIllustration.new()
-	art.custom_minimum_size.y = min_height - 2
-	art.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_child(art)
-
 func _build_footer(parent: Control) -> void:
-	var footer := HBoxContainer.new()
-	footer.add_theme_constant_override("separation", 8)
-	parent.add_child(footer)
 	var version := Engine.get_version_info()
-	footer.add_child(Kit.mono_label("KINEMA 0.1 · GODOT %s" % str(version.get("string", "4.x")), 8, Kit.TEXT_DIM))
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	footer.add_child(spacer)
-	var about := Kit.text_button("About", "info", false, true)
-	about.pressed.connect(_show_about)
-	footer.add_child(about)
+	var version_text := "KINEMA 0.1 · GODOT %s" % str(version.get("string", "4.x"))
+	var stored_text := "Stored on this device"
+	if _wide:
+		var footer := HBoxContainer.new()
+		footer.add_theme_constant_override("separation", 12)
+		parent.add_child(footer)
+		footer.add_child(Kit.mono_label(version_text, Kit.TYPE_MONO, Kit.TEXT_DIM))
+		var spacer := Control.new()
+		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		footer.add_child(spacer)
+		footer.add_child(Kit.label(stored_text, Kit.TYPE_CAPTION, Kit.TEXT_DIM))
+	else:
+		# A phone footer is a stack, not a race for horizontal space. Sharing one
+		# row clipped the version string on a 412 dp canvas.
+		var footer := VBoxContainer.new()
+		footer.add_theme_constant_override("separation", 3)
+		parent.add_child(footer)
+		footer.add_child(Kit.mono_label(version_text, Kit.TYPE_MONO, Kit.TEXT_DIM))
+		footer.add_child(Kit.label(stored_text, Kit.TYPE_CAPTION, Kit.TEXT_DIM))
 
 # -------------------------------------------------------------------------
 # Sheets
@@ -435,16 +352,14 @@ func _open_new_project_sheet() -> void:
 	_template_choice = "blank"
 	_template_cards.clear()
 	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 12)
-	var name_label := Kit.section_label("Project name")
-	body.add_child(name_label)
+	body.add_theme_constant_override("separation", 10)
+	body.add_child(Kit.section_label("Project name"))
 	var name_field := Kit.line_edit("Untitled Project")
 	name_field.text = "Untitled Project"
 	name_field.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
 	body.add_child(name_field)
 	_name_field = name_field
-	var template_label := Kit.section_label("Start from")
-	body.add_child(template_label)
+	body.add_child(Kit.section_label("Start from"))
 	var cards := VBoxContainer.new()
 	cards.add_theme_constant_override("separation", 6)
 	body.add_child(cards)
@@ -472,7 +387,7 @@ func _create_project_from_sheet() -> void:
 
 func _template_card(id: String, title: String, description: String, icon_name: String) -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.y = 58
+	panel.custom_minimum_size.y = 64
 	panel.mouse_filter = Control.MOUSE_FILTER_PASS
 	panel.add_theme_stylebox_override("panel", _template_style(id == _template_choice))
 	Kit.bind_tap(panel, _on_template_tapped.bind(id))
@@ -484,19 +399,19 @@ func _template_card(id: String, title: String, description: String, icon_name: S
 	row.add_child(icon_center)
 	icon_center.add_child(Kit.icon(icon_name, Kit.FOCUS_BRIGHT if id == _template_choice else Kit.TEXT_MUTED, 17))
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 2)
+	col.add_theme_constant_override("separation", 1)
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(col)
-	col.add_child(Kit.label(title, 12, Kit.TEXT, 500))
-	var desc := Kit.label(description, 9, Kit.TEXT_MUTED)
+	col.add_child(Kit.label(title, Kit.TYPE_BODY, Kit.TEXT, 500))
+	var desc := Kit.label(description, Kit.TYPE_CAPTION, Kit.TEXT_MUTED)
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(desc)
 	_template_cards[id] = panel
 	return panel
 
 func _template_style(active: bool) -> StyleBoxFlat:
-	var style := Kit.flat_style(Kit.SURFACE_3 if active else Kit.SURFACE_2, 6, Kit.FOCUS if active else Kit.BORDER_SOFT, 1)
+	var style := Kit.flat_style(Kit.SURFACE_ACTIVE if active else Kit.SURFACE_2, Kit.R_CONTROL, Kit.FOCUS if active else Kit.CONTROL_BORDER, 1)
 	style.content_margin_left = 10
 	style.content_margin_right = 10
 	style.content_margin_top = 8
@@ -564,7 +479,7 @@ func _open_project_menu(entry: Dictionary) -> void:
 func _show_about() -> void:
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 10)
-	var intro := Kit.label("Kinema Studio is a small, local-first 3D animation workspace for touch screens. It uses the Godot 4.7 renderer, animation system and scene runtime as its foundation.", 11, Kit.TEXT_MUTED)
+	var intro := Kit.label("Kinema Studio is a local-first 3D animation workspace for touch screens, built on the Godot renderer and animation system.", Kit.TYPE_BODY, Kit.TEXT_MUTED)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(intro)
 	body.add_child(Kit.vsep())
@@ -573,21 +488,21 @@ func _show_about() -> void:
 	body.add_child(_info_row("Renderer", Gfx.display_name()))
 	body.add_child(_info_row("Storage", "On-device app storage only"))
 	body.add_child(Kit.vsep())
-	var limits := Kit.label("Import: glTF and OBJ. Binary FBX needs conversion to GLB or OBJ because Godot's FBX importer is editor-only. On Android, an OBJ may not resolve sibling MTL/texture files through SAF. Export: PNG stills and ZIP frame sequences; MP4 encoding is not included.", 9, Kit.TEXT_DIM)
+	var limits := Kit.label("Import: glTF and OBJ. Binary FBX needs conversion to GLB or OBJ because Godot's FBX importer is editor-only. On Android, an OBJ may not resolve sibling MTL/texture files through SAF. Export: PNG stills and ZIP frame sequences; MP4 encoding is not included.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	limits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(limits)
-	var note := Kit.label("Fonts: Inter and JetBrains Mono (SIL OFL). Icons: Lucide (ISC). Both are bundled with their licenses.", 9, Kit.TEXT_DIM)
+	var note := Kit.label("Fonts: IBM Plex Sans and IBM Plex Mono (SIL OFL). Icons: Lucide (ISC). Both are bundled with their licenses.", Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(note)
-	_overlay.show_modal("About Kinema", "A quiet tool for motion.", body, [{"text": "Close", "primary": true}])
+	_overlay.show_modal("About Kinema", "Local-first 3D animation", body, [{"text": "Close", "primary": true}])
 
 func _info_row(key: String, value: String) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
-	var label := Kit.label(key, 10, Kit.TEXT_DIM)
+	var label := Kit.label(key, Kit.TYPE_CAPTION, Kit.TEXT_DIM)
 	label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	row.add_child(label)
-	var value_label := Kit.mono_label(value, 9, Kit.TEXT_MUTED)
+	var value_label := Kit.mono_label(value, Kit.TYPE_MONO, Kit.TEXT_MUTED)
 	value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -633,4 +548,3 @@ func handle_back() -> bool:
 
 func refresh() -> void:
 	_rebuild_content()
-

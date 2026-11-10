@@ -1,10 +1,11 @@
-extends HBoxContainer
-## Compact numeric field with a draggable axis badge.
+extends PanelContainer
+## Numeric field with a draggable axis badge.
 ##
-## Tapping the text opens the soft keyboard for precise entry; dragging the
-## coloured badge scrubs the value, which is the fastest way to work on a
-## touch screen. Both paths report history boundaries through `drag_started`,
-## `drag_ended` and `text_committed`.
+## One 44 dp target with a single hairline border: the axis badge on the left
+## scrubs the value, the value area opens the soft keyboard for precise entry.
+## The unified frame keeps a row of X/Y/Z fields calm instead of looking like
+## three unrelated boxes. Both paths report history boundaries through
+## `drag_started`, `drag_ended` and `text_committed`.
 
 signal value_changed(value: float)
 signal text_committed(value: float)
@@ -20,27 +21,43 @@ var step := 0.01
 var axis := "X"
 var axis_color := Color(1, 1, 1)
 var suffix := ""
-var badge_width := 18
+## The badge is an interactive drag target, so it keeps the 44 dp touch floor
+## in both axes even when a caller asks for a narrower glyph cell.
+var badge_width := int(Kit.Tokens.HIT)
+## When grouped, the caller draws one frame around several fields; the field
+## itself contributes no border or background.
+var grouped := false
 
 var _edit: LineEdit
 var _dragging := false
 var _drag_total := 0.0
 
 func _ready() -> void:
-	add_theme_constant_override("separation", 0)
+	custom_minimum_size.y = Kit.FIELD
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if grouped:
+		add_theme_stylebox_override("panel", Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0))
+	else:
+		add_theme_stylebox_override("panel", Kit.flat_style(Kit.SURFACE_2, Kit.R_CONTROL, Kit.CONTROL_BORDER, 1))
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 0)
+	row.size_flags_vertical = Control.SIZE_FILL
+	add_child(row)
 
 	var badge_panel := PanelContainer.new()
-	var badge_style := Kit.flat_style(Kit.SURFACE_3, 4, Kit.BORDER_SOFT, 1)
+	var badge_style := Kit.flat_style(Kit.SURFACE_3, Kit.R_CONTROL, Color(0, 0, 0, 0), 0)
+	badge_style.border_width_right = 1
+	badge_style.border_color = Kit.BORDER_SOFT
 	badge_style.content_margin_left = 0
 	badge_style.content_margin_right = 0
 	badge_panel.add_theme_stylebox_override("panel", badge_style)
-	badge_panel.custom_minimum_size = Vector2(badge_width, 30)
+	badge_panel.custom_minimum_size = Vector2(maxf(badge_width, Kit.Tokens.HIT), Kit.FIELD)
 	badge_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	badge_panel.tooltip_text = "Drag to adjust %s" % axis
-	add_child(badge_panel)
+	row.add_child(badge_panel)
 
-	var badge := Kit.label(axis, 9, axis_color, 600)
+	var badge := Kit.label(axis, Kit.TYPE_CAPTION, axis_color, 600)
 	badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -49,14 +66,31 @@ func _ready() -> void:
 
 	_edit = LineEdit.new()
 	_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_edit.custom_minimum_size = Vector2(40, 30)
+	_edit.custom_minimum_size = Vector2(40, Kit.FIELD)
 	_edit.add_theme_font_override("font", Kit.font_regular)
-	_edit.add_theme_font_size_override("font_size", 12)
+	_edit.add_theme_font_size_override("font_size", Kit.TYPE_EMPHASIS)
+	_edit.add_theme_color_override("font_color", Kit.TEXT)
+	_edit.add_theme_color_override("font_placeholder_color", Kit.TEXT_MUTED)
 	_edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER_DECIMAL
+	# The parent panel owns the visible frame; the inner field is only a text
+	# surface, so its own border and background are removed.
+	var bare := Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0)
+	bare.content_margin_left = 10
+	bare.content_margin_right = 8
+	bare.content_margin_top = 0
+	bare.content_margin_bottom = 0
+	var bare_focus := Kit.flat_style(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0)
+	bare_focus.content_margin_left = 10
+	bare_focus.content_margin_right = 8
+	bare_focus.content_margin_top = 0
+	bare_focus.content_margin_bottom = 0
+	_edit.add_theme_stylebox_override("normal", bare)
+	_edit.add_theme_stylebox_override("read_only", bare)
+	_edit.add_theme_stylebox_override("focus", bare_focus)
 	_edit.text = _format(value)
 	_edit.text_submitted.connect(_on_text_submitted)
 	_edit.focus_exited.connect(_on_text_submitted)
-	add_child(_edit)
+	row.add_child(_edit)
 
 func set_value(new_value: float, notify: bool = false) -> void:
 	value = clampf(new_value, min_value, max_value)

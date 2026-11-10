@@ -22,15 +22,21 @@ config/quit_on_go_back=false
 
 Kit="*res://src/ui/kit.gd"
 Store="*res://src/core/project_store.gd"
+Prefs="*res://src/core/prefs.gd"
 Gfx="*res://src/core/gfx.gd"
+Perf="*res://src/core/perf.gd"
 
 [display]
 
 window/size/viewport_width=1280
 window/size/viewport_height=800
 window/size/resizable=true
-window/stretch/mode="canvas_items"
-window/stretch/aspect="expand"
+; One UI unit is one physical pixel divided by the display density, so the
+; layout maths in src/app/layout_math.gd owns every scale decision. The
+; canvas_items stretch would rescale the whole UI to a fixed 1280x800 canvas
+; and defeat that, so the stretch mode is disabled and content_scale_factor
+; carries the density.
+window/stretch/mode="disabled"
 window/handheld/orientation=6
 window/energy_saving/keep_screen_on=true
 window/transparent=false
@@ -47,12 +53,12 @@ pointing/emulate_touch_from_mouse=false
 [rendering]
 
 renderer/rendering_method="forward_plus"
-renderer/rendering_method.mobile="forward_plus"
+renderer/rendering_method.mobile="mobile"
 rendering_device/driver="vulkan"
 rendering_device/driver.mobile="vulkan"
 rendering_device/fallback_to_opengl3=true
 rendering/anti_aliasing/quality/msaa_3d=1
-environment/defaults/default_clear_color=Color(0.043137, 0.058824, 0.078431, 1)
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)
 textures/default_filters/use_nearest_mipmap_filter=false
 lights_and_shadows/directional_shadow/size=4096
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3

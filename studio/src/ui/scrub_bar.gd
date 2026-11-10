@@ -8,8 +8,8 @@ signal drag_ended
 var min_value := 0.0
 var max_value := 1.0
 var value := 0.0
-var fill_color := Color(0.851, 0.647, 0.396, 1.0)
-var height := 24.0
+var fill_color := Color(0.784, 0.784, 0.784, 1.0)
+var height := 44.0
 var _dragging := false
 
 func _ready() -> void:
