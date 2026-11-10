@@ -696,8 +696,8 @@ func _context_actions(id: String) -> Array:
 				_act("move", "Move", "tool-move", 97, false, true),
 				_act("rotate", "Rotate", "tool-rotate", 96, false, true),
 				_act("scale", "Scale", "tool-scale", 95, false, true),
-				_act("material_new", "New", "plus", 90, true, false, 96.0),
-				_act("light_add", "Add light", "lightbulb", 80, true, false, 96.0,
+				_act("material_new", "New", "plus", 90),
+				_act("light_add", "Add light", "lightbulb", 80, false, false, 0.0,
 					"", "chevron-down"),
 				_act("panel", "Materials panel", "panel-right", 70),
 				_act("frame", "Frame selection", "focus", 60),
@@ -790,9 +790,13 @@ func _sync_context_state() -> void:
 		_context_bar.set_action_active("panel", panel_reserved or panel_overlay)
 
 	var selected := doc.selected_id if doc != null else ""
-	_context_bar.set_action_enabled("assign",
-		selected != "" and doc != null and doc.material_system != null,
-		"Select an object to assign this material.")
+	var assign_reason := "Select an object to assign this material."
+	var assign_ready := false
+	if doc != null and selected != "" and doc.material_system != null:
+		assign_reason = "Select a material to assign."
+		assign_ready = _shading_panel != null and \
+			_shading_panel.selected_material_id() != ""
+	_context_bar.set_action_enabled("assign", assign_ready, assign_reason)
 	for tool_id in ["select", "move", "rotate", "scale"]:
 		_context_bar.set_action_enabled(tool_id, selected != "",
 			"Select an object to transform.")
@@ -3214,7 +3218,7 @@ func is_look_through() -> bool:
 ## Quick render is the review loop: the editor becomes a live, full-quality
 ## playback surface instead of showing a static capture of the current frame.
 ## Nothing is captured here; the renderer keeps drawing the document in real
-## time. Saving a still or a sequence stays in the Render sheet.
+## time. Saving a still or a sequence stays in the Render workspace.
 func _enter_render_mode() -> void:
 	if _render_mode or doc == null or _view == null or _render_busy:
 		return
@@ -4198,6 +4202,7 @@ func _total_keys() -> int:
 func _on_material_sheet_changed(_material_id: String) -> void:
 	if _inspector != null:
 		_inspector._rebuild()
+	_sync_context_state()
 
 
 func _on_material_color_requested(property: String, current: Color, material_id: String) -> void:
@@ -4450,7 +4455,7 @@ func _show_help() -> void:
 	body.add_child(_help_row("Ease handles", "Drag a handle or use EASE to change the source key"))
 	body.add_child(Kit.section_label("Render and import"))
 	body.add_child(_help_row("Render and export", "Still images and PNG frame sequences"))
-	body.add_child(_help_row("Quick still", "Capture now at the selected size and MSAA"))
+	body.add_child(_help_row("Still", "Capture now at the selected size and MSAA"))
 	body.add_child(_help_row("Import model", "glTF/GLB and OBJ; FBX must be converted first"))
 	body.add_child(_help_row("Android SAF", "An OBJ may not read sibling MTL/texture files"))
 	body.add_child(_help_row("MP4", "Not available; sequences are ZIP files of PNG frames"))

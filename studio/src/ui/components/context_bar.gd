@@ -188,6 +188,8 @@ func _make_button(action: Dictionary) -> Button:
 		button.add_theme_font_size_override("font_size", 13)
 	else:
 		button = Kit.icon_button(icon_name, label)
+		if trailing_icon != "":
+			button.icon = Kit.combined_icon_texture([icon_name, trailing_icon])
 	button.toggle_mode = toggle
 	button.set_meta("action_id", id)
 	button.set_meta("action_icon", icon_name)
@@ -216,7 +218,8 @@ func _apply_mode() -> void:
 			continue
 		if id == "more" or not bool(button.get_meta("is_text", false)):
 			button.custom_minimum_size = Vector2(icon_side, icon_side)
-			button.add_theme_constant_override("icon_max_width", 18)
+			var trailing := str(button.get_meta("trailing_icon", ""))
+			button.add_theme_constant_override("icon_max_width", 30 if trailing != "" else 18)
 			if desktop:
 				Kit.exempt_from_hit_floor(button)
 		else:

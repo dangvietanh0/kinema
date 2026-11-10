@@ -87,11 +87,17 @@ func export_scene(doc, path: String, options: Dictionary = {}) -> Dictionary:
 		var data := FileAccess.get_file_as_bytes(temp)
 		var out := FileAccess.open(resolved, FileAccess.WRITE)
 		if out == null or data.is_empty():
+			if out != null:
+				out.close()
 			_remove_if_exists(temp)
 			_remove_if_exists(resolved)
 			return _fail(result, root, "The GLB file could not be moved into place.")
-		out.store_buffer(data)
+		var stored := out.store_buffer(data)
 		out.close()
+		if not stored:
+			_remove_if_exists(temp)
+			_remove_if_exists(resolved)
+			return _fail(result, root, "The GLB file could not be moved into place.")
 		_remove_if_exists(temp)
 
 	var bytes := FileAccess.get_file_as_bytes(resolved)

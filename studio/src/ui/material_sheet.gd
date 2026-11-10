@@ -180,6 +180,7 @@ func _apply_target_state() -> void:
 
 func select_material(material_id: String) -> void:
 	select(material_id)
+	changed.emit(material_id)
 
 
 func _on_new() -> void:

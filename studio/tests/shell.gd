@@ -424,24 +424,84 @@ func _test_context_bar_overflow_and_icons() -> void:
 		_check(not bar.action_button(id).disabled,
 			"%s enables with an editable selection" % id)
 
-	# Task 24: Assign, New and Add light are 96 dp text actions. Add light
-	# also advertises its menu with a trailing chevron-down.
+	# §5.16 item 4: Shading keeps only Assign in the 96 x 44 text form. New
+	# and Add light are 44 x 44 icon actions; Add light still advertises its
+	# menu with a trailing chevron-down.
 	editor.set_workspace("shading")
 	await get_tree().process_frame
-	for id in ["assign", "material_new", "light_add"]:
-		var action_button: Button = bar.action_button(id)
-		_check(action_button != null and action_button.get_meta("is_text", false),
-			"Shading %s keeps the text form" % id)
-		_check(action_button != null and action_button.custom_minimum_size.x >= 96.0,
-			"Shading %s keeps the 96 dp width" % id)
-	_check(bar.action_button("material_new").get_meta("action_icon", "") == "plus",
+	var assign_action: Button = bar.action_button("assign")
+	_check(assign_action != null and assign_action.get_meta("is_text", false),
+		"Shading Assign keeps the text form")
+	_check(assign_action != null and assign_action.custom_minimum_size.x >= 96.0,
+		"Shading Assign keeps the 96 dp width")
+	var new_action: Button = bar.action_button("material_new")
+	_check(new_action != null and not new_action.get_meta("is_text", true),
+		"Shading New is an icon action")
+	_check(new_action != null and new_action.custom_minimum_size.x <= 44.5,
+		"Shading New is a 44 dp icon action")
+	_check(new_action != null and new_action.get_meta("action_icon", "") == "plus",
 		"Shading New uses the plus glyph")
-	_check(bar.action_button("light_add").get_meta("action_icon", "") == "lightbulb",
+	_check(new_action != null and new_action.icon != null,
+		"Shading New renders the plus glyph")
+	_check(new_action != null and new_action.get_theme_constant("icon_max_width") == 18,
+		"Shading New keeps the 18 px glyph")
+	var light_action: Button = bar.action_button("light_add")
+	_check(light_action != null and not light_action.get_meta("is_text", true),
+		"Shading Add light is an icon action")
+	_check(light_action != null and light_action.custom_minimum_size.x <= 44.5,
+		"Shading Add light is a 44 dp icon action")
+	_check(light_action != null and light_action.get_meta("action_icon", "") == "lightbulb",
 		"Shading Add light uses the lightbulb glyph")
-	_check(bar.action_button("light_add").get_meta("trailing_icon", "") == "chevron-down",
+	_check(light_action != null and light_action.get_meta("trailing_icon", "") == "chevron-down",
 		"Shading Add light advertises its menu with chevron-down")
-	_check(bar.action_button("light_add").icon != null,
+	_check(light_action != null and light_action.icon != null,
 		"Shading Add light renders the combined glyph")
+	_check(light_action != null and light_action.get_theme_constant("icon_max_width") == 30,
+		"Shading Add light widens its glyph for the menu chevron")
+
+	# Assign is enabled only when an object and a material are both selected.
+	# Clearing the library is a real UI action; bouncing the workspace runs the
+	# same target sync a tab switch runs.
+	var sheet = editor._shading_panel.material_sheet()
+	sheet.open()
+	editor.set_workspace("scene")
+	await get_tree().process_frame
+	editor.set_workspace("shading")
+	await get_tree().process_frame
+	_check(bar.action_button("assign").disabled,
+		"Shading Assign disables with no material selected")
+	_check(bar.action_button("assign").tooltip_text == "Select a material to assign.",
+		"Shading Assign states the exact material reason")
+	var material_id := ""
+	if editor.doc.material_system.material_ids().is_empty():
+		material_id = editor._shading_panel.new_material()
+	else:
+		material_id = str(editor.doc.material_system.material_ids()[0])
+	sheet.select_material(material_id)
+	await get_tree().process_frame
+	_check(not bar.action_button("assign").disabled,
+		"Shading Assign enables once a material is selected")
+	var assign_target: String = editor.doc.selected_id
+	bar.action_button("assign").pressed.emit()
+	await get_tree().process_frame
+	_check(editor.doc.material_system.resolve_assignment(assign_target, "", -1) == material_id,
+		"Assign writes the selected material to the selected object")
+
+	# Add light opens its real menu; choosing Omni creates and selects a real
+	# omni light and closes the menu.
+	bar.action_button("light_add").pressed.emit()
+	await get_tree().process_frame
+	_check(editor._light_menu.is_open(), "Shading Add light opens the light menu")
+	var omni_row: Button = editor._light_menu.row_button("omni")
+	_check(omni_row != null, "the light menu offers the omni row")
+	if omni_row != null:
+		omni_row.pressed.emit()
+		await get_tree().process_frame
+	_check(not editor._light_menu.is_open(), "choosing a light closes the menu")
+	var light_object: Dictionary = editor.doc.get_object(editor.doc.selected_id)
+	_check(str(light_object.get("kind", "")) == "light" and
+		str(light_object.get("light_type", "")) == "omni",
+		"choosing Omni selects a real omni light")
 	editor.set_workspace("render")
 	await get_tree().process_frame
 	_check(bar.action_button("render").get_meta("is_text", false),

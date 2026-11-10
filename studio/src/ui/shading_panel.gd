@@ -124,6 +124,10 @@ func assign_button() -> Button:
 	return _library.assign_button(selected)
 
 
+func selected_material_id() -> String:
+	return "" if _library == null else str(_library.selected_id())
+
+
 func assign_selected() -> bool:
 	if _library == null or _doc == null or _doc.material_system == null:
 		return false
